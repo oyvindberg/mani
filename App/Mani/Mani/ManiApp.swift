@@ -39,6 +39,7 @@ struct ManiApp: App {
                 .environmentObject(hookListener)
                 .task {
                     NotificationService.shared.requestAuthorization()
+                    Self.registerHookShimIfPossible()
                     watcher.onNewSession = { [weak store] detected in
                         guard let store else { return }
                         Task { @MainActor in
@@ -60,6 +61,29 @@ struct ManiApp: App {
     // suspect (its process died with the previous app instance) and any
     // .running job needs to drop to .stopped. Auto-restart is safelist-only —
     // we re-spawn shells in `respawnSafelisted`.
+    // Walking-skeleton hook bundling: try the proper auxiliary-executable
+    // location inside the .app first; if missing, fall back to the
+    // SPM-built HookShim in the repo's .build/debug. Once we have a real
+    // packaging step (CopyFiles build phase or notarized bundle), the
+    // fallback can go away.
+    private static func registerHookShimIfPossible() {
+        let bundleAux = Bundle.main.url(forAuxiliaryExecutable: "HookShim")?.path
+        let repoRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Mani/
+            .deletingLastPathComponent() // Mani/Mani/
+            .deletingLastPathComponent() // App/Mani/
+            .deletingLastPathComponent() // App/
+        let devShim = repoRoot.appendingPathComponent(".build/debug/HookShim").path
+        let candidates = [bundleAux, devShim].compactMap { $0 }
+        guard let shimPath = candidates.first(where: {
+            FileManager.default.isExecutableFile(atPath: $0)
+        }) else {
+            NSLog("[mani] HookShim not found; hooks will not auto-register")
+            return
+        }
+        HookRegistration.register(shimPath: shimPath)
+    }
+
     private static func reconcileAfterCrash(_ state: AppState) -> AppState {
         var s = state
         for pi in s.projects.indices {

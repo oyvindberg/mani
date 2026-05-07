@@ -7,7 +7,18 @@ import Darwin
 // Always exits 0 — see docs/claude-integration.md "the shim must exit 0
 // on any failure path. Hooks blocking Claude is worse than missing one."
 
-let socketPath = "/tmp/mani-hook-spike.sock"
+// Match Mani's HookListenerService default. The MANI_HOOK_SOCK env var
+// can override (used by spike test harnesses that bind to /tmp).
+let socketPath: String = {
+    if let v = ProcessInfo.processInfo.environment["MANI_HOOK_SOCK"], !v.isEmpty {
+        return v
+    }
+    let appSupport = FileManager.default.urls(
+        for: .applicationSupportDirectory,
+        in: .userDomainMask
+    ).first?.appendingPathComponent("Mani/hook.sock").path
+    return appSupport ?? "/tmp/mani-hook-spike.sock"
+}()
 
 let payload = FileHandle.standardInput.readDataToEndOfFile()
 
