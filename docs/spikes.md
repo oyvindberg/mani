@@ -389,7 +389,7 @@ events or duplicating them?
 
 ---
 
-## Spike 7: Git worktree adversarial cases 🔲
+## Spike 7: Git worktree adversarial cases ✅
 
 **Question.** What's our UX when git worktree operations fail in the
 ways they realistically fail?
@@ -418,7 +418,32 @@ is a written list of failure modes and Mani's response, in
 `docs/claude-integration.md`'s git section (or a new doc).
 
 **Disposition.** Documentation. The handling code lives in the
-`Effect.createGitWorktree` runner.
+`Effect.createGitWorktree` runner. Findings documented in
+[`docs/git-worktree.md`](git-worktree.md). Probe script:
+[`Spikes/GitWorktreeSpike/probe.sh`](../Spikes/GitWorktreeSpike/probe.sh).
+
+**Findings (post-spike).** Eight scenarios exercised against git 2.x.
+Highlights:
+
+- "Branch already checked out" → `fatal: '<branch>' is already used by
+  worktree at '<path>'` (exit 128). Surface verbatim + offer "open
+  existing worktree."
+- "Base ref doesn't exist" → `fatal: invalid reference: <ref>` (exit 128).
+  Pre-validate via `git rev-parse --verify`.
+- "Worktree dir deleted externally" → after `rm -rf`, a fresh
+  `git worktree add <same-path>` *succeeds* (exit 0); use this rather
+  than `--force`, which has different semantics. Run `git worktree prune`
+  first to clean stale metadata.
+- "Dirty index in source" → no problem, worktree is created cleanly from
+  HEAD.
+- "Submodule-containing repo" → `worktree add` succeeds, but submodule
+  directories are **empty**. Follow up with
+  `git submodule update --init --recursive` *inside the new worktree*.
+- "Bare repo" → works as-is; legit workflow.
+- "Same path twice" → `fatal: '<path>' already exists` (exit 128).
+  Pre-validate path existence.
+- "Two Manis racing" → not tested; v0.1 is single-instance via NSApp.
+  If we ever go multi-instance, add a lockfile under Application Support.
 
 ---
 
