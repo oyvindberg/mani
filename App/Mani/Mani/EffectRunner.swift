@@ -62,7 +62,10 @@ actor EffectRunner {
                 break
             }
 
-        case .createGitWorktree, .archive, .watchClaudeProjects, .userNotification:
+        case let .userNotification(title, body):
+            NotificationService.shared.post(title: title, body: body)
+
+        case .createGitWorktree, .archive, .watchClaudeProjects:
             // Not implemented yet; documented in docs/architecture.md.
             break
         }

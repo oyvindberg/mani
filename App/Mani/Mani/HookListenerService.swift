@@ -116,9 +116,28 @@ final class HookListenerService: ObservableObject {
         }
         let payload = String(data: data, encoding: .utf8) ?? "(\(data.count) non-utf8 bytes)"
         let envelope = ReceivedEnvelope(receivedAt: Date(), payload: payload)
+        let summary = HookListenerService.summarise(payload: payload)
         DispatchQueue.main.async { [weak self] in
             self?.receivedCount += 1
             self?.lastEnvelope = envelope
+            NotificationService.shared.post(
+                title: "Claude hook",
+                body: summary
+            )
         }
+    }
+
+    private static func summarise(payload: String) -> String {
+        // Best-effort: extract `hook_event_name` from the inner payload JSON.
+        // Falls back to a generic preview.
+        if let data = payload.data(using: .utf8),
+           let outer = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let inner = outer["payload"] as? String,
+           let innerData = inner.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: innerData) as? [String: Any],
+           let event = json["hook_event_name"] as? String {
+            return event
+        }
+        return String(payload.prefix(80))
     }
 }

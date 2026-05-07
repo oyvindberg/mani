@@ -143,9 +143,16 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         return ([event], [.persistEvents([event])])
 
     case let .processExited(at, index, code):
-        guard findJob(state, at) != nil else { return ([], []) }
+        guard let job = findJob(state, at) else { return ([], []) }
         let event = Event.processExited(at: at, index: index, code: code)
-        return ([event], [.persistEvents([event])])
+        var effects: [Effect] = [.persistEvents([event])]
+        if index == 0 {
+            effects.append(.userNotification(
+                title: "Task “\(job.name)” exited",
+                body: code == 0 ? "completed" : "exit code \(code)"
+            ))
+        }
+        return ([event], effects)
     }
 }
 

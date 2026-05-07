@@ -38,6 +38,7 @@ struct ManiApp: App {
                 .environmentObject(watcher)
                 .environmentObject(hookListener)
                 .task {
+                    NotificationService.shared.requestAuthorization()
                     watcher.start()
                     hookListener.start()
                     if store.state.projects.isEmpty {
