@@ -56,6 +56,7 @@ actor EffectRunner {
                     executable: spec.command,
                     args: spec.args,
                     env: env,
+                    cwd: spec.cwd.path,
                     rawMode: false
                 )
                 ptys[path] = pty

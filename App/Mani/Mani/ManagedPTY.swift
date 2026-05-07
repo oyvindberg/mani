@@ -33,12 +33,20 @@ final class ManagedPTY {
     }
     private let outputHandlersLock = NSLock()
     private var outputHandlers: [UUID: (Data) -> Void] = [:]
+    // Bytes the PTY emitted before any handler subscribed get replayed when a
+    // late subscriber attaches — otherwise the renderer misses claude's
+    // startup output (TUI banners, prompts) since the polling loop in
+    // Coordinator.attach takes 25–50 ms after the spawn.
+    private var capturedOutput = Data()
+    private let captureCap = 1_048_576
 
     func addOutputHandler(_ handler: @escaping (Data) -> Void) -> OutputSubscription {
         let id = UUID()
         outputHandlersLock.lock()
+        let snapshot = capturedOutput
         outputHandlers[id] = handler
         outputHandlersLock.unlock()
+        if !snapshot.isEmpty { handler(snapshot) }
         return OutputSubscription { [weak self] in
             guard let self else { return }
             self.outputHandlersLock.lock()
@@ -47,20 +55,33 @@ final class ManagedPTY {
         }
     }
 
-    init(executable: String, args: [String], env: [String: String], rawMode: Bool) throws {
+    init(
+        executable: String,
+        args: [String],
+        env: [String: String],
+        cwd: String?,
+        rawMode: Bool
+    ) throws {
         let argvCStrs: [UnsafeMutablePointer<CChar>?] =
             ([executable] + args).map { strdup($0) } + [nil]
         let envCStrs: [UnsafeMutablePointer<CChar>?] =
             env.map { strdup("\($0.key)=\($0.value)") } + [nil]
+        // Allocate the cwd C string in the parent too — chdir is async-signal-safe
+        // but strdup post-fork isn't.
+        let cwdCStr: UnsafeMutablePointer<CChar>? = cwd.flatMap { strdup($0) }
 
         var master: Int32 = 0
         let pid = forkpty(&master, nil, nil, nil)
         if pid < 0 {
             argvCStrs.forEach { free($0) }
             envCStrs.forEach { free($0) }
+            if let cwdCStr { free(cwdCStr) }
             throw PTYError.forkpty(errno: errno)
         }
         if pid == 0 {
+            if let cwdCStr {
+                _ = chdir(cwdCStr)
+            }
             if rawMode {
                 var tio = termios()
                 tcgetattr(0, &tio)
@@ -73,6 +94,7 @@ final class ManagedPTY {
 
         argvCStrs.forEach { free($0) }
         envCStrs.forEach { free($0) }
+        if let cwdCStr { free(cwdCStr) }
 
         _ = fcntl(master, F_SETFL, fcntl(master, F_GETFL) | O_NONBLOCK)
         self.masterFD = master
@@ -92,6 +114,11 @@ final class ManagedPTY {
                 if n > 0 {
                     let chunk = Data(bytes: buf, count: Int(n))
                     self.outputHandlersLock.lock()
+                    self.capturedOutput.append(chunk)
+                    if self.capturedOutput.count > self.captureCap {
+                        let drop = self.capturedOutput.count - (self.captureCap / 2)
+                        self.capturedOutput.removeSubrange(0..<drop)
+                    }
                     let handlers = Array(self.outputHandlers.values)
                     self.outputHandlersLock.unlock()
                     for h in handlers { h(chunk) }
