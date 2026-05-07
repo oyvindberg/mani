@@ -65,9 +65,78 @@ actor EffectRunner {
         case let .userNotification(title, body):
             NotificationService.shared.post(title: title, body: body)
 
-        case .createGitWorktree, .archive, .watchClaudeProjects:
-            // Not implemented yet; documented in docs/architecture.md.
+        case let .createGitWorktree(_, repoRoot, branch, path, baseRef):
+            await Self.runGitWorktreeAdd(
+                repoRoot: repoRoot,
+                branch: branch,
+                path: path,
+                baseRef: baseRef
+            )
+
+        case .archive, .watchClaudeProjects:
+            // Not implemented yet; archive = task completion → compress &
+            // rotate scrollback. watchClaudeProjects is a hint for the
+            // ClaudeWatcher service which is started directly from ManiApp.
             break
+        }
+    }
+
+    // Returns nothing; caller pattern is fire-and-forget. Errors are NSLog'd.
+    private static func runGitWorktreeAdd(
+        repoRoot: URL,
+        branch: String,
+        path: URL,
+        baseRef: String?
+    ) async {
+        // Prune stale metadata first so a previously-deleted same-path worktree
+        // doesn't block this add. See docs/git-worktree.md case 3.
+        _ = await runGit(args: ["worktree", "prune"], cwd: repoRoot)
+
+        var addArgs = ["worktree", "add", path.path]
+        if let baseRef {
+            addArgs.append(contentsOf: ["-b", branch, baseRef])
+        } else {
+            addArgs.append(branch)
+        }
+        let result = await runGit(args: addArgs, cwd: repoRoot)
+        if result.exit != 0 {
+            NSLog("[mani] git worktree add failed exit=\(result.exit) stderr=\(result.stderr)")
+            return
+        }
+
+        // If the new worktree contains submodules, init them so the user gets
+        // a usable checkout. See docs/git-worktree.md case 5.
+        let gitmodules = path.appendingPathComponent(".gitmodules")
+        if FileManager.default.fileExists(atPath: gitmodules.path) {
+            _ = await runGit(args: ["submodule", "update", "--init", "--recursive"], cwd: path)
+        }
+    }
+
+    private static func runGit(args: [String], cwd: URL) async -> (exit: Int32, stdout: String, stderr: String) {
+        await withCheckedContinuation { (cont: CheckedContinuation<(exit: Int32, stdout: String, stderr: String), Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                task.currentDirectoryURL = cwd
+                task.arguments = args
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                task.standardOutput = outPipe
+                task.standardError = errPipe
+                do {
+                    try task.run()
+                    task.waitUntilExit()
+                    let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
+                    let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
+                    cont.resume(returning: (
+                        task.terminationStatus,
+                        String(data: outData, encoding: .utf8) ?? "",
+                        String(data: errData, encoding: .utf8) ?? ""
+                    ))
+                } catch {
+                    cont.resume(returning: (-1, "", "\(error)"))
+                }
+            }
         }
     }
 

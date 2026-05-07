@@ -10,13 +10,21 @@ struct NewProjectSheet: View {
     @Binding var isPresented: Bool
     @State private var name: String = ""
     @State private var rootDir: String = NSHomeDirectory()
+    @State private var color: String = ColorPalette.swatches.first ?? "#e74c3c"
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             Text("New project").font(.headline)
             Form {
                 TextField("Name", text: $name)
-                TextField("Root directory", text: $rootDir)
+                HStack {
+                    TextField("Root directory", text: $rootDir)
+                    Button("Choose…") { pickFolder() }
+                }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Color").font(.caption).foregroundStyle(.secondary)
+                ColorSwatchPicker(hex: $color)
             }
             HStack {
                 Spacer()
@@ -25,7 +33,7 @@ struct NewProjectSheet: View {
                     Task {
                         await store.dispatch(.createProject(
                             name: name.isEmpty ? "untitled" : name,
-                            color: "#6699cc",
+                            color: color,
                             rootDir: URL(fileURLWithPath: rootDir)
                         ))
                         isPresented = false
@@ -36,7 +44,17 @@ struct NewProjectSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 380)
+        .frame(width: 420)
+    }
+
+    private func pickFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            rootDir = url.path
+        }
     }
 }
 
@@ -44,36 +62,71 @@ struct NewWorktreeSheet: View {
     let store: Store
     let projectId: UUID
     @Binding var isPresented: Bool
+
+    enum Kind: String, CaseIterable, Identifiable {
+        case folder = "Folder"
+        case git = "Git worktree"
+        var id: String { rawValue }
+    }
+
     @State private var name: String = ""
     @State private var path: String = NSHomeDirectory()
+    @State private var kind: Kind = .folder
+    @State private var branch: String = ""
+    @State private var baseRef: String = "main"
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             Text("New worktree").font(.headline)
+            Picker("Kind", selection: $kind) {
+                ForEach(Kind.allCases) { k in Text(k.rawValue).tag(k) }
+            }
+            .pickerStyle(.segmented)
             Form {
                 TextField("Name", text: $name)
-                TextField("Path", text: $path)
+                HStack {
+                    TextField("Path", text: $path)
+                    Button("Choose…") { pickFolder() }
+                }
+                if kind == .git {
+                    TextField("Branch", text: $branch)
+                    TextField("Base ref", text: $baseRef)
+                }
             }
             HStack {
                 Spacer()
                 Button("Cancel") { isPresented = false }.keyboardShortcut(.cancelAction)
                 Button("Create") {
+                    let worktreeKind: WorktreeKind = (kind == .git)
+                        ? .git(branch: branch.isEmpty ? "main" : branch,
+                               baseRef: baseRef.isEmpty ? nil : baseRef)
+                        : .folder
                     Task {
                         await store.dispatch(.createWorktree(
                             projectId: projectId,
                             name: name.isEmpty ? "untitled" : name,
-                            kind: .folder,
+                            kind: worktreeKind,
                             path: URL(fileURLWithPath: path)
                         ))
                         isPresented = false
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(name.isEmpty)
+                .disabled(name.isEmpty || (kind == .git && branch.isEmpty))
             }
         }
         .padding(20)
-        .frame(width: 380)
+        .frame(width: 440)
+    }
+
+    private func pickFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            path = url.path
+        }
     }
 }
 
