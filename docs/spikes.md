@@ -330,7 +330,7 @@ persistence code itself is real v0.1 infrastructure.
 
 ---
 
-## Spike 6: FSEvents on `~/.claude/projects` 🔲
+## Spike 6: FSEvents on `~/.claude/projects` ✅
 
 **Question.** Does our directory watcher handle Claude Code's actual write
 patterns — partial writes, file moves, atomic rewrites — without missing
@@ -359,6 +359,33 @@ events or duplicating them?
   ugly.
 
 **Disposition.** Carry forward; this is the ClaudeWatcher implementation.
+
+**Findings (post-spike).**
+
+- 3 concurrent synthetic streamers (3 × 1,000 lines = 3,000 lines in 60 ms,
+  bursting through a 50 ms FSEvents latency window) plus 3 real `claude -p`
+  runs (sandbox auth failed, claude wrote 7-line metadata each) all matched
+  the on-disk line counts byte-for-byte. Total: 6/6 files, 0 mismatches,
+  0 unparseable lines.
+- **Required flag**: `kFSEventStreamCreateFlagUseCFTypes`. Without it,
+  `eventPaths` is `char**`, not a `CFArrayRef`, and Swift's
+  `unsafeBitCast(_, to: NSArray.self)` segfaults. Set this flag.
+- **Tail-tracker race**: anchor the next "last seen" offset on
+  `prev.size + bytesRead` (i.e., end of what we actually consumed), not on
+  the `stat` size taken before the read. Otherwise a writer extending the
+  file *during* `readToEnd()` causes the next callback to re-read the
+  overlap and double-count lines. Bug observed in this spike (1 file
+  overcounted by 100 lines in the first run); fixed.
+- FSEvents is aggressively coalescing: 3,000 line writes across 3 files
+  produced only 9 callbacks (3/file × 3 files). The watcher must therefore
+  always re-read from `prev.size` to current EOF, not assume one event per
+  line. The tail-tracker shape we ended up with — record byte offset, read
+  to EOF, count newlines — is the right pattern.
+- Slug-dir creation while the watcher is running was tested implicitly:
+  `-stress-test-slug/` didn't exist when FSEventStream started, was created
+  during phase 1, and the writes inside were caught. With
+  `kFSEventStreamCreateFlagFileEvents` the watcher receives events for files
+  in newly-created descendants without having to re-arm.
 
 ---
 
