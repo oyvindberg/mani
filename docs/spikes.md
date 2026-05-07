@@ -196,7 +196,7 @@ into the v0.1 codebase under the app target.
 
 ---
 
-## Spike 4: JSONL parser stability across Claude versions 🔲
+## Spike 4: JSONL parser stability across Claude versions ✅
 
 **Question.** Can we parse Claude Code session JSONL files robustly, and
 what minimum field set do we need? How do we degrade when a field is
@@ -231,6 +231,38 @@ missing?
 
 **Disposition.** Parser code carries forward into the watcher
 implementation.
+
+**Findings (post-spike).**
+
+- 6 real session files (5–21,112 lines, 116 B – 156 MB on disk) parsed
+  with zero failures. Throughput in a debug build: ~1,800 lines/s
+  (~13 MB/s on the 156 MB file in 11.6 s) — fine for a watcher reading
+  live appends.
+- `sessionId` is **per-line** (under that key, camelCase), not top-level.
+  Picking the first non-null seen is reliable; once set it doesn't change
+  within a file. **No** files used the documentation-style `session_id`
+  with underscore.
+- Every assistant line we saw had `message.usage`. The "missing usage"
+  degradation rule is still worth coding defensively but isn't hit in
+  practice on Claude 2.1.107+ sessions.
+- Line types are far broader than the spike spec implied. Observed across
+  the sample: `assistant`, `user`, `attachment`, `file-history-snapshot`,
+  `system`, `permission-mode`, `last-prompt`, `ai-title`, `queue-operation`,
+  `progress`, `pr-link`, `custom-title`, `agent-name`. The parser ignores
+  unknown types silently — that's the right default.
+- Subagent transcripts live in `<sessionDir>/subagents/agent-*.jsonl` with
+  the same schema, but `message.model` may be the literal string
+  `<synthetic>` for orchestrator-emitted assistant lines. Don't rely on
+  model parsing for these.
+- Token usage union of fields:
+  `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`,
+  `output_tokens`, `server_tool_use`, `service_tier`, `cache_creation`,
+  `inference_geo`, `iterations`, `speed`. Cumulative is just sum across
+  assistant lines; we do not need to track per-iteration breakdowns for v0.1.
+- The hook payload (Spike 3) carries `transcript_path` directly, so the
+  watcher can subscribe to a known JSONL when a hook fires rather than
+  inferring path from cwd. Path-from-cwd inference is still needed for
+  the bare-watcher channel (`claude` runs outside Mani).
 
 ---
 

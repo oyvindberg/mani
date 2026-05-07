@@ -13,5 +13,6 @@ let package = Package(
         .executableTarget(name: "PTYSpike", path: "Spikes/PTYSpike"),
         .executableTarget(name: "HookShim", path: "Spikes/HookSpike/HookShim"),
         .executableTarget(name: "HookListener", path: "Spikes/HookSpike/HookListener"),
+        .executableTarget(name: "JSONLSpike", path: "Spikes/JSONLSpike"),
     ]
 )
