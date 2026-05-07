@@ -156,6 +156,7 @@ struct ContentView: View {
 private struct SidebarView: View {
     @EnvironmentObject var store: Store
     @EnvironmentObject var watcher: ClaudeWatcher
+    @EnvironmentObject var hookListener: HookListenerService
     @Binding var selectedJobId: UUID?
 
     var body: some View {
@@ -177,17 +178,24 @@ private struct SidebarView: View {
             }
             .listStyle(.sidebar)
             Divider()
-            HStack(spacing: 6) {
-                Image(systemName: "eye")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Text("\(watcher.sessions.count) Claude sessions tracked")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Spacer()
+            VStack(alignment: .leading, spacing: 2) {
+                statusRow(icon: "eye", text: "\(watcher.sessions.count) Claude sessions tracked")
+                statusRow(icon: "antenna.radiowaves.left.and.right", text: "\(hookListener.receivedCount) hook envelopes")
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
+        }
+    }
+
+    private func statusRow(icon: String, text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Spacer()
         }
     }
 

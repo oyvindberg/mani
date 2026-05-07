@@ -6,6 +6,7 @@ import Foundation
 struct ManiApp: App {
     @StateObject private var store: Store
     @StateObject private var watcher: ClaudeWatcher
+    @StateObject private var hookListener: HookListenerService
 
     init() {
         let appSupport = FileManager.default.urls(
@@ -24,6 +25,9 @@ struct ManiApp: App {
             .appendingPathComponent(".claude/projects")
             .path
         _watcher = StateObject(wrappedValue: ClaudeWatcher(projectsDir: claudeProjects))
+
+        let socketPath = storeRoot.appendingPathComponent("hook.sock").path
+        _hookListener = StateObject(wrappedValue: HookListenerService(socketPath: socketPath))
     }
 
     var body: some Scene {
@@ -32,8 +36,10 @@ struct ManiApp: App {
                 .frame(minWidth: 800, minHeight: 500)
                 .environmentObject(store)
                 .environmentObject(watcher)
+                .environmentObject(hookListener)
                 .task {
                     watcher.start()
+                    hookListener.start()
                     if store.state.projects.isEmpty {
                         await Self.seedDefaults(store: store)
                     } else {
