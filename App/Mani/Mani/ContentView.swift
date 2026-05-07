@@ -31,9 +31,31 @@ struct ContentView: View {
                     }
                 }
         } detail: {
-            if let path = selectedJobPath {
-                TerminalPane(jobPath: path)
-                    .id(path)
+            if let path = selectedJobPath, let context = breadcrumbContext() {
+                VStack(spacing: 0) {
+                    // Project band — solid stripe in the project's color.
+                    Rectangle()
+                        .fill(SwiftUI.Color(hex: context.project.color))
+                        .frame(height: 7)
+                    // Breadcrumb in project-tinted text.
+                    HStack(spacing: 4) {
+                        Text(context.project.name)
+                            .foregroundStyle(SwiftUI.Color(hex: context.project.color))
+                        Text("›").foregroundStyle(.secondary)
+                        Text(context.worktree.name)
+                            .foregroundStyle(SwiftUI.Color(hex: context.project.color))
+                        Text("›").foregroundStyle(.secondary)
+                        Text(context.job.name).bold()
+                            .foregroundStyle(SwiftUI.Color(hex: context.project.color))
+                        Spacer()
+                    }
+                    .font(.system(size: 12))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    Divider()
+                    TerminalPane(jobPath: path)
+                        .id(path)
+                }
             } else {
                 Text("Select a task in the sidebar")
                     .foregroundStyle(.secondary)
@@ -101,6 +123,15 @@ struct ContentView: View {
             .worktrees.first(where: { $0.id == path.worktree })
     }
 
+    private func breadcrumbContext() -> (project: Project, worktree: Worktree, job: Job)? {
+        guard let path = selectedJobPath,
+              let project = store.state.projects.first(where: { $0.id == path.project }),
+              let worktree = project.worktrees.first(where: { $0.id == path.worktree }),
+              let job = worktree.jobs.first(where: { $0.id == path.job })
+        else { return nil }
+        return (project, worktree, job)
+    }
+
     private var selectedJobPath: JobPath? {
         guard let id = selectedJobId else { return nil }
         return lookupPath(forJobId: id)
@@ -131,13 +162,9 @@ private struct SidebarView: View {
             ForEach(store.state.projects) { project in
                 Section {
                     ForEach(project.worktrees) { worktree in
-                        Text(worktree.name)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .textCase(.uppercase)
-                            .padding(.top, 4)
+                        worktreeHeader(worktree: worktree, projectColor: project.color)
                         ForEach(worktree.jobs) { job in
-                            jobRow(job: job)
+                            jobRow(job: job, projectColor: project.color)
                                 .tag(job.id)
                         }
                     }
@@ -149,23 +176,42 @@ private struct SidebarView: View {
         .listStyle(.sidebar)
     }
 
-    private func jobRow(job: Job) -> some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(job.statusColor)
-                .frame(width: 6, height: 6)
-            Text(job.name)
-            Spacer()
-            if job.unread > 0 {
-                Text("\(job.unread)")
-                    .font(.caption2)
-                    .padding(.horizontal, 5)
-                    .background(Capsule().fill(.tint))
-                    .foregroundStyle(.white)
+    private func worktreeHeader(worktree: Worktree, projectColor: String) -> some View {
+        HStack(spacing: 0) {
+            Rectangle()
+                .fill(SwiftUI.Color(hex: projectColor))
+                .frame(width: 3)
+            Text(worktree.name)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textCase(.uppercase)
+                .padding(.leading, 6)
+                .padding(.top, 4)
+        }
+    }
+
+    private func jobRow(job: Job, projectColor: String) -> some View {
+        HStack(spacing: 0) {
+            Rectangle()
+                .fill(SwiftUI.Color(hex: projectColor))
+                .frame(width: 3)
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(job.statusColor)
+                    .frame(width: 6, height: 6)
+                Text(job.name)
+                Spacer()
+                if job.unread > 0 {
+                    Text("\(job.unread)")
+                        .font(.caption2)
+                        .padding(.horizontal, 5)
+                        .background(Capsule().fill(.tint))
+                        .foregroundStyle(.white)
+                }
             }
+            .padding(.leading, 8)
         }
         .contentShape(Rectangle())
-        .padding(.leading, 8)
     }
 }
 
