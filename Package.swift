@@ -10,5 +10,6 @@ let package = Package(
     targets: [
         .target(name: "ManiCore"),
         .testTarget(name: "ManiCoreTests", dependencies: ["ManiCore"]),
+        .executableTarget(name: "PTYSpike", path: "Spikes/PTYSpike"),
     ]
 )

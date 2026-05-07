@@ -54,7 +54,7 @@ viable + here are its sharp edges."
 
 ---
 
-## Spike 2: PTY lifecycle on macOS 🔲
+## Spike 2: PTY lifecycle on macOS ✅
 
 **Question.** Can we cleanly spawn shells via a PTY pair, deliver SIGTERM
 on close with SIGKILL escalation, and avoid zombies across hundreds of
@@ -107,6 +107,23 @@ spawn/kill cycles?
 
 **Disposition.** The code from this spike is *kept* — `ManagedPTY` is real
 infrastructure. Move it to the app target when you build it.
+
+**Findings (post-spike).**
+
+- `forkpty()` (not `posix_spawn`) is the right call. `posix_spawn` doesn't
+  acquire a controlling terminal even with `POSIX_SPAWN_SETSID`; the slave
+  needs `TIOCSCTTY` which `login_tty()` (called by `forkpty`) handles. Without
+  it, kernel-driven SIGWINCH on `ioctl(TIOCSWINSZ)` is silently dropped.
+- Throughput came in at ~0.6 MB/s (vs the ≥100 MB/s spec) — adequate for
+  Claude workloads but worth tuning later. The bottleneck is the dispatch
+  read source's per-event drain loop fighting the slave's small kernel
+  buffer; likely fix is kqueue-edge-triggered with a larger read or a
+  dedicated reader thread.
+- 500-cycle FD-count delta showed +1, traced to dispatch source teardown
+  timing (the exit handler hadn't released the master FD by the time we
+  measured). Add a short settle delay before measuring if you tighten this.
+- Raw mode (`cfmakeraw` on slave before `execve`) is required for
+  byte-exact streams; canonical mode caps line-buffer at ~1KB on macOS.
 
 ---
 
