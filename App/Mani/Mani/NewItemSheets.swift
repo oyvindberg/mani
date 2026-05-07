@@ -74,6 +74,7 @@ struct NewWorktreeSheet: View {
     @State private var kind: Kind = .folder
     @State private var branch: String = ""
     @State private var baseRef: String = "main"
+    @State private var addShellTask: Bool = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -92,6 +93,7 @@ struct NewWorktreeSheet: View {
                     TextField("Branch", text: $branch)
                     TextField("Base ref", text: $baseRef)
                 }
+                Toggle("Add a default shell task", isOn: $addShellTask)
             }
             HStack {
                 Spacer()
@@ -101,13 +103,34 @@ struct NewWorktreeSheet: View {
                         ? .git(branch: branch.isEmpty ? "main" : branch,
                                baseRef: baseRef.isEmpty ? nil : baseRef)
                         : .folder
+                    let pathURL = URL(fileURLWithPath: path)
+                    let wantShell = addShellTask
+                    let projectId = projectId
                     Task {
                         await store.dispatch(.createWorktree(
                             projectId: projectId,
                             name: name.isEmpty ? "untitled" : name,
                             kind: worktreeKind,
-                            path: URL(fileURLWithPath: path)
+                            path: pathURL
                         ))
+                        if wantShell,
+                           let project = store.state.projects.first(where: { $0.id == projectId }),
+                           let worktree = project.worktrees.last {
+                            let wtPath = WorktreePath(
+                                project: projectId, worktree: worktree.id
+                            )
+                            let spec = ProcessSpec(
+                                command: "/bin/zsh",
+                                args: ["-l"],
+                                env: [:],
+                                cwd: pathURL,
+                                pid: nil
+                            )
+                            await store.dispatch(.createJob(
+                                at: wtPath, name: "shell", kind: .shell,
+                                primary: spec, auxiliary: []
+                            ))
+                        }
                         isPresented = false
                     }
                 }
@@ -126,6 +149,117 @@ struct NewWorktreeSheet: View {
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
             path = url.path
+        }
+    }
+}
+
+struct ResumeClaudeSheet: View {
+    let store: Store
+    let worktreePath: WorktreePath
+    let cwd: URL
+    @Binding var isPresented: Bool
+    @State private var sessions: [ClaudeHistoryScanner.Session] = []
+    @State private var loaded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Resume Claude session").font(.headline)
+            Text("Sessions previously run in \(cwd.path)")
+                .font(.caption).foregroundStyle(.secondary)
+            Group {
+                if !loaded {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if sessions.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.secondary)
+                        Text("No prior Claude sessions found for this directory.")
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    sessionList
+                }
+            }
+            .frame(minHeight: 240)
+
+            HStack {
+                Button("Start fresh task") { startFresh() }
+                Spacer()
+                Button("Cancel") { isPresented = false }.keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 580, height: 380)
+        .task {
+            sessions = ClaudeHistoryScanner.sessions(forCwd: cwd.path)
+            loaded = true
+        }
+    }
+
+    private var sessionList: some View {
+        List(sessions, id: \.id) { session in
+            Button { resume(session: session) } label: {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(session.firstUserMessage ?? "(no user prompt yet)")
+                        .lineLimit(2)
+                    HStack(spacing: 8) {
+                        Text(session.id.prefix(8))
+                            .font(.system(.caption2, design: .monospaced))
+                        if let ts = session.lastMessageAt {
+                            Text(ts, style: .relative)
+                                .font(.caption2)
+                        }
+                        Text("\(session.messageCount) msgs")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func resume(session: ClaudeHistoryScanner.Session) {
+        let spec = ProcessSpec(
+            command: "/usr/bin/env",
+            args: ["claude", "--resume", session.id],
+            env: [:],
+            cwd: cwd,
+            pid: nil
+        )
+        Task {
+            await store.dispatch(.createJob(
+                at: worktreePath,
+                name: "claude (resumed \(session.id.prefix(6)))",
+                kind: .claude(sessionId: session.id),
+                primary: spec,
+                auxiliary: []
+            ))
+            isPresented = false
+        }
+    }
+
+    private func startFresh() {
+        let spec = ProcessSpec(
+            command: "/usr/bin/env",
+            args: ["claude"],
+            env: [:],
+            cwd: cwd,
+            pid: nil
+        )
+        Task {
+            await store.dispatch(.createJob(
+                at: worktreePath,
+                name: "claude",
+                kind: .claude(sessionId: nil),
+                primary: spec,
+                auxiliary: []
+            ))
+            isPresented = false
         }
     }
 }

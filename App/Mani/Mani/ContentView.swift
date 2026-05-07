@@ -61,9 +61,22 @@ struct ContentView: View {
                     }
                 }
             } else {
-                Text("Select a task in the sidebar")
-                    .foregroundStyle(.secondary)
+                if store.state.projects.isEmpty {
+                    VStack(spacing: 14) {
+                        Image(systemName: "rectangle.stack.badge.plus")
+                            .font(.system(size: 40))
+                            .foregroundStyle(.secondary)
+                        Text("Create your first project")
+                            .font(.headline)
+                        Button("New Project…") { showingNewProject = true }
+                            .keyboardShortcut("p", modifiers: [.command, .shift])
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    Text("Select a task in the sidebar")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         }
         .onAppear {
@@ -176,29 +189,53 @@ private struct SidebarView: View {
     @EnvironmentObject var watcher: ClaudeWatcher
     @EnvironmentObject var hookListener: HookListenerService
     @Binding var selectedJobId: UUID?
+    @State private var resumeContext: ResumeContext?
+
+    struct ResumeContext: Identifiable {
+        let id = UUID()
+        let worktreePath: WorktreePath
+        let cwd: URL
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            List(selection: $selectedJobId) {
-                ForEach(store.state.projects) { project in
-                    Section {
-                        ForEach(project.worktrees) { worktree in
-                            worktreeHeader(project: project, worktree: worktree)
-                            ForEach(worktree.jobs) { job in
-                                jobRow(project: project, worktree: worktree, job: job)
-                                    .tag(job.id)
+            ZStack {
+                List(selection: $selectedJobId) {
+                    ForEach(store.state.projects) { project in
+                        Section {
+                            ForEach(project.worktrees) { worktree in
+                                worktreeHeader(project: project, worktree: worktree)
+                                ForEach(worktree.jobs) { job in
+                                    jobRow(project: project, worktree: worktree, job: job)
+                                        .tag(job.id)
+                                }
                             }
+                        } header: {
+                            Text(project.name)
+                                .opacity(project.enabled ? 1 : 0.5)
+                                .contextMenu {
+                                    projectMenu(project: project)
+                                }
                         }
-                    } header: {
-                        Text(project.name)
-                            .opacity(project.enabled ? 1 : 0.5)
-                            .contextMenu {
-                                projectMenu(project: project)
-                            }
                     }
                 }
+                .listStyle(.sidebar)
+                if store.state.projects.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "tray")
+                            .font(.system(size: 28))
+                            .foregroundStyle(.secondary)
+                        Text("No projects yet")
+                            .font(.headline)
+                        Text("Use the + button in the toolbar\nto create your first project.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding()
+                    .allowsHitTesting(false)
+                }
             }
-            .listStyle(.sidebar)
             Divider()
             VStack(alignment: .leading, spacing: 2) {
                 statusRow(icon: "eye", text: "\(watcher.sessions.count) Claude sessions tracked")
@@ -206,6 +243,17 @@ private struct SidebarView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
+        }
+        .sheet(item: $resumeContext) { ctx in
+            ResumeClaudeSheet(
+                store: store,
+                worktreePath: ctx.worktreePath,
+                cwd: ctx.cwd,
+                isPresented: Binding(
+                    get: { resumeContext != nil },
+                    set: { if !$0 { resumeContext = nil } }
+                )
+            )
         }
     }
 
@@ -225,15 +273,53 @@ private struct SidebarView: View {
     @ViewBuilder
     private func worktreeMenu(project: Project, worktree: Worktree) -> some View {
         let path = WorktreePath(project: project.id, worktree: worktree.id)
+        Button("New shell here") {
+            Task { await Self.spawnShell(at: path, cwd: worktree.path, store: store) }
+        }
+        Button("Resume Claude session…") {
+            resumeContext = ResumeContext(worktreePath: path, cwd: worktree.path)
+        }
+        Button("Open in IntelliJ") {
+            Self.openInIntelliJ(worktree.path)
+        }
+        Divider()
         Button(worktree.enabled ? "Disable worktree (stop tasks)" : "Enable worktree") {
             Task {
                 await store.dispatch(.setWorktreeEnabled(at: path, enabled: !worktree.enabled))
             }
         }
-        Divider()
         Button("Delete worktree", role: .destructive) {
             Task { await store.dispatch(.deleteWorktree(at: path)) }
         }
+    }
+
+    private static func spawnShell(at path: WorktreePath, cwd: URL, store: Store) async {
+        let spec = ProcessSpec(
+            command: "/bin/zsh", args: ["-l"], env: [:], cwd: cwd, pid: nil
+        )
+        await store.dispatch(.createJob(
+            at: path, name: "shell", kind: .shell, primary: spec, auxiliary: []
+        ))
+    }
+
+    private static func openInIntelliJ(_ folder: URL) {
+        // Prefer JetBrains' `idea` CLI if it's on the augmented PATH; otherwise
+        // fall back to Launch Services (`open -a "IntelliJ IDEA"`).
+        let extras = "\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin"
+        let pathString = extras + ":" + (ProcessInfo.processInfo.environment["PATH"] ?? "")
+        let ideaPath = pathString.split(separator: ":").lazy
+            .map { String($0) + "/idea" }
+            .first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+
+        let task = Process()
+        if let ideaPath {
+            task.executableURL = URL(fileURLWithPath: ideaPath)
+            task.arguments = [folder.path]
+        } else {
+            task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            task.arguments = ["-a", "IntelliJ IDEA", folder.path]
+        }
+        try? task.run()
     }
 
     @ViewBuilder
