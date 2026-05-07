@@ -44,6 +44,12 @@ actor EffectRunner {
                 var env = ProcessInfo.processInfo.environment
                 for (k, v) in spec.env { env[k] = v }
                 env["TERM"] = "xterm-256color"
+                env["COLORTERM"] = "truecolor"
+                // Terminal.app and iTerm advertise themselves via TERM_PROGRAM;
+                // some TUIs (claude code's UI library among them) gate
+                // full-repaint-on-resize on the presence of a recognized value.
+                // Setting it lets claude believe it's in a smart terminal.
+                env["TERM_PROGRAM"] = "Mani"
                 // App-launched processes inherit a stripped PATH from launchd
                 // that doesn't include user-installed binary directories, so
                 // `env claude` (and any other tool not in /usr/bin) fails with
