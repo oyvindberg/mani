@@ -27,7 +27,9 @@ final class ScrollbackWriter {
         fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + flushInterval, repeating: flushInterval)
-        timer.setEventHandler { [weak self] in self?.flush() }
+        // Timer fires on `queue`, so call flushLocked directly. flush() does
+        // queue.sync and would self-deadlock — libdispatch traps that.
+        timer.setEventHandler { [weak self] in self?.flushLocked() }
         timer.resume()
         self.timer = timer
     }
