@@ -50,6 +50,15 @@ actor EffectRunner {
                 // full-repaint-on-resize on the presence of a recognized value.
                 // Setting it lets claude believe it's in a smart terminal.
                 env["TERM_PROGRAM"] = "Mani"
+                // Strip env vars that leak in from whichever shell launched
+                // Mani (e.g. Terminal.app via `open`). A stale TERM_SESSION_ID
+                // or TERM_PROGRAM_VERSION from another terminal confuses TUIs
+                // that key off them.
+                for k in ["TERM_PROGRAM_VERSION", "TERM_SESSION_ID",
+                          "ITERM_SESSION_ID", "ITERM_PROFILE",
+                          "LC_TERMINAL", "LC_TERMINAL_VERSION"] {
+                    env.removeValue(forKey: k)
+                }
                 // App-launched processes inherit a stripped PATH from launchd
                 // that doesn't include user-installed binary directories, so
                 // `env claude` (and any other tool not in /usr/bin) fails with

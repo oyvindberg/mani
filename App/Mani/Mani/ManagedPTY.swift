@@ -71,7 +71,12 @@ final class ManagedPTY {
         let cwdCStr: UnsafeMutablePointer<CChar>? = cwd.flatMap { strdup($0) }
 
         var master: Int32 = 0
-        let pid = forkpty(&master, nil, nil, nil)
+        // Seed the slave with a sane initial window size. The default
+        // (0×0) confuses TUIs that read the size once at startup before
+        // the first SIGWINCH arrives — claude's Ink frame appears to be
+        // one such case.
+        var initialSize = winsize(ws_row: 40, ws_col: 120, ws_xpixel: 0, ws_ypixel: 0)
+        let pid = forkpty(&master, nil, nil, &initialSize)
         if pid < 0 {
             argvCStrs.forEach { free($0) }
             envCStrs.forEach { free($0) }

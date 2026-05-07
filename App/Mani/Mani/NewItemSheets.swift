@@ -302,8 +302,12 @@ struct NewTaskSheet: View {
                     argsString = "-l"
                     if name.isEmpty || name == "claude" { name = "shell" }
                 case .claude:
-                    command = "/usr/bin/env"
-                    argsString = "claude"
+                    // zsh -ic so claude gets the termios setup it expects
+                    // (matters for SIGWINCH redraws of its TUI frame).
+                    // Single-word command keeps the args text field's
+                    // whitespace-split parser happy.
+                    command = "/bin/zsh"
+                    argsString = "-ic claude"
                     if name.isEmpty || name == "shell" { name = "claude" }
                 }
             }

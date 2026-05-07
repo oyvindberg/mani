@@ -276,6 +276,9 @@ private struct SidebarView: View {
         Button("New shell here") {
             Task { await Self.spawnShell(at: path, cwd: worktree.path, store: store) }
         }
+        Button("New Claude task") {
+            Task { await Self.spawnClaude(at: path, cwd: worktree.path, store: store) }
+        }
         Button("Resume Claude session…") {
             resumeContext = ResumeContext(worktreePath: path, cwd: worktree.path)
         }
@@ -299,6 +302,16 @@ private struct SidebarView: View {
         )
         await store.dispatch(.createJob(
             at: path, name: "shell", kind: .shell, primary: spec, auxiliary: []
+        ))
+    }
+
+    private static func spawnClaude(at path: WorktreePath, cwd: URL, store: Store) async {
+        let spec = ProcessSpec(
+            command: "/usr/bin/env", args: ["claude"], env: [:], cwd: cwd, pid: nil
+        )
+        await store.dispatch(.createJob(
+            at: path, name: "claude", kind: .claude(sessionId: nil),
+            primary: spec, auxiliary: []
         ))
     }
 
