@@ -130,6 +130,40 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         let event = Event.claudeSessionLinked(at: at, sessionId: sessionId)
         return ([event], [.persistEvents([event])])
 
+    case let .discoverClaudeSession(at, sessionId, cwd):
+        guard findWorktree(state, at) != nil else { return ([], []) }
+        // Idempotent: if a job already tracks this sessionId in this worktree, no-op.
+        if let existing = state.projects.first(where: { $0.id == at.project })?
+            .worktrees.first(where: { $0.id == at.worktree })?.jobs,
+           existing.contains(where: { job in
+               if case let .claude(sid) = job.kind, sid == sessionId { return true }
+               return false
+           }) {
+            return ([], [])
+        }
+        let job = Job(
+            id: UUID(),
+            name: "claude",
+            kind: .claude(sessionId: sessionId),
+            enabled: true,
+            status: .running,
+            // Placeholder spec — we don't own the process. Storing the cwd lets
+            // recovery / scrollback restore know where it lives.
+            primary: ProcessSpec(
+                command: "(external claude)",
+                args: [],
+                env: [:],
+                cwd: cwd,
+                pid: nil
+            ),
+            auxiliary: [],
+            unread: 0,
+            createdAt: Date(),
+            completedAt: nil
+        )
+        let event = Event.jobCreated(at: at, job)
+        return ([event], [.persistEvents([event])])
+
     case let .completeJob(at):
         guard let job = findJob(state, at) else { return ([], []) }
         let event = Event.jobCompleted(at: at, completedAt: Date())

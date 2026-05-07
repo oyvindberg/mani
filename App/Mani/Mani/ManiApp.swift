@@ -39,6 +39,12 @@ struct ManiApp: App {
                 .environmentObject(hookListener)
                 .task {
                     NotificationService.shared.requestAuthorization()
+                    watcher.onNewSession = { [weak store] detected in
+                        guard let store else { return }
+                        Task { @MainActor in
+                            await Self.handleDiscoveredSession(detected, store: store)
+                        }
+                    }
                     watcher.start()
                     hookListener.start()
                     if store.state.projects.isEmpty {
@@ -102,6 +108,32 @@ struct ManiApp: App {
             primary: spec,
             auxiliary: []
         ))
+    }
+
+    // Map a freshly-detected Claude session to a Mani worktree by cwd. If
+    // a worktree's path is a prefix of the session cwd, we treat the session
+    // as belonging there and dispatch discoverClaudeSession (which is a no-op
+    // if a job already tracks this session id, so re-firing is safe).
+    private static func handleDiscoveredSession(
+        _ detected: ClaudeWatcher.DetectedSession,
+        store: Store
+    ) async {
+        guard let cwd = detected.cwd else { return }
+        let cwdURL = URL(fileURLWithPath: cwd).resolvingSymlinksInPath()
+        for project in store.state.projects {
+            for worktree in project.worktrees {
+                let wtPath = worktree.path.resolvingSymlinksInPath().path
+                if cwdURL.path == wtPath || cwdURL.path.hasPrefix(wtPath + "/") {
+                    let path = WorktreePath(project: project.id, worktree: worktree.id)
+                    await store.dispatch(.discoverClaudeSession(
+                        at: path,
+                        sessionId: detected.sessionId,
+                        cwd: URL(fileURLWithPath: cwd)
+                    ))
+                    return
+                }
+            }
+        }
     }
 
     private static func respawnSafelisted(store: Store) async {

@@ -24,6 +24,7 @@ final class ClaudeWatcher: ObservableObject {
     }
 
     @Published private(set) var sessions: [String: DetectedSession] = [:]
+    var onNewSession: ((DetectedSession) -> Void)?
 
     private struct FileTail {
         var size: UInt64
@@ -160,7 +161,10 @@ final class ClaudeWatcher: ObservableObject {
                 messageCount: snapshot.state.messageCount
             )
             DispatchQueue.main.async { [weak self] in
-                self?.sessions[sid] = detected
+                guard let self else { return }
+                let isNew = self.sessions[sid] == nil
+                self.sessions[sid] = detected
+                if isNew { self.onNewSession?(detected) }
             }
         }
     }

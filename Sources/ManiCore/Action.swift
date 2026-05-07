@@ -14,6 +14,9 @@ public enum Action {
     case createJob(at: WorktreePath, name: String, kind: JobKind, primary: ProcessSpec, auxiliary: [ProcessSpec])
     case setJobEnabled(at: JobPath, enabled: Bool)
     case linkClaudeSession(at: JobPath, sessionId: String)
+    // Externally-running Claude session discovered via the FSEvents watcher.
+    // Like createJob, but no spawn effect (we don't own the process).
+    case discoverClaudeSession(at: WorktreePath, sessionId: String, cwd: URL)
     case completeJob(at: JobPath)
 
     case processStarted(at: JobPath, index: Int, pid: Int32)
