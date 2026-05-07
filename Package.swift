@@ -14,5 +14,6 @@ let package = Package(
         .executableTarget(name: "HookShim", path: "Spikes/HookSpike/HookShim"),
         .executableTarget(name: "HookListener", path: "Spikes/HookSpike/HookListener"),
         .executableTarget(name: "JSONLSpike", path: "Spikes/JSONLSpike"),
+        .executableTarget(name: "CrashSpike", dependencies: ["ManiCore"], path: "Spikes/CrashSpike"),
     ]
 )

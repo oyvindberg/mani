@@ -266,7 +266,7 @@ implementation.
 
 ---
 
-## Spike 5: Atomic snapshot writes under crash injection 🔲
+## Spike 5: Atomic snapshot writes under crash injection ✅
 
 **Question.** Does the snapshot + event-log scheme survive `kill -9` at
 arbitrary points without corrupting state?
@@ -299,6 +299,34 @@ arbitrary points without corrupting state?
 
 **Disposition.** Harness becomes a permanent regression test. The
 persistence code itself is real v0.1 infrastructure.
+
+**Findings (post-spike).**
+
+- 1000/1000 cycles recovered into a structurally valid state in 106.6 s
+  (~0.1 s/cycle, including 80 random mutations, occasional `compact()`s,
+  and recovery). Zero parse failures, zero duplicate UUIDs, zero
+  non-finite timestamps.
+- `apply()` is **not** idempotent — `projectCreated` always appends, etc.
+  The on-disk events.jsonl line therefore needs a wall-clock timestamp
+  per record so recovery can skip events already folded into the current
+  snapshot (window between snapshot rename and events.jsonl truncation).
+  Implemented as a `StoredEvent { t: Date, event: Event }` wrapper in
+  `Spikes/CrashSpike/PersistenceStore.swift`.
+- `compact()` is sub-millisecond, so 1000 cycles barely land a kill
+  mid-compact: the `.bak` fallback and `.new`-promotion paths recovered
+  zero times in this run. The code is straightforward, but **add a
+  targeted unit test** before shipping v0.1 — pre-stage `state.json` (corrupt) +
+  `state.json.bak` (valid) + optional `state.json.new` (valid) and assert
+  recovery picks the right one.
+- Swift's `Darwin.fork()` is marked `@available(*, unavailable)`. Use
+  `@_silgen_name("fork")` to bind the C function. The runtime works fine
+  post-fork as long as the child uses `_exit()` (not `exit()`) so atexit
+  handlers don't re-flush parent-buffered stdio. Set `setbuf(stdout, nil)`
+  in the parent before forking too, belt-and-suspenders.
+- Per-event `fsync` overhead is the dominant cost in this spike. At the
+  rates a single-user dev tool produces events (a few/sec at peak) it's
+  fine; if profiling later shows otherwise, batch within a single
+  `dispatch()` mutation rather than across mutations.
 
 ---
 
