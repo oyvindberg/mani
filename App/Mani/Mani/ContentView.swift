@@ -33,11 +33,9 @@ struct ContentView: View {
         } detail: {
             if let path = selectedJobPath, let context = breadcrumbContext() {
                 VStack(spacing: 0) {
-                    // Project band — solid stripe in the project's color.
                     Rectangle()
                         .fill(SwiftUI.Color(hex: context.project.color))
                         .frame(height: 7)
-                    // Breadcrumb in project-tinted text.
                     HStack(spacing: 4) {
                         Text(context.project.name)
                             .foregroundStyle(SwiftUI.Color(hex: context.project.color))
@@ -53,8 +51,12 @@ struct ContentView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     Divider()
-                    TerminalPane(jobPath: path)
-                        .id(path)
+                    if context.job.primary.pid == nil {
+                        StoppedJobView(job: context.job, jobPath: path)
+                    } else {
+                        TerminalPane(jobPath: path)
+                            .id(path)
+                    }
                 }
             } else {
                 Text("Select a task in the sidebar")
@@ -275,9 +277,9 @@ private struct SidebarView: View {
                 .fill(SwiftUI.Color(hex: project.color))
                 .frame(width: 3)
             HStack(spacing: 6) {
-                Circle()
-                    .fill(job.statusColor)
-                    .frame(width: 6, height: 6)
+                Image(systemName: job.statusSymbol)
+                    .foregroundStyle(job.statusColor)
+                    .font(.system(size: 9))
                 Text(job.name)
                     .strikethrough(!job.enabled)
                 Spacer()
@@ -315,6 +317,56 @@ private extension Job {
         case .completed: return .blue
         case .failed: return .red
         }
+    }
+
+    // ADR-009: status indication uses both color AND a glyph so users with
+    // red/green colorblindness can distinguish without relying on hue alone.
+    var statusSymbol: String {
+        switch status {
+        case .running: return "circle.fill"
+        case .idle: return "pause.circle.fill"
+        case .stopped: return "stop.circle.fill"
+        case .completed: return "checkmark.circle.fill"
+        case .failed: return "xmark.circle.fill"
+        }
+    }
+}
+
+private struct StoppedJobView: View {
+    let job: Job
+    let jobPath: JobPath
+    @EnvironmentObject var store: Store
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: job.statusSymbol)
+                .font(.system(size: 36))
+                .foregroundStyle(job.statusColor)
+            Text("Process not running")
+                .font(.headline)
+            Text(displayCommand)
+                .font(.system(.caption, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: 600)
+            Button("Restart") {
+                let runner = store.runner
+                let spec = job.primary
+                let path = jobPath
+                Task {
+                    await runner.run(
+                        .spawn(at: path, index: 0, spec),
+                        dispatch: { action in await store.dispatch(action) }
+                    )
+                }
+            }
+            .keyboardShortcut("r", modifiers: [.command])
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var displayCommand: String {
+        ([job.primary.command] + job.primary.args).joined(separator: " ")
     }
 }
 
