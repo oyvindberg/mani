@@ -5,6 +5,7 @@ import Foundation
 @main
 struct ManiApp: App {
     @StateObject private var store: Store
+    @StateObject private var watcher: ClaudeWatcher
 
     init() {
         let appSupport = FileManager.default.urls(
@@ -18,6 +19,11 @@ struct ManiApp: App {
         let runner = EffectRunner(persistence: persistence)
         let store = Store(state: initialState, runner: runner)
         _store = StateObject(wrappedValue: store)
+
+        let claudeProjects = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects")
+            .path
+        _watcher = StateObject(wrappedValue: ClaudeWatcher(projectsDir: claudeProjects))
     }
 
     var body: some Scene {
@@ -25,14 +31,12 @@ struct ManiApp: App {
             ContentView()
                 .frame(minWidth: 800, minHeight: 500)
                 .environmentObject(store)
+                .environmentObject(watcher)
                 .task {
+                    watcher.start()
                     if store.state.projects.isEmpty {
                         await Self.seedDefaults(store: store)
                     } else {
-                        // Re-spawn the primary process for each task that was
-                        // running before the crash. Walking-skeleton version:
-                        // re-spawn /bin/zsh for every job whose primary command
-                        // is on a tiny safelist. Proper restart UX comes later.
                         await Self.respawnSafelisted(store: store)
                     }
                 }

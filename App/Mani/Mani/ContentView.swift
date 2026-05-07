@@ -155,25 +155,40 @@ struct ContentView: View {
 
 private struct SidebarView: View {
     @EnvironmentObject var store: Store
+    @EnvironmentObject var watcher: ClaudeWatcher
     @Binding var selectedJobId: UUID?
 
     var body: some View {
-        List(selection: $selectedJobId) {
-            ForEach(store.state.projects) { project in
-                Section {
-                    ForEach(project.worktrees) { worktree in
-                        worktreeHeader(worktree: worktree, projectColor: project.color)
-                        ForEach(worktree.jobs) { job in
-                            jobRow(job: job, projectColor: project.color)
-                                .tag(job.id)
+        VStack(spacing: 0) {
+            List(selection: $selectedJobId) {
+                ForEach(store.state.projects) { project in
+                    Section {
+                        ForEach(project.worktrees) { worktree in
+                            worktreeHeader(worktree: worktree, projectColor: project.color)
+                            ForEach(worktree.jobs) { job in
+                                jobRow(job: job, projectColor: project.color)
+                                    .tag(job.id)
+                            }
                         }
+                    } header: {
+                        Text(project.name)
                     }
-                } header: {
-                    Text(project.name)
                 }
             }
+            .listStyle(.sidebar)
+            Divider()
+            HStack(spacing: 6) {
+                Image(systemName: "eye")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text("\(watcher.sessions.count) Claude sessions tracked")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
         }
-        .listStyle(.sidebar)
     }
 
     private func worktreeHeader(worktree: Worktree, projectColor: String) -> some View {
