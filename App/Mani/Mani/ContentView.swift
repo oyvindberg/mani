@@ -165,14 +165,18 @@ private struct SidebarView: View {
                 ForEach(store.state.projects) { project in
                     Section {
                         ForEach(project.worktrees) { worktree in
-                            worktreeHeader(worktree: worktree, projectColor: project.color)
+                            worktreeHeader(project: project, worktree: worktree)
                             ForEach(worktree.jobs) { job in
-                                jobRow(job: job, projectColor: project.color)
+                                jobRow(project: project, worktree: worktree, job: job)
                                     .tag(job.id)
                             }
                         }
                     } header: {
                         Text(project.name)
+                            .opacity(project.enabled ? 1 : 0.5)
+                            .contextMenu {
+                                projectMenu(project: project)
+                            }
                     }
                 }
             }
@@ -184,6 +188,52 @@ private struct SidebarView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
+        }
+    }
+
+    @ViewBuilder
+    private func projectMenu(project: Project) -> some View {
+        Button(project.enabled ? "Disable project (stop all tasks)" : "Enable project") {
+            Task {
+                await store.dispatch(.setProjectEnabled(id: project.id, enabled: !project.enabled))
+            }
+        }
+        Divider()
+        Button("Delete project", role: .destructive) {
+            Task { await store.dispatch(.deleteProject(id: project.id)) }
+        }
+    }
+
+    @ViewBuilder
+    private func worktreeMenu(project: Project, worktree: Worktree) -> some View {
+        let path = WorktreePath(project: project.id, worktree: worktree.id)
+        Button(worktree.enabled ? "Disable worktree (stop tasks)" : "Enable worktree") {
+            Task {
+                await store.dispatch(.setWorktreeEnabled(at: path, enabled: !worktree.enabled))
+            }
+        }
+        Divider()
+        Button("Delete worktree", role: .destructive) {
+            Task { await store.dispatch(.deleteWorktree(at: path)) }
+        }
+    }
+
+    @ViewBuilder
+    private func jobMenu(project: Project, worktree: Worktree, job: Job) -> some View {
+        let path = JobPath(project: project.id, worktree: worktree.id, job: job.id)
+        Button(job.enabled ? "Stop task" : "Re-enable") {
+            Task {
+                await store.dispatch(.setJobEnabled(at: path, enabled: !job.enabled))
+            }
+        }
+        Button("Mark complete") {
+            Task { await store.dispatch(.completeJob(at: path)) }
+        }
+        Divider()
+        Button("Delete task (also stops it)", role: .destructive) {
+            Task {
+                await store.dispatch(.setJobEnabled(at: path, enabled: false))
+            }
         }
     }
 
@@ -199,10 +249,10 @@ private struct SidebarView: View {
         }
     }
 
-    private func worktreeHeader(worktree: Worktree, projectColor: String) -> some View {
+    private func worktreeHeader(project: Project, worktree: Worktree) -> some View {
         HStack(spacing: 0) {
             Rectangle()
-                .fill(SwiftUI.Color(hex: projectColor))
+                .fill(SwiftUI.Color(hex: project.color))
                 .frame(width: 3)
             Text(worktree.name)
                 .font(.caption)
@@ -210,19 +260,22 @@ private struct SidebarView: View {
                 .textCase(.uppercase)
                 .padding(.leading, 6)
                 .padding(.top, 4)
+                .opacity(worktree.enabled ? 1 : 0.5)
         }
+        .contextMenu { worktreeMenu(project: project, worktree: worktree) }
     }
 
-    private func jobRow(job: Job, projectColor: String) -> some View {
+    private func jobRow(project: Project, worktree: Worktree, job: Job) -> some View {
         HStack(spacing: 0) {
             Rectangle()
-                .fill(SwiftUI.Color(hex: projectColor))
+                .fill(SwiftUI.Color(hex: project.color))
                 .frame(width: 3)
             HStack(spacing: 6) {
                 Circle()
                     .fill(job.statusColor)
                     .frame(width: 6, height: 6)
                 Text(job.name)
+                    .strikethrough(!job.enabled)
                 Spacer()
                 if job.unread > 0 {
                     Text("\(job.unread)")
@@ -233,8 +286,10 @@ private struct SidebarView: View {
                 }
             }
             .padding(.leading, 8)
+            .opacity(job.enabled ? 1 : 0.5)
         }
         .contentShape(Rectangle())
+        .contextMenu { jobMenu(project: project, worktree: worktree, job: job) }
     }
 }
 
@@ -288,10 +343,11 @@ private struct TerminalPane: NSViewRepresentable {
 
     final class Coordinator: NSObject, TerminalViewDelegate {
         private weak var pty: ManagedPTY?
+        private var outputSub: ManagedPTY.OutputSubscription?
 
         func attach(view: TerminalView, pty: ManagedPTY) {
             self.pty = pty
-            pty.onOutput = { [weak view] chunk in
+            outputSub = pty.addOutputHandler { [weak view] chunk in
                 let bytes = Array(chunk)
                 DispatchQueue.main.async {
                     view?.feed(byteArray: bytes[...])

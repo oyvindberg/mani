@@ -147,15 +147,33 @@ struct ManiApp: App {
         for project in store.state.projects {
             for worktree in project.worktrees {
                 let wtPath = worktree.path.resolvingSymlinksInPath().path
-                if cwdURL.path == wtPath || cwdURL.path.hasPrefix(wtPath + "/") {
-                    let path = WorktreePath(project: project.id, worktree: worktree.id)
+                guard cwdURL.path == wtPath || cwdURL.path.hasPrefix(wtPath + "/") else {
+                    continue
+                }
+                let path = WorktreePath(project: project.id, worktree: worktree.id)
+
+                // Prefer linking into an existing claude(nil) job in this
+                // worktree (created by NewTaskSheet's "Claude" option) — the
+                // user spawned this session via Mani and wants the session
+                // attached to the existing slot, not a duplicate.
+                if let unlinked = worktree.jobs.first(where: { job in
+                    if case .claude(let sid) = job.kind, sid == nil { return true }
+                    return false
+                }) {
+                    let jobPath = JobPath(
+                        project: project.id, worktree: worktree.id, job: unlinked.id
+                    )
+                    await store.dispatch(.linkClaudeSession(
+                        at: jobPath, sessionId: detected.sessionId
+                    ))
+                } else {
                     await store.dispatch(.discoverClaudeSession(
                         at: path,
                         sessionId: detected.sessionId,
                         cwd: URL(fileURLWithPath: cwd)
                     ))
-                    return
                 }
+                return
             }
         }
     }

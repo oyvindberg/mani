@@ -135,13 +135,37 @@ struct NewTaskSheet: View {
     let worktreePath: WorktreePath
     let cwd: URL
     @Binding var isPresented: Bool
+
+    enum Kind: String, CaseIterable, Identifiable {
+        case shell = "Shell"
+        case claude = "Claude"
+        var id: String { rawValue }
+    }
+
     @State private var name: String = ""
+    @State private var kind: Kind = .shell
     @State private var command: String = "/bin/zsh"
     @State private var argsString: String = "-l"
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             Text("New task").font(.headline)
+            Picker("Kind", selection: $kind) {
+                ForEach(Kind.allCases) { k in Text(k.rawValue).tag(k) }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: kind) { _, new in
+                switch new {
+                case .shell:
+                    command = "/bin/zsh"
+                    argsString = "-l"
+                    if name.isEmpty || name == "claude" { name = "shell" }
+                case .claude:
+                    command = "/usr/bin/env"
+                    argsString = "claude"
+                    if name.isEmpty || name == "shell" { name = "claude" }
+                }
+            }
             Form {
                 TextField("Name", text: $name)
                 TextField("Command", text: $command)
@@ -161,11 +185,15 @@ struct NewTaskSheet: View {
                         cwd: cwd,
                         pid: nil
                     )
+                    let jobKind: JobKind = (kind == .claude)
+                        ? .claude(sessionId: nil)
+                        : .shell
+                    let jobName = name.isEmpty ? kind.rawValue.lowercased() : name
                     Task {
                         await store.dispatch(.createJob(
                             at: worktreePath,
-                            name: name.isEmpty ? "task" : name,
-                            kind: .shell,
+                            name: jobName,
+                            kind: jobKind,
                             primary: spec,
                             auxiliary: []
                         ))

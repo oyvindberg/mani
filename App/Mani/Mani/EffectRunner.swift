@@ -10,9 +10,15 @@ import ManiCore
 actor EffectRunner {
     private let persistence: PersistenceStore
     private var ptys: [JobPath: ManagedPTY] = [:]
+    private var scrollbacks: [JobPath: ScrollbackWriter] = [:]
+    private var scrollbackSubscriptions: [JobPath: ManagedPTY.OutputSubscription] = [:]
 
     init(persistence: PersistenceStore) {
         self.persistence = persistence
+    }
+
+    private var scrollbackRoot: URL {
+        persistence.rootDir.appendingPathComponent("tasks")
     }
 
     func pty(for path: JobPath) -> ManagedPTY? {
@@ -48,6 +54,17 @@ actor EffectRunner {
                 pty.onExit = { code in
                     Task { await dispatch(.processExited(at: path, index: index, code: code)) }
                 }
+
+                // Tier 1 scrollback: tee the same byte stream the renderer uses
+                // into ~/Library/Application Support/Mani/tasks/<job-id>/scrollback.log.
+                let scrollbackPath = scrollbackRoot
+                    .appendingPathComponent(path.job.uuidString)
+                    .appendingPathComponent("scrollback.log").path
+                let writer = ScrollbackWriter(path: scrollbackPath, capBytes: 32 * 1024 * 1024)
+                let sub = pty.addOutputHandler { data in writer.append(data) }
+                scrollbacks[path] = writer
+                scrollbackSubscriptions[path] = sub
+
                 await dispatch(.processStarted(at: path, index: index, pid: pty.pid))
             } catch {
                 await dispatch(.processExited(at: path, index: index, code: -1))

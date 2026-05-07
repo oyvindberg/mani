@@ -21,11 +21,31 @@ final class ManagedPTY {
     private let readSource: DispatchSourceRead
     private let exitSource: DispatchSourceProcess
 
-    // Callbacks fire on a background dispatch queue. Marshal to MainActor in the
-    // renderer/store layer if needed. Nil-callback is the default; producers
-    // pass closures via the property after init.
-    var onOutput: ((Data) -> Void)?
     var onExit: ((Int32) -> Void)?
+
+    // Output is multi-subscriber so both the renderer and the scrollback writer
+    // can tap the same byte stream without stepping on each other. Subscribers
+    // hold the returned token; on token deinit the handler is removed.
+    final class OutputSubscription {
+        private let cancel: () -> Void
+        init(_ cancel: @escaping () -> Void) { self.cancel = cancel }
+        deinit { cancel() }
+    }
+    private let outputHandlersLock = NSLock()
+    private var outputHandlers: [UUID: (Data) -> Void] = [:]
+
+    func addOutputHandler(_ handler: @escaping (Data) -> Void) -> OutputSubscription {
+        let id = UUID()
+        outputHandlersLock.lock()
+        outputHandlers[id] = handler
+        outputHandlersLock.unlock()
+        return OutputSubscription { [weak self] in
+            guard let self else { return }
+            self.outputHandlersLock.lock()
+            self.outputHandlers.removeValue(forKey: id)
+            self.outputHandlersLock.unlock()
+        }
+    }
 
     init(executable: String, args: [String], env: [String: String], rawMode: Bool) throws {
         let argvCStrs: [UnsafeMutablePointer<CChar>?] =
@@ -71,7 +91,10 @@ final class ManagedPTY {
                 let n = read(self.masterFD, &buf, buf.count)
                 if n > 0 {
                     let chunk = Data(bytes: buf, count: Int(n))
-                    self.onOutput?(chunk)
+                    self.outputHandlersLock.lock()
+                    let handlers = Array(self.outputHandlers.values)
+                    self.outputHandlersLock.unlock()
+                    for h in handlers { h(chunk) }
                 } else {
                     return
                 }
