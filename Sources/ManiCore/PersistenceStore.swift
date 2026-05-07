@@ -1,12 +1,13 @@
 import Foundation
 import Darwin
-import ManiCore
 
 // Tier 2 (events) + Tier 3 (snapshot) of docs/persistence.md.
-// Tier 1 (scrollback) is per-task PTY output and lives elsewhere.
+// Tier 1 (scrollback) is per-task PTY output and lives in the app target.
 //
-// Carries forward into the app target as real v0.1 infrastructure (per
-// docs/spikes.md spike 5 disposition).
+// Lives in ManiCore (not the app target) because it's pure Foundation file
+// I/O — no AppKit, no FSEvents, no process spawning — and putting it here
+// makes it directly testable from ManiCoreTests without a separate XCTest
+// target on the Xcode side.
 
 public enum PersistenceError: Error {
     case openFailed(path: String, errno: Int32)

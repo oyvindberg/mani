@@ -65,6 +65,7 @@ struct ManiApp: App {
                     } else {
                         await Self.respawnSafelisted(store: store)
                     }
+                    Self.startSnapshotTimer(store: store)
                 }
         }
     }
@@ -94,6 +95,22 @@ struct ManiApp: App {
             return
         }
         HookRegistration.register(shimPath: shimPath)
+    }
+
+    // Periodic snapshot per Tier 3 of docs/persistence.md. Cancellation when
+    // the WindowGroup task is torn down (app quit) is automatic via
+    // structured concurrency. Interval is read from settings on each tick so
+    // changing it in the Settings pane takes effect on the next snapshot.
+    private static func startSnapshotTimer(store: Store) {
+        Task { @MainActor [weak store] in
+            while !Task.isCancelled {
+                let interval = store?.state.settings.snapshotIntervalSeconds ?? 30
+                try? await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
+                guard let store else { return }
+                let snapshot = store.state
+                await store.runner.compact(snapshot)
+            }
+        }
     }
 
     private static func reconcileAfterCrash(_ state: AppState) -> AppState {

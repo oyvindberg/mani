@@ -71,18 +71,30 @@ final class ScrollbackWriter {
 
     private func truncateToCap() {
         guard let fh = FileHandle(forReadingAtPath: path) else { return }
-        defer { try? fh.close() }
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
               let size = (attrs[.size] as? NSNumber)?.intValue,
-              size > cap else { return }
+              size > cap else { try? fh.close(); return }
         do {
             try fh.seek(toOffset: UInt64(size - cap))
             let tail = (try? fh.readToEnd()) ?? Data()
-            close(fd)
-            try tail.write(to: URL(fileURLWithPath: path))
-            fd = open(path, O_WRONLY | O_APPEND, 0o644)
+            try fh.close()
+            // Atomic-rename via .new + rename so a crash mid-truncate doesn't
+            // leave a half-written scrollback. fsync the .new before rename so
+            // the data is durable when the rename takes effect.
+            let tmpPath = path + ".compact"
+            let tmpFD = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+            if tmpFD >= 0 {
+                _ = tail.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Int in
+                    Darwin.write(tmpFD, raw.baseAddress, raw.count)
+                }
+                _ = fsync(tmpFD)
+                close(tmpFD)
+                close(fd)
+                _ = rename(tmpPath, path)
+                fd = open(path, O_WRONLY | O_APPEND, 0o644)
+            }
         } catch {
-            // Best-effort; leave the oversized file alone if anything fails.
+            try? fh.close()
         }
     }
 
