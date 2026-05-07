@@ -127,7 +127,7 @@ infrastructure. Move it to the app target when you build it.
 
 ---
 
-## Spike 3: Hook reachability 🔲
+## Spike 3: Hook reachability ✅
 
 **Question.** Can we register Claude Code hooks that reliably reach a Mac
 app via Unix domain socket within ~200 ms?
@@ -166,6 +166,33 @@ app via Unix domain socket within ~200 ms?
 
 **Disposition.** The shim and listener code carries forward; both move
 into the v0.1 codebase under the app target.
+
+**Findings (post-spike).**
+
+- All three target hooks (`SessionStart`, `Stop`, `SessionEnd`) reached the
+  listener with 3–6 ms shim→listener latency — well under the 200 ms
+  budget. Tested against claude 2.1.132.
+- Observed payload fields:
+  - **SessionStart**: `session_id`, `transcript_path`, `cwd`,
+    `hook_event_name`, `source` (e.g. `"startup"`), `model`.
+  - **Stop**: `session_id`, `transcript_path`, `cwd`, `permission_mode`,
+    `hook_event_name`, `stop_hook_active`, `last_assistant_message`.
+  - **SessionEnd**: `session_id`, `transcript_path`, `cwd`,
+    `hook_event_name`, `reason` (e.g. `"prompt_input_exit"`).
+  - This is informative for spike 4 (JSONL parser) — `transcript_path`
+    points directly at the session JSONL, so the hook tells us where to
+    look without scanning `~/.claude/projects`.
+- `MANI_TASK_ID` env var is inherited by Claude Code's hook subprocesses,
+  so we can correlate hook envelopes to a specific task without parsing
+  cwd/session.
+- The shim must `exit 0` even when the listener socket is absent — verified
+  by killing the listener mid-claude. Claude doesn't surface hook errors
+  loudly; a non-zero exit could still cause UX issues, so always exit 0.
+- macOS stdout buffering bites: if the listener's `print()` output is
+  redirected to a file, it's fully buffered. Use `setbuf(stdout, nil)` so
+  envelopes appear live.
+- Notification hook wired but not exercised — needs a real "user input
+  required" event (e.g., a permission prompt) to fire.
 
 ---
 

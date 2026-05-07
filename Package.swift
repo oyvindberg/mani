@@ -11,5 +11,7 @@ let package = Package(
         .target(name: "ManiCore"),
         .testTarget(name: "ManiCoreTests", dependencies: ["ManiCore"]),
         .executableTarget(name: "PTYSpike", path: "Spikes/PTYSpike"),
+        .executableTarget(name: "HookShim", path: "Spikes/HookSpike/HookShim"),
+        .executableTarget(name: "HookListener", path: "Spikes/HookSpike/HookListener"),
     ]
 )
