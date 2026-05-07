@@ -92,10 +92,13 @@ struct ContentView: View {
     }
 
     private func currentWorktreeCwd() -> URL? {
+        currentWorktree()?.path
+    }
+
+    private func currentWorktree() -> Worktree? {
         guard let path = currentWorktreePath() else { return nil }
         return store.state.projects.first(where: { $0.id == path.project })?
-            .worktrees.first(where: { $0.id == path.worktree })?
-            .path
+            .worktrees.first(where: { $0.id == path.worktree })
     }
 
     private var selectedJobPath: JobPath? {

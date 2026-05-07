@@ -350,21 +350,29 @@ each user repo (violates ADR-006 in spirit). Global is single-source.
 
 ---
 
-## ADR-014 (provisional) — Tab strip shows only the current worktree's tasks
+## ADR-014 — No tab strip; the sidebar is the only navigation
 
-**Status.** Open. Default behavior chosen, alternative on the table.
+**Status.** Accepted (supersedes the earlier provisional "tabs scoped to
+worktree" proposal).
 
-**Context.** Tabs in the right pane could either (a) show only the current
-worktree's tasks and reset on worktree switch, or (b) persist as
-"recently used" tabs across worktrees.
+**Context.** The original v0.1 plan assumed a per-worktree tab strip
+above the terminal viewport (showing the worktree's tasks as tabs).
+After implementing it the user pushed back: with the sidebar already
+showing the full Project → Worktree → Task tree, the tab strip is
+duplicate navigation.
 
-**Decision (proposed).** (a) only-current-worktree, for v0.1.
+**Decision.** No tab strip. The sidebar list is the single source of
+navigation. Selecting a job in the sidebar swaps the terminal pane in
+the detail column.
 
-**Rationale.** Cleaner mental model: tabs are scoped to the worktree
-context. (b) introduces "where did this tab come from?" confusion.
+**Rationale.**
+- One nav surface, one selection model. Easier to reason about.
+- The sidebar already groups jobs under their worktree, so worktree
+  context is visually present.
+- Skipping tabs cuts UI work and removes a small divergence between
+  "sidebar selection" and "tab selection" that we'd have to keep in sync.
 
-**Open questions.**
-- Does the user want a global "recents" list elsewhere (a Cmd-K-style
-  switcher) for v0.2?
-
-**Action.** Discuss before implementing alternative.
+**Implications.**
+- Don't add tabs unless the user revisits this decision.
+- Cmd-Shift-]/[ for "next/prev task" (if added) cycles through the
+  flattened task list shown in the sidebar, not a tab strip.
