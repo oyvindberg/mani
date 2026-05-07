@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		8BC0DE0000000000B11D0001 /* ManiCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8BC0DE0000000000C0DE0001 /* ManiCore */; };
 		8BC0DE0000000000B11D0002 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 8BC0DE0000000000C0DE0002 /* SwiftTerm */; };
+		8BC0DE0000000000B11D0003 /* GhosttyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = 8BC0DE0000000000C0DE0003 /* GhosttyTerminal */; };
+		8BC0DE0000000000B11D0004 /* GhosttyTheme in Frameworks */ = {isa = PBXBuildFile; productRef = 8BC0DE0000000000C0DE0004 /* GhosttyTheme */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -59,6 +61,8 @@
 			files = (
 				8BC0DE0000000000B11D0001 /* ManiCore in Frameworks */,
 				8BC0DE0000000000B11D0002 /* SwiftTerm in Frameworks */,
+				8BC0DE0000000000B11D0003 /* GhosttyTerminal in Frameworks */,
+				8BC0DE0000000000B11D0004 /* GhosttyTheme in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -121,6 +125,8 @@
 			packageProductDependencies = (
 				8BC0DE0000000000C0DE0001 /* ManiCore */,
 				8BC0DE0000000000C0DE0002 /* SwiftTerm */,
+				8BC0DE0000000000C0DE0003 /* GhosttyTerminal */,
+				8BC0DE0000000000C0DE0004 /* GhosttyTheme */,
 			);
 			productName = Mani;
 			productReference = 8B2A5E902FAC0B3100BCFF58 /* Mani.app */;
@@ -207,6 +213,7 @@
 			packageReferences = (
 				8B2A5EBE2FAC0C7B00BCFF58 /* XCLocalSwiftPackageReference "../../../mani" */,
 				8B2A5EBF2FAC0CE200BCFF58 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+				8BC0DE0000000000C0DE0010 /* XCRemoteSwiftPackageReference "libghostty-spm" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 8B2A5E912FAC0B3100BCFF58 /* Products */;
@@ -571,6 +578,14 @@
 				minimumVersion = 1.5.0;
 			};
 		};
+		8BC0DE0000000000C0DE0010 /* XCRemoteSwiftPackageReference "libghostty-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Lakr233/libghostty-spm";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.0.1777879537;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -583,6 +598,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 8B2A5EBF2FAC0CE200BCFF58 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
 			productName = SwiftTerm;
+		};
+		8BC0DE0000000000C0DE0003 /* GhosttyTerminal */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8BC0DE0000000000C0DE0010 /* XCRemoteSwiftPackageReference "libghostty-spm" */;
+			productName = GhosttyTerminal;
+		};
+		8BC0DE0000000000C0DE0004 /* GhosttyTheme */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8BC0DE0000000000C0DE0010 /* XCRemoteSwiftPackageReference "libghostty-spm" */;
+			productName = GhosttyTheme;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

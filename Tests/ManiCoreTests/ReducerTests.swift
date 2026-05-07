@@ -459,7 +459,7 @@ private func stateWith(projects: [Project]) -> AppState {
     AppState(
         schemaVersion: 1,
         projects: projects,
-        settings: Settings(scrollbackCapBytes: 1024, snapshotIntervalSeconds: 30)
+        settings: Settings(scrollbackCapBytes: 1024, snapshotIntervalSeconds: 30, terminalTheme: "Dracula")
     )
 }
 

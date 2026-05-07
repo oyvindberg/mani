@@ -517,7 +517,11 @@ private struct TerminalPane: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
-        let renderer: TerminalRenderer = SwiftTermRenderer()
+        // libghostty-backed renderer (per ADR-002 v0.2 swap). To fall back to
+        // SwiftTerm during a regression hunt, replace with `SwiftTermRenderer()`.
+        let renderer: TerminalRenderer = LibGhosttyRenderer(
+            themeName: store.state.settings.terminalTheme
+        )
         context.coordinator.attach(renderer: renderer, store: store, jobPath: jobPath)
         // Steal first-responder so the user can type immediately on
         // navigate-here. Without this, keystrokes go to the navigation split
