@@ -44,6 +44,14 @@ actor EffectRunner {
                 var env = ProcessInfo.processInfo.environment
                 for (k, v) in spec.env { env[k] = v }
                 env["TERM"] = "xterm-256color"
+                // App-launched processes inherit a stripped PATH from launchd
+                // that doesn't include user-installed binary directories, so
+                // `env claude` (and any other tool not in /usr/bin) fails with
+                // ENOENT. Prepend the conventional user bin paths.
+                let homeBin = "\(NSHomeDirectory())/.local/bin"
+                let extraPath = "\(homeBin):/opt/homebrew/bin:/usr/local/bin"
+                let existing = env["PATH"] ?? "/usr/bin:/bin"
+                env["PATH"] = "\(extraPath):\(existing)"
                 let pty = try ManagedPTY(
                     executable: spec.command,
                     args: spec.args,

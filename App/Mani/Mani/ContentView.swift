@@ -51,7 +51,9 @@ struct ContentView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     Divider()
-                    if context.job.primary.pid == nil {
+                    if isExternalClaudeJob(context.job) {
+                        ExternalClaudeView(job: context.job)
+                    } else if context.job.primary.pid == nil {
                         StoppedJobView(job: context.job, jobPath: path)
                     } else {
                         TerminalPane(jobPath: path)
@@ -127,6 +129,16 @@ struct ContentView: View {
         guard let path = currentWorktreePath() else { return nil }
         return store.state.projects.first(where: { $0.id == path.project })?
             .worktrees.first(where: { $0.id == path.worktree })
+    }
+
+    // External = job created via discoverClaudeSession, i.e. claude is running
+    // outside Mani. We can observe its JSONL but can't restart it.
+    private func isExternalClaudeJob(_ job: Job) -> Bool {
+        if case let .claude(sid) = job.kind, sid != nil,
+           job.primary.command == "(external claude)" {
+            return true
+        }
+        return false
     }
 
     private func breadcrumbContext() -> (project: Project, worktree: Worktree, job: Job)? {
@@ -332,6 +344,48 @@ private extension Job {
     }
 }
 
+private struct ExternalClaudeView: View {
+    let job: Job
+    @EnvironmentObject var watcher: ClaudeWatcher
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "arrow.up.right.square")
+                .font(.system(size: 36))
+                .foregroundStyle(.secondary)
+            Text("External Claude session")
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 4) {
+                if case let .claude(sid) = job.kind, let sid {
+                    labelled("Session", sid)
+                    if let detected = watcher.sessions[sid] {
+                        if let cwd = detected.cwd { labelled("cwd", cwd) }
+                        labelled("messages", "\(detected.messageCount)")
+                        labelled("transcript", detected.path)
+                    }
+                }
+            }
+            .font(.system(.caption, design: .monospaced))
+            .frame(maxWidth: 540, alignment: .leading)
+            Text("This claude was started outside Mani. Mani is watching its\ntranscript on disk; it can't restart or attach a renderer.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func labelled(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(label)
+                .foregroundStyle(.secondary)
+                .frame(width: 80, alignment: .trailing)
+            Text(value)
+                .textSelection(.enabled)
+        }
+    }
+}
+
 private struct StoppedJobView: View {
     let job: Job
     let jobPath: JobPath
@@ -379,6 +433,12 @@ private struct TerminalPane: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let renderer: TerminalRenderer = SwiftTermRenderer()
         context.coordinator.attach(renderer: renderer, store: store, jobPath: jobPath)
+        // Steal first-responder so the user can type immediately on
+        // navigate-here. Without this, keystrokes go to the navigation split
+        // view (which ignores them) until the user clicks the terminal.
+        DispatchQueue.main.async { [weak view = renderer.view] in
+            view?.window?.makeFirstResponder(view)
+        }
         return renderer.view
     }
 

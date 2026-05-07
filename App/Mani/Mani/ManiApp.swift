@@ -60,9 +60,10 @@ struct ManiApp: App {
                     }
                     watcher.start()
                     hookListener.start()
-                    if store.state.projects.isEmpty {
-                        await Self.seedDefaults(store: store)
-                    } else {
+                    // No auto-seed: first launch shows an empty-state CTA.
+                    // Auto-seeding a worktree at $HOME made every Claude
+                    // session in the user's home tree get auto-discovered.
+                    if !store.state.projects.isEmpty {
                         await Self.respawnSafelisted(store: store)
                     }
                     Self.startSnapshotTimer(store: store)
@@ -173,9 +174,17 @@ struct ManiApp: App {
     ) async {
         guard let cwd = detected.cwd else { return }
         let cwdURL = URL(fileURLWithPath: cwd).resolvingSymlinksInPath()
+        // Skip auto-discovery when the matched worktree's path is too broad
+        // (the user's $HOME, "/", or similar). Any claude run anywhere on
+        // the machine would otherwise produce a discovered job — that's the
+        // bug where dozens of "external claude" rows appear in the sidebar.
+        let homePath = FileManager.default.homeDirectoryForCurrentUser
+            .resolvingSymlinksInPath().path
+        let tooBroad: Set<String> = [homePath, "/"]
         for project in store.state.projects {
             for worktree in project.worktrees {
                 let wtPath = worktree.path.resolvingSymlinksInPath().path
+                if tooBroad.contains(wtPath) { continue }
                 guard cwdURL.path == wtPath || cwdURL.path.hasPrefix(wtPath + "/") else {
                     continue
                 }
