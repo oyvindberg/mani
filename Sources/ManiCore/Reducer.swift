@@ -171,6 +171,16 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         effects.append(contentsOf: terminationEffects(forJob: job))
         return ([event], effects)
 
+    case let .bumpUnread(at, by):
+        guard findJob(state, at) != nil, by > 0 else { return ([], []) }
+        let event = Event.jobUnreadBumped(at: at, by: by)
+        return ([event], [.persistEvents([event])])
+
+    case let .markRead(at):
+        guard let job = findJob(state, at), job.unread > 0 else { return ([], []) }
+        let event = Event.jobRead(at: at)
+        return ([event], [.persistEvents([event])])
+
     case let .processStarted(at, index, pid):
         guard findJob(state, at) != nil else { return ([], []) }
         let event = Event.processStarted(at: at, index: index, pid: pid)
@@ -239,6 +249,12 @@ public func apply(_ state: inout AppState, _ event: Event) {
             $0.status = .completed
             $0.completedAt = completedAt
         }
+
+    case let .jobUnreadBumped(at, by):
+        mutateJob(&state, at) { $0.unread += by }
+
+    case let .jobRead(at):
+        mutateJob(&state, at) { $0.unread = 0 }
 
     case let .claudeSessionLinked(at, sessionId):
         mutateJob(&state, at) {

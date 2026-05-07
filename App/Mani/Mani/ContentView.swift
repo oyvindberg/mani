@@ -72,6 +72,10 @@ struct ContentView: View {
                 selectedJobId = firstJobId()
             }
         }
+        .onChange(of: selectedJobId) { _, newId in
+            guard let newId, let path = lookupPath(forJobId: newId) else { return }
+            Task { await store.dispatch(.markRead(at: path)) }
+        }
         .sheet(isPresented: $showingNewProject) {
             NewProjectSheet(store: store, isPresented: $showingNewProject)
         }

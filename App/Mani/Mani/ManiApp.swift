@@ -46,6 +46,14 @@ struct ManiApp: App {
                             await Self.handleDiscoveredSession(detected, store: store)
                         }
                     }
+                    watcher.onMessages = { [weak store] detected, delta in
+                        guard let store else { return }
+                        Task { @MainActor in
+                            await Self.handleSessionMessages(
+                                detected, delta: delta, store: store
+                            )
+                        }
+                    }
                     watcher.start()
                     hookListener.start()
                     if store.state.projects.isEmpty {
@@ -174,6 +182,29 @@ struct ManiApp: App {
                     ))
                 }
                 return
+            }
+        }
+    }
+
+    // Bump the unread badge on the job linked to this session whenever the
+    // watcher sees new message lines on disk. ContentView clears it via
+    // markRead when the user selects the job.
+    private static func handleSessionMessages(
+        _ detected: ClaudeWatcher.DetectedSession,
+        delta: Int,
+        store: Store
+    ) async {
+        for project in store.state.projects {
+            for worktree in project.worktrees {
+                for job in worktree.jobs {
+                    if case let .claude(sid) = job.kind, sid == detected.sessionId {
+                        let path = JobPath(
+                            project: project.id, worktree: worktree.id, job: job.id
+                        )
+                        await store.dispatch(.bumpUnread(at: path, by: delta))
+                        return
+                    }
+                }
             }
         }
     }

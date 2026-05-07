@@ -25,6 +25,9 @@ final class ClaudeWatcher: ObservableObject {
 
     @Published private(set) var sessions: [String: DetectedSession] = [:]
     var onNewSession: ((DetectedSession) -> Void)?
+    // Fires when an existing session's message count goes up. The Int is the
+    // delta (always > 0). Used to bump per-job unread badges.
+    var onMessages: ((DetectedSession, Int) -> Void)?
 
     private struct FileTail {
         var size: UInt64
@@ -162,9 +165,13 @@ final class ClaudeWatcher: ObservableObject {
             )
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                let isNew = self.sessions[sid] == nil
+                let prev = self.sessions[sid]
                 self.sessions[sid] = detected
-                if isNew { self.onNewSession?(detected) }
+                if prev == nil {
+                    self.onNewSession?(detected)
+                } else if let prev, detected.messageCount > prev.messageCount {
+                    self.onMessages?(detected, detected.messageCount - prev.messageCount)
+                }
             }
         }
     }

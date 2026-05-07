@@ -17,6 +17,8 @@ public enum Action {
     // Externally-running Claude session discovered via the FSEvents watcher.
     // Like createJob, but no spawn effect (we don't own the process).
     case discoverClaudeSession(at: WorktreePath, sessionId: String, cwd: URL)
+    case bumpUnread(at: JobPath, by: Int)
+    case markRead(at: JobPath)
     case completeJob(at: JobPath)
 
     case processStarted(at: JobPath, index: Int, pid: Int32)
