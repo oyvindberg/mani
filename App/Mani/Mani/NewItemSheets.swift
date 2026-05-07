@@ -142,10 +142,17 @@ struct NewTaskSheet: View {
         var id: String { rawValue }
     }
 
+    struct AuxRow: Identifiable {
+        let id = UUID()
+        var command: String
+        var argsString: String
+    }
+
     @State private var name: String = ""
     @State private var kind: Kind = .shell
     @State private var command: String = "/bin/zsh"
     @State private var argsString: String = "-l"
+    @State private var aux: [AuxRow] = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -171,6 +178,32 @@ struct NewTaskSheet: View {
                 TextField("Command", text: $command)
                 TextField("Args (space-separated)", text: $argsString)
             }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Auxiliary processes")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("+ Add") {
+                        aux.append(AuxRow(command: "", argsString: ""))
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                }
+                ForEach($aux) { $row in
+                    HStack {
+                        TextField("command", text: $row.command)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("args", text: $row.argsString)
+                            .textFieldStyle(.roundedBorder)
+                        Button {
+                            aux.removeAll { $0.id == row.id }
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
             HStack {
                 Spacer()
                 Button("Cancel") { isPresented = false }.keyboardShortcut(.cancelAction)
@@ -179,12 +212,18 @@ struct NewTaskSheet: View {
                         .split(whereSeparator: { $0.isWhitespace })
                         .map(String.init)
                     let spec = ProcessSpec(
-                        command: command,
-                        args: args,
-                        env: [:],
-                        cwd: cwd,
-                        pid: nil
+                        command: command, args: args, env: [:], cwd: cwd, pid: nil
                     )
+                    let auxSpecs: [ProcessSpec] = aux.compactMap { row in
+                        guard !row.command.isEmpty else { return nil }
+                        let auxArgs = row.argsString
+                            .split(whereSeparator: { $0.isWhitespace })
+                            .map(String.init)
+                        return ProcessSpec(
+                            command: row.command, args: auxArgs,
+                            env: [:], cwd: cwd, pid: nil
+                        )
+                    }
                     let jobKind: JobKind = (kind == .claude)
                         ? .claude(sessionId: nil)
                         : .shell
@@ -195,7 +234,7 @@ struct NewTaskSheet: View {
                             name: jobName,
                             kind: jobKind,
                             primary: spec,
-                            auxiliary: []
+                            auxiliary: auxSpecs
                         ))
                         isPresented = false
                     }
@@ -205,6 +244,6 @@ struct NewTaskSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 380)
+        .frame(width: 460)
     }
 }

@@ -21,4 +21,6 @@ public enum Event: Codable, Equatable {
 
     case processStarted(at: JobPath, index: Int, pid: Int32)
     case processExited(at: JobPath, index: Int, code: Int32)
+
+    case settingsUpdated(Settings)
 }

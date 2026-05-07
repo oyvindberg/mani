@@ -197,6 +197,10 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             ))
         }
         return ([event], effects)
+
+    case let .updateSettings(settings):
+        let event = Event.settingsUpdated(settings)
+        return ([event], [.persistEvents([event])])
     }
 }
 
@@ -280,6 +284,9 @@ public func apply(_ state: inout AppState, _ event: Event) {
                 job.auxiliary[index - 1].pid = nil
             }
         }
+
+    case let .settingsUpdated(settings):
+        state.settings = settings
     }
 }
 

@@ -23,4 +23,6 @@ public enum Action {
 
     case processStarted(at: JobPath, index: Int, pid: Int32)
     case processExited(at: JobPath, index: Int, code: Int32)
+
+    case updateSettings(Settings)
 }

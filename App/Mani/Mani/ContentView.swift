@@ -1,5 +1,5 @@
 import SwiftUI
-import SwiftTerm
+import AppKit
 import Foundation
 import ManiCore
 
@@ -324,55 +324,44 @@ private struct TerminalPane: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> TerminalView {
-        let view = TerminalView(frame: .zero)
-        view.terminalDelegate = context.coordinator
-        let runner = store.runner
-        let path = jobPath
-        let coord = context.coordinator
-        Task {
-            for _ in 0..<200 {
-                if let pty = await runner.pty(for: path) {
-                    coord.attach(view: view, pty: pty)
-                    return
-                }
-                try? await Task.sleep(nanoseconds: 25_000_000)
-            }
-            await MainActor.run { view.feed(text: "[no PTY for \(path) after 5s]\r\n") }
-        }
-        return view
+    func makeNSView(context: Context) -> NSView {
+        let renderer: TerminalRenderer = SwiftTermRenderer()
+        context.coordinator.attach(renderer: renderer, store: store, jobPath: jobPath)
+        return renderer.view
     }
 
-    func updateNSView(_ nsView: TerminalView, context: Context) {}
+    func updateNSView(_ nsView: NSView, context: Context) {}
 
-    final class Coordinator: NSObject, TerminalViewDelegate {
+    final class Coordinator {
+        private var renderer: TerminalRenderer?
         private weak var pty: ManagedPTY?
         private var outputSub: ManagedPTY.OutputSubscription?
 
-        func attach(view: TerminalView, pty: ManagedPTY) {
-            self.pty = pty
-            outputSub = pty.addOutputHandler { [weak view] chunk in
-                let bytes = Array(chunk)
-                DispatchQueue.main.async {
-                    view?.feed(byteArray: bytes[...])
+        func attach(renderer: TerminalRenderer, store: Store, jobPath: JobPath) {
+            self.renderer = renderer
+            renderer.inputHandler = { [weak self] data in self?.pty?.write(data) }
+            renderer.sizeHandler = { [weak self] rows, cols in
+                self?.pty?.resize(rows: UInt16(rows), cols: UInt16(cols))
+            }
+
+            let runner = store.runner
+            Task {
+                for _ in 0..<200 {
+                    if let pty = await runner.pty(for: jobPath) {
+                        await MainActor.run { self.bind(pty: pty) }
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: 25_000_000)
                 }
+            }
+        }
+
+        private func bind(pty: ManagedPTY) {
+            self.pty = pty
+            outputSub = pty.addOutputHandler { [weak self] chunk in
+                DispatchQueue.main.async { self?.renderer?.feed(chunk) }
             }
             pty.resize(rows: 40, cols: 120)
         }
-
-        func send(source: TerminalView, data: ArraySlice<UInt8>) {
-            pty?.write(Data(data))
-        }
-        func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
-            pty?.resize(rows: UInt16(newRows), cols: UInt16(newCols))
-        }
-        func setTerminalTitle(source: TerminalView, title: String) {}
-        func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-        func scrolled(source: TerminalView, position: Double) {}
-        func clipboardCopy(source: TerminalView, content: Data) {}
-        func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
-        func requestOpenLink(source: TerminalView, link: String, params: [String : String]) {}
-        func bell(source: TerminalView) {}
-        func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
     }
 }
