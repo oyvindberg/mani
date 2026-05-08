@@ -12,6 +12,7 @@ enum PTYError: Error {
     case forkpty(errno: Int32)
 }
 
+
 final class ManagedPTY {
     let masterFD: Int32
     let pid: pid_t

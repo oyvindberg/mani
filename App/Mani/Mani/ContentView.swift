@@ -307,7 +307,8 @@ private struct SidebarView: View {
 
     private static func spawnClaude(at path: WorktreePath, cwd: URL, store: Store) async {
         let spec = ProcessSpec(
-            command: "/usr/bin/env", args: ["claude"], env: [:], cwd: cwd, pid: nil
+            command: "/usr/bin/env", args: ["claude"],
+            env: [:], cwd: cwd, pid: nil
         )
         await store.dispatch(.createJob(
             at: path, name: "claude", kind: .claude(sessionId: nil),

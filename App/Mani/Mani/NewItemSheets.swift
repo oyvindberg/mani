@@ -227,17 +227,14 @@ struct ResumeClaudeSheet: View {
         let spec = ProcessSpec(
             command: "/usr/bin/env",
             args: ["claude", "--resume", session.id],
-            env: [:],
-            cwd: cwd,
-            pid: nil
+            env: [:], cwd: cwd, pid: nil
         )
         Task {
             await store.dispatch(.createJob(
                 at: worktreePath,
                 name: "claude (resumed \(session.id.prefix(6)))",
                 kind: .claude(sessionId: session.id),
-                primary: spec,
-                auxiliary: []
+                primary: spec, auxiliary: []
             ))
             isPresented = false
         }
@@ -247,17 +244,13 @@ struct ResumeClaudeSheet: View {
         let spec = ProcessSpec(
             command: "/usr/bin/env",
             args: ["claude"],
-            env: [:],
-            cwd: cwd,
-            pid: nil
+            env: [:], cwd: cwd, pid: nil
         )
         Task {
             await store.dispatch(.createJob(
-                at: worktreePath,
-                name: "claude",
+                at: worktreePath, name: "claude",
                 kind: .claude(sessionId: nil),
-                primary: spec,
-                auxiliary: []
+                primary: spec, auxiliary: []
             ))
             isPresented = false
         }

@@ -49,7 +49,11 @@ actor EffectRunner {
                 // some TUIs (claude code's UI library among them) gate
                 // full-repaint-on-resize on the presence of a recognized value.
                 // Setting it lets claude believe it's in a smart terminal.
-                env["TERM_PROGRAM"] = "Mani"
+                // Pose as ghostty so TUIs that special-case ghostty's
+                // capabilities (claude code's full-redraw-on-SIGWINCH path
+                // among them) take that branch. The renderer IS libghostty,
+                // so this isn't a lie — just an honest advertisement.
+                env["TERM_PROGRAM"] = "ghostty"
                 // Strip env vars that leak in from whichever shell launched
                 // Mani (e.g. Terminal.app via `open`). A stale TERM_SESSION_ID
                 // or TERM_PROGRAM_VERSION from another terminal confuses TUIs
@@ -67,12 +71,18 @@ actor EffectRunner {
                 let extraPath = "\(homeBin):/opt/homebrew/bin:/usr/local/bin"
                 let existing = env["PATH"] ?? "/usr/bin:/bin"
                 env["PATH"] = "\(extraPath):\(existing)"
+                // rawMode=true if any of the args mention claude. The user's
+                // manual flow (typing claude at zsh prompt) leaves termios
+                // in ZLE's raw mode when claude starts; reproducing that at
+                // exec time appears to be what claude's full-redraw branch
+                // is actually keying on.
+                let mentionsClaude = spec.args.contains(where: { $0.contains("claude") })
                 let pty = try ManagedPTY(
                     executable: spec.command,
                     args: spec.args,
                     env: env,
                     cwd: spec.cwd.path,
-                    rawMode: false
+                    rawMode: mentionsClaude
                 )
                 ptys[path] = pty
                 pty.onExit = { code in
