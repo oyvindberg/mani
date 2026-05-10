@@ -537,7 +537,9 @@ private struct TerminalPane: NSViewRepresentable {
         // libghostty-backed renderer (per ADR-002 v0.2 swap). To fall back to
         // SwiftTerm during a regression hunt, replace with `SwiftTermRenderer()`.
         let renderer: TerminalRenderer = LibGhosttyRenderer(
-            themeName: store.state.settings.terminalTheme
+            themeName: store.state.settings.terminalTheme,
+            fontFamily: store.state.settings.terminalFontFamily,
+            fontSize: store.state.settings.terminalFontSize
         )
         context.coordinator.attach(renderer: renderer, store: store, jobPath: jobPath)
         // Steal first-responder so the user can type immediately on

@@ -112,9 +112,18 @@ actor EffectRunner {
 
                 // Tier 1 scrollback: tee the same byte stream the renderer uses
                 // into ~/Library/Application Support/Mani/tasks/<job-id>/scrollback.log.
-                let scrollbackPath = scrollbackRoot
+                // On Restart, rotate the existing log to scrollback-<unix>.log so
+                // the new session's bytes don't bleed into the old one's history.
+                let scrollbackDir = scrollbackRoot
                     .appendingPathComponent(path.job.uuidString)
+                let scrollbackPath = scrollbackDir
                     .appendingPathComponent("scrollback.log").path
+                if FileManager.default.fileExists(atPath: scrollbackPath) {
+                    let stamp = Int(Date().timeIntervalSince1970)
+                    let archived = scrollbackDir
+                        .appendingPathComponent("scrollback-\(stamp).log").path
+                    _ = try? FileManager.default.moveItem(atPath: scrollbackPath, toPath: archived)
+                }
                 let writer = ScrollbackWriter(path: scrollbackPath, capBytes: 32 * 1024 * 1024)
                 let sub = pty.addOutputHandler { data in writer.append(data) }
                 scrollbacks[path] = writer

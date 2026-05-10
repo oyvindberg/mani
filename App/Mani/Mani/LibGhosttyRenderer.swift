@@ -29,7 +29,7 @@ final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewD
     private let terminalView: GhosttyTerminal.TerminalView
     private let controller: TerminalController
 
-    init(themeName: String) {
+    init(themeName: String, fontFamily: String, fontSize: Int) {
         let bridge = CallbackBridge()
         let session = InMemoryTerminalSession(
             write: { data in
@@ -46,7 +46,15 @@ final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewD
         let terminalView = GhosttyTerminal.TerminalView(frame: .zero)
         let theme = GhosttyThemeCatalog.theme(named: themeName)?.toTerminalTheme()
             ?? .default
-        let controller = TerminalController(theme: theme) { _ in }
+        var config = TerminalConfiguration()
+        if !fontFamily.isEmpty {
+            config = config.fontFamily(fontFamily)
+        }
+        config = config.fontSize(Float(fontSize))
+        let controller = TerminalController(
+            theme: theme,
+            terminalConfiguration: config
+        )
         self.bridge = bridge
         self.session = session
         self.terminalView = terminalView

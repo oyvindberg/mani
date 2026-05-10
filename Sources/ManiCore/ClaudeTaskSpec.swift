@@ -1,5 +1,4 @@
 import Foundation
-import ManiCore
 
 // Single source of truth for the ProcessSpec shape used to spawn `claude`.
 //
@@ -20,8 +19,8 @@ import ManiCore
 //      stale-spec trap — old jobs persisted with a pre-zsh-injection spec
 //      (e.g. /usr/bin/env claude) will be re-spawned with the current
 //      shape regardless of what was written to events.jsonl long ago.
-enum ClaudeTaskSpec {
-    static func make(cwd: URL, sessionId: String?) -> ProcessSpec {
+public enum ClaudeTaskSpec {
+    public static func make(cwd: URL, sessionId: String?) -> ProcessSpec {
         let typed: String
         if let sessionId {
             typed = "claude --resume \(sessionId)\r"
@@ -40,7 +39,7 @@ enum ClaudeTaskSpec {
 
     // For the Restart button: claude jobs always rebuild from the current
     // factory; everything else reuses the persisted spec verbatim.
-    static func restartSpec(for job: Job) -> ProcessSpec {
+    public static func restartSpec(for job: Job) -> ProcessSpec {
         if case let .claude(sessionId) = job.kind {
             return make(cwd: job.primary.cwd, sessionId: sessionId)
         }

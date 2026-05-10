@@ -14,7 +14,7 @@ struct SettingsView: View {
             generalForm.tabItem { Label("General", systemImage: "gear") }
             terminalForm.tabItem { Label("Terminal", systemImage: "terminal") }
         }
-        .frame(width: 480, height: 280)
+        .frame(width: 500, height: 380)
     }
 
     private var generalForm: some View {
@@ -65,7 +65,39 @@ struct SettingsView: View {
                         Text(name).tag(name)
                     }
                 }
-                Text("Theme changes apply to terminal panes the next time they're mounted (switch tasks or close/reopen).")
+
+                let fontBinding = Binding<String>(
+                    get: {
+                        let f = store.state.settings.terminalFontFamily
+                        return f.isEmpty ? "(libghostty default)" : f
+                    },
+                    set: { name in
+                        var s = store.state.settings
+                        s.terminalFontFamily = (name == "(libghostty default)") ? "" : name
+                        Task { await store.dispatch(.updateSettings(s)) }
+                    }
+                )
+                Picker("Font", selection: fontBinding) {
+                    Text("(libghostty default)").tag("(libghostty default)")
+                    ForEach(curatedFonts, id: \.self) { name in
+                        Text(name).tag(name)
+                    }
+                }
+
+                let sizeBinding = Binding<Int>(
+                    get: { store.state.settings.terminalFontSize },
+                    set: { newSize in
+                        var s = store.state.settings
+                        s.terminalFontSize = max(8, min(48, newSize))
+                        Task { await store.dispatch(.updateSettings(s)) }
+                    }
+                )
+                Stepper(
+                    value: sizeBinding, in: 8...48,
+                    label: { Text("Font size: \(sizeBinding.wrappedValue) pt") }
+                )
+
+                Text("Appearance changes apply to terminal panes the next time they're mounted (switch tasks or close/reopen).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {
@@ -73,6 +105,26 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    // Curated list of fonts likely to be installed on a developer Mac.
+    // The user picks "(libghostty default)" to fall back to libghostty's
+    // built-in font selection.
+    private var curatedFonts: [String] {
+        [
+            "SF Mono",
+            "Menlo",
+            "Monaco",
+            "Courier New",
+            "Andale Mono",
+            "Fira Code",
+            "JetBrains Mono",
+            "Hack",
+            "MonoLisa",
+            "IBM Plex Mono",
+            "Cascadia Code",
+            "Iosevka",
+        ]
     }
 
     // A curated subset from the GhosttyTheme catalog (485 total) — enough to

@@ -26,28 +26,15 @@ final class Store: ObservableObject {
     // leaked behind a vanished UI entry. Project, worktree, and non-claude
     // job state is preserved.
     func resetForNewClaudeTask() async {
-        for project in state.projects {
-            for worktree in project.worktrees {
-                for job in worktree.jobs {
-                    guard case .claude = job.kind else { continue }
-                    if let pid = job.primary.pid {
-                        await runner.run(
-                            .terminate(pid: pid, escalateAfter: 1.0),
-                            dispatch: { _ in }
-                        )
-                    }
-                }
+        for (_, job) in state.claudeJobs() {
+            if let pid = job.primary.pid {
+                await runner.run(
+                    .terminate(pid: pid, escalateAfter: 1.0),
+                    dispatch: { _ in }
+                )
             }
         }
-        var clean = state
-        for projIdx in clean.projects.indices {
-            for wtIdx in clean.projects[projIdx].worktrees.indices {
-                clean.projects[projIdx].worktrees[wtIdx].jobs.removeAll { job in
-                    if case .claude = job.kind { return true }
-                    return false
-                }
-            }
-        }
+        let clean = state.withoutClaudeJobs()
         await runner.compact(clean)
         state = clean
     }
