@@ -106,6 +106,7 @@ struct NewWorktreeSheet: View {
                     let pathURL = URL(fileURLWithPath: path)
                     let wantShell = addShellTask
                     let projectId = projectId
+                    let isGitWorktree = (kind == .git)
                     Task {
                         await store.dispatch(.createWorktree(
                             projectId: projectId,
@@ -113,12 +114,15 @@ struct NewWorktreeSheet: View {
                             kind: worktreeKind,
                             path: pathURL
                         ))
-                        if wantShell,
-                           let project = store.state.projects.first(where: { $0.id == projectId }),
-                           let worktree = project.worktrees.last {
-                            let wtPath = WorktreePath(
-                                project: projectId, worktree: worktree.id
-                            )
+                        guard let project = store.state.projects.first(where: { $0.id == projectId }),
+                              let worktree = project.worktrees.last else {
+                            isPresented = false
+                            return
+                        }
+                        let wtPath = WorktreePath(
+                            project: projectId, worktree: worktree.id
+                        )
+                        if wantShell {
                             let spec = ProcessSpec(
                                 command: "/bin/zsh",
                                 args: ["-l"],
@@ -130,6 +134,11 @@ struct NewWorktreeSheet: View {
                                 at: wtPath, name: "shell", kind: .shell,
                                 primary: spec, auxiliary: []
                             ))
+                        }
+                        if isGitWorktree {
+                            await SidebarView.spawnDiff(
+                                at: wtPath, cwd: pathURL, store: store
+                            )
                         }
                         isPresented = false
                     }

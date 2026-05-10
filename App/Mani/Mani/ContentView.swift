@@ -196,7 +196,7 @@ struct ContentView: View {
     }
 }
 
-private struct SidebarView: View {
+struct SidebarView: View {
     @EnvironmentObject var store: Store
     @EnvironmentObject var watcher: ClaudeWatcher
     @EnvironmentObject var hookListener: HookListenerService
@@ -312,11 +312,6 @@ private struct SidebarView: View {
         Button("Resume Claude session…") {
             resumeContext = ResumeContext(worktreePath: path, cwd: worktree.path)
         }
-        if case .git = worktree.kind {
-            Button("Open Diff Workspace") {
-                Task { await Self.spawnDiff(at: path, cwd: worktree.path, store: store) }
-            }
-        }
         Button("Open in IntelliJ") {
             Self.openInIntelliJ(worktree.path)
         }
@@ -350,10 +345,13 @@ private struct SidebarView: View {
         ))
     }
 
-    private static func spawnDiff(at path: WorktreePath, cwd: URL, store: Store) async {
+    static func spawnDiff(at path: WorktreePath, cwd: URL, store: Store) async {
         // The diff workspace is backed by a long-lived /bin/zsh -l. The view
         // writes delta pipelines into the PTY when the user selects a file —
-        // no respawn per click. See DiffWorkspaceView.
+        // no respawn per click. See DiffWorkspaceView. Called on launch by
+        // ManiApp.ensureDiffJobsForGitWorktrees for every .git worktree that
+        // doesn't already have one, so the workspace is a fixture of the
+        // worktree rather than something the user has to spawn.
         let spec = ProcessSpec(
             command: "/bin/zsh", args: ["-l"],
             env: [:], cwd: cwd, pid: nil,

@@ -85,6 +85,7 @@ struct ManiApp: App {
                     }
                     await Self.dedupeClaudeJobs(store: store)
                     await Self.pruneStaleClaudeJobs(store: store)
+                    await Self.ensureDiffJobsForGitWorktrees(store: store)
                     Self.startSnapshotTimer(store: store)
                     Self.startStaleClaudePruneTimer(store: store)
                 }
@@ -126,6 +127,29 @@ struct ManiApp: App {
     // the WindowGroup task is torn down (app quit) is automatic via
     // structured concurrency. Interval is read from settings on each tick so
     // changing it in the Settings pane takes effect on the next snapshot.
+    // Every .git worktree gets a permanent .diff Job (the Diff Workspace
+    // is a fixture of the worktree, not something the user spawns). On
+    // launch we backfill any missing ones — a single Job per worktree,
+    // identified by `kind: .diff`. If the user deletes one, the next
+    // launch will recreate it. .folder worktrees are skipped (no git
+    // history to diff).
+    @MainActor
+    private static func ensureDiffJobsForGitWorktrees(store: Store) async {
+        for project in store.state.projects {
+            for worktree in project.worktrees {
+                guard case .git = worktree.kind else { continue }
+                let hasDiff = worktree.jobs.contains { job in
+                    if case .diff = job.kind { return true }
+                    return false
+                }
+                if !hasDiff {
+                    let path = WorktreePath(project: project.id, worktree: worktree.id)
+                    await SidebarView.spawnDiff(at: path, cwd: worktree.path, store: store)
+                }
+            }
+        }
+    }
+
     // Periodically re-run pruneStaleClaudeJobs so an adopted/resumed
     // claude that immediately exits ("No conversation found", crash,
     // process killed externally) is cleaned up without requiring a
