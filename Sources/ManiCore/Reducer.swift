@@ -155,8 +155,7 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
                 env: [:],
                 cwd: cwd,
                 pid: nil,
-                initialInput: nil
-            ),
+                initialInput: nil, restartPolicy: .never),
             auxiliary: [],
             unread: 0,
             createdAt: Date(),
@@ -196,6 +195,13 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
                 title: "Task “\(job.name)” exited",
                 body: code == 0 ? "completed" : "exit code \(code)"
             ))
+        } else if job.enabled,
+                  index - 1 < job.auxiliary.count,
+                  job.auxiliary[index - 1].restartPolicy == .alwaysRestart {
+            // Aux process with alwaysRestart fires a fresh spawn. Primary
+            // restart is intentionally NOT modeled here — the user controls
+            // primary lifecycle via the UI's Restart button.
+            effects.append(.spawn(at: at, index: index, job.auxiliary[index - 1]))
         }
         return ([event], effects)
 

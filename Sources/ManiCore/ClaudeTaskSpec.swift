@@ -33,8 +33,7 @@ public enum ClaudeTaskSpec {
             env: [:],
             cwd: cwd,
             pid: nil,
-            initialInput: typed
-        )
+            initialInput: typed, restartPolicy: .never)
     }
 
     // For the Restart button: claude jobs always rebuild from the current

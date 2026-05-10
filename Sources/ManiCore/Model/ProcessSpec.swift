@@ -1,5 +1,14 @@
 import Foundation
 
+// What to do when a process spawned from this spec exits. Consumed by the
+// reducer's processExited handler. Only meaningful for auxiliary slots —
+// the primary slot is treated as `.never` regardless of what's set here, so
+// killing your shell doesn't loop respawn it.
+public enum RestartPolicy: String, Codable, Equatable {
+    case never
+    case alwaysRestart
+}
+
 public struct ProcessSpec: Codable, Equatable {
     public var command: String
     public var args: [String]
@@ -10,6 +19,7 @@ public struct ProcessSpec: Codable, Equatable {
     // first prompt. Used for the "spawn zsh, then type `claude\n`" flow that
     // mimics the user's manual claude invocation — see EffectRunner.
     public var initialInput: String?
+    public var restartPolicy: RestartPolicy
 
     public init(
         command: String,
@@ -17,7 +27,8 @@ public struct ProcessSpec: Codable, Equatable {
         env: [String: String],
         cwd: URL,
         pid: Int32?,
-        initialInput: String?
+        initialInput: String?,
+        restartPolicy: RestartPolicy
     ) {
         self.command = command
         self.args = args
@@ -25,10 +36,11 @@ public struct ProcessSpec: Codable, Equatable {
         self.cwd = cwd
         self.pid = pid
         self.initialInput = initialInput
+        self.restartPolicy = restartPolicy
     }
 
     private enum CodingKeys: String, CodingKey {
-        case command, args, env, cwd, pid, initialInput
+        case command, args, env, cwd, pid, initialInput, restartPolicy
     }
 
     public init(from decoder: Decoder) throws {
@@ -39,5 +51,6 @@ public struct ProcessSpec: Codable, Equatable {
         self.cwd = try c.decode(URL.self, forKey: .cwd)
         self.pid = try c.decodeIfPresent(Int32.self, forKey: .pid)
         self.initialInput = try c.decodeIfPresent(String.self, forKey: .initialInput)
+        self.restartPolicy = (try? c.decodeIfPresent(RestartPolicy.self, forKey: .restartPolicy)) ?? .never
     }
 }

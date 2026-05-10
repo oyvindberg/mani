@@ -167,8 +167,7 @@ struct ManiApp: App {
             env: [:],
             cwd: home,
             pid: nil,
-            initialInput: nil
-        )
+            initialInput: nil, restartPolicy: .never)
         await store.dispatch(.createJob(
             at: path,
             name: "shell",

@@ -37,8 +37,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
             env: [:],
             cwd: URL(fileURLWithPath: "/old/cwd"),
             pid: nil,
-            initialInput: nil
-        )
+            initialInput: nil, restartPolicy: .never)
         let job = makeJob(kind: .claude(sessionId: "old-session"), spec: stale)
 
         let restart = ClaudeTaskSpec.restartSpec(for: job)
@@ -56,8 +55,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
             env: [:],
             cwd: URL(fileURLWithPath: "/cwd"),
             pid: nil,
-            initialInput: nil
-        )
+            initialInput: nil, restartPolicy: .never)
         let job = makeJob(kind: .claude(sessionId: nil), spec: stale)
 
         let restart = ClaudeTaskSpec.restartSpec(for: job)
@@ -72,8 +70,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
             env: ["FOO": "bar"],
             cwd: URL(fileURLWithPath: "/cwd"),
             pid: 42,
-            initialInput: nil
-        )
+            initialInput: nil, restartPolicy: .never)
         let job = makeJob(kind: .shell, spec: original)
 
         let restart = ClaudeTaskSpec.restartSpec(for: job)
@@ -185,8 +182,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
             env: [:],
             cwd: URL(fileURLWithPath: "/cwd"),
             pid: nil,
-            initialInput: nil
-        )
+            initialInput: nil, restartPolicy: .never)
     }
 
     private func anySettings() -> Settings {

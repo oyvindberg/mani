@@ -62,42 +62,35 @@ final class ScrollbackWriter {
             }
         }
         buffer.removeAll(keepingCapacity: true)
-        // Cheap "ring-buffer": if file exceeds 2× cap, truncate to cap by
-        // rewriting the tail. Walking-skeleton, not crash-safe; replace with
-        // proper rotation when file sizes start mattering.
+        // When the live log exceeds 2× cap, rotate it to a timestamped sibling
+        // (no compression yet — the rotated files are bounded in size and
+        // accumulating one per ring-fill is acceptable for v0.2). Old behavior
+        // (truncate + drop head bytes) was lossy; rotation preserves history.
         if let attrs = try? FileManager.default.attributesOfItem(atPath: path),
            let size = (attrs[.size] as? NSNumber)?.intValue, size > cap * 2 {
-            truncateToCap()
+            rotateAndContinue()
         }
     }
 
-    private func truncateToCap() {
-        guard let fh = FileHandle(forReadingAtPath: path) else { return }
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let size = (attrs[.size] as? NSNumber)?.intValue,
-              size > cap else { try? fh.close(); return }
-        do {
-            try fh.seek(toOffset: UInt64(size - cap))
-            let tail = (try? fh.readToEnd()) ?? Data()
-            try fh.close()
-            // Atomic-rename via .new + rename so a crash mid-truncate doesn't
-            // leave a half-written scrollback. fsync the .new before rename so
-            // the data is durable when the rename takes effect.
-            let tmpPath = path + ".compact"
-            let tmpFD = open(tmpPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
-            if tmpFD >= 0 {
-                _ = tail.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Int in
-                    Darwin.write(tmpFD, raw.baseAddress, raw.count)
-                }
-                _ = fsync(tmpFD)
-                close(tmpFD)
-                close(fd)
-                _ = rename(tmpPath, path)
-                fd = open(path, O_WRONLY | O_APPEND, 0o644)
+    private func rotateAndContinue() {
+        let stamp = Int(Date().timeIntervalSince1970)
+        let archivePath = (path as NSString)
+            .deletingLastPathComponent
+            .appending("/scrollback-\(stamp).log")
+        // Close current fd, rename file to archive, reopen a fresh
+        // scrollback.log for ongoing writes. fsync the directory so the
+        // rename is durable. If rename fails we just keep writing to the
+        // existing path — the next flush will retry.
+        close(fd)
+        if rename(path, archivePath) == 0 {
+            let dir = (path as NSString).deletingLastPathComponent
+            let dirFD = open(dir, O_RDONLY)
+            if dirFD >= 0 {
+                _ = fsync(dirFD)
+                close(dirFD)
             }
-        } catch {
-            try? fh.close()
         }
+        fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
     }
 
     deinit {

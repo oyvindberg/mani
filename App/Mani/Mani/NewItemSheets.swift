@@ -125,8 +125,7 @@ struct NewWorktreeSheet: View {
                                 env: [:],
                                 cwd: pathURL,
                                 pid: nil,
-                                initialInput: nil
-                            )
+                                initialInput: nil, restartPolicy: .never)
                             await store.dispatch(.createJob(
                                 at: wtPath, name: "shell", kind: .shell,
                                 primary: spec, auxiliary: []
@@ -268,6 +267,7 @@ struct NewTaskSheet: View {
         let id = UUID()
         var command: String
         var argsString: String
+        var restartPolicy: RestartPolicy
     }
 
     @State private var name: String = ""
@@ -319,7 +319,9 @@ struct NewTaskSheet: View {
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button("+ Add") {
-                            aux.append(AuxRow(command: "", argsString: ""))
+                            aux.append(AuxRow(
+                                command: "", argsString: "", restartPolicy: .never
+                            ))
                         }
                         .buttonStyle(.borderless)
                         .font(.caption)
@@ -330,6 +332,12 @@ struct NewTaskSheet: View {
                                 .textFieldStyle(.roundedBorder)
                             TextField("args", text: $row.argsString)
                                 .textFieldStyle(.roundedBorder)
+                            Picker("", selection: $row.restartPolicy) {
+                                Text("no restart").tag(RestartPolicy.never)
+                                Text("always restart").tag(RestartPolicy.alwaysRestart)
+                            }
+                            .pickerStyle(.menu)
+                            .frame(width: 130)
                             Button {
                                 aux.removeAll { $0.id == row.id }
                             } label: {
@@ -352,8 +360,7 @@ struct NewTaskSheet: View {
                         : ProcessSpec(
                             command: command, args: args,
                             env: [:], cwd: cwd, pid: nil,
-                            initialInput: nil
-                          )
+                            initialInput: nil, restartPolicy: .never)
                     let auxSpecs: [ProcessSpec] = (kind == .claude)
                         ? []
                         : aux.compactMap { row in
@@ -364,7 +371,8 @@ struct NewTaskSheet: View {
                             return ProcessSpec(
                                 command: row.command, args: auxArgs,
                                 env: [:], cwd: cwd, pid: nil,
-                                initialInput: nil
+                                initialInput: nil,
+                                restartPolicy: row.restartPolicy
                             )
                         }
                     let jobKind: JobKind = (kind == .claude)

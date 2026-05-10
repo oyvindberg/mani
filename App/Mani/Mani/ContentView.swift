@@ -300,8 +300,7 @@ private struct SidebarView: View {
         let spec = ProcessSpec(
             command: "/bin/zsh", args: ["-l"],
             env: [:], cwd: cwd, pid: nil,
-            initialInput: nil
-        )
+            initialInput: nil, restartPolicy: .never)
         await store.dispatch(.createJob(
             at: path, name: "shell", kind: .shell, primary: spec, auxiliary: []
         ))

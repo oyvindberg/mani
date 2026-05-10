@@ -256,16 +256,14 @@ final class ReducerTests: XCTestCase {
             env: [:],
             cwd: URL(fileURLWithPath: "/wt"),
             pid: nil,
-            initialInput: nil
-        )
+            initialInput: nil, restartPolicy: .never)
         let aux = ProcessSpec(
             command: "/usr/bin/dev",
             args: ["server"],
             env: [:],
             cwd: URL(fileURLWithPath: "/wt"),
             pid: nil,
-            initialInput: nil
-        )
+            initialInput: nil, restartPolicy: .never)
 
         let (events, effects) = reduce(state, .createJob(
             at: path, name: "shell", kind: .shell,
@@ -293,8 +291,7 @@ final class ReducerTests: XCTestCase {
         let spec = ProcessSpec(
             command: "/bin/zsh", args: [], env: [:],
             cwd: URL(fileURLWithPath: "/p"), pid: nil,
-            initialInput: nil
-        )
+            initialInput: nil, restartPolicy: .never)
         let (events, effects) = reduce(state, .createJob(
             at: path, name: "x", kind: .shell, primary: spec, auxiliary: []
         ))
@@ -454,6 +451,114 @@ final class ReducerTests: XCTestCase {
 
         XCTAssertNil(state.projects[0].worktrees[0].jobs[0].primary.pid)
     }
+
+    func test_processExited_aux_alwaysRestart_emitsSpawn() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let jobId = UUID()
+        let auxSpec = ProcessSpec(
+            command: "/usr/local/bin/dev",
+            args: ["server"],
+            env: [:],
+            cwd: URL(fileURLWithPath: "/wt"),
+            pid: 9999,
+            initialInput: nil,
+            restartPolicy: .alwaysRestart
+        )
+        let job = Job(
+            id: jobId, name: "stack", kind: .shell, enabled: true, status: .running,
+            primary: ProcessSpec(
+                command: "/bin/zsh", args: [], env: [:],
+                cwd: URL(fileURLWithPath: "/wt"),
+                pid: 1, initialInput: nil, restartPolicy: .never
+            ),
+            auxiliary: [auxSpec],
+            unread: 0, createdAt: Date(), completedAt: nil
+        )
+        let state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, jobs: [job])
+            ])
+        ])
+        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+
+        let (_, effects) = reduce(state, .processExited(at: path, index: 1, code: 1))
+
+        let spawnEffects = effects.compactMap { effect -> ProcessSpec? in
+            if case let .spawn(_, idx, spec) = effect, idx == 1 { return spec }
+            return nil
+        }
+        XCTAssertEqual(spawnEffects.count, 1)
+        XCTAssertEqual(spawnEffects[0].command, "/usr/local/bin/dev")
+    }
+
+    func test_processExited_aux_neverPolicy_doesNotRestart() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let jobId = UUID()
+        let job = Job(
+            id: jobId, name: "j", kind: .shell, enabled: true, status: .running,
+            primary: ProcessSpec(
+                command: "/bin/zsh", args: [], env: [:],
+                cwd: URL(fileURLWithPath: "/wt"),
+                pid: 1, initialInput: nil, restartPolicy: .never
+            ),
+            auxiliary: [ProcessSpec(
+                command: "/bin/dev", args: [], env: [:],
+                cwd: URL(fileURLWithPath: "/wt"),
+                pid: 2, initialInput: nil, restartPolicy: .never
+            )],
+            unread: 0, createdAt: Date(), completedAt: nil
+        )
+        let state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, jobs: [job])
+            ])
+        ])
+        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+
+        let (_, effects) = reduce(state, .processExited(at: path, index: 1, code: 0))
+
+        XCTAssertFalse(effects.contains(where: { effect in
+            if case .spawn = effect { return true }
+            return false
+        }))
+    }
+
+    func test_processExited_aux_alwaysRestart_butJobDisabled_doesNotRestart() {
+        // Disabling the job is the user's panic switch — alwaysRestart must
+        // not loop respawn while the job is off.
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let jobId = UUID()
+        let job = Job(
+            id: jobId, name: "j", kind: .shell, enabled: false, status: .stopped,
+            primary: ProcessSpec(
+                command: "/bin/zsh", args: [], env: [:],
+                cwd: URL(fileURLWithPath: "/wt"),
+                pid: nil, initialInput: nil, restartPolicy: .never
+            ),
+            auxiliary: [ProcessSpec(
+                command: "/bin/dev", args: [], env: [:],
+                cwd: URL(fileURLWithPath: "/wt"),
+                pid: 7, initialInput: nil, restartPolicy: .alwaysRestart
+            )],
+            unread: 0, createdAt: Date(), completedAt: nil
+        )
+        let state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, jobs: [job])
+            ])
+        ])
+        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+
+        let (_, effects) = reduce(state, .processExited(at: path, index: 1, code: 0))
+
+        XCTAssertFalse(effects.contains(where: { effect in
+            if case .spawn = effect { return true }
+            return false
+        }))
+    }
 }
 
 // MARK: - Helpers
@@ -508,8 +613,7 @@ private func makeJob(id: UUID, kind: JobKind, primaryPid: Int32?, auxPids: [Int3
             env: [:],
             cwd: URL(fileURLWithPath: "/wt/main"),
             pid: primaryPid,
-            initialInput: nil
-        ),
+            initialInput: nil, restartPolicy: .never),
         auxiliary: auxPids.map { pid in
             ProcessSpec(
                 command: "/usr/local/bin/aux",
@@ -517,8 +621,7 @@ private func makeJob(id: UUID, kind: JobKind, primaryPid: Int32?, auxPids: [Int3
                 env: [:],
                 cwd: URL(fileURLWithPath: "/wt/main"),
                 pid: pid,
-                initialInput: nil
-            )
+                initialInput: nil, restartPolicy: .never)
         },
         unread: 0,
         createdAt: Date(),

@@ -187,18 +187,36 @@ Wave 1 done:
   (ADR-015), with `Store.resetForNewClaudeTask()` to keep persisted specs
   from haunting the UI
 
-Wave 2 (in progress / planned):
-1. Process hygiene: deterministic PTY teardown on quit, kill-before-restart,
-   removing the now-redundant ManagedPTY double-fork
-2. Auxiliary processes with restart policies
-3. Font picker in Settings (theme picker is in)
-4. App-target tests covering EffectRunner spawn flow, ClaudeTaskSpec,
-   resetForNewClaudeTask
-5. Per-restart scrollback rotation (one log per session, archived on restart)
-6. Search and hyperlinks inside the terminal viewport
-7. Scrollback compression / rotation beyond the 32 MB ring cap
-8. Inline image protocols (Sixel / iTerm2 / Kitty) — TBD which to support
-9. claude `--resume` session-id reconciliation when claude allocates a new id
+Wave 2 done:
+1. ✅ Process hygiene: ManagedPTY double-fork removed; PTY teardown on quit
+   via NSApplication.willTerminateNotification; per-restart scrollback
+   rotation in EffectRunner.spawn
+2. ✅ Auxiliary process restart policies (`.never` / `.alwaysRestart`,
+   modeled on `ProcessSpec.restartPolicy`, consumed in Reducer's
+   processExited handler, exposed via NewTaskSheet aux row picker)
+3. ✅ Font picker in Settings (curated monospace list + size stepper,
+   plumbed through TerminalConfiguration's fontFamily/fontSize)
+4. ✅ ClaudeTaskSpec moved to ManiCore with 9 unit tests; AppState helpers
+   `withoutClaudeJobs()` + `claudeJobs()` extracted and tested; aux
+   restart policy reducer behavior covered. 41 tests total.
+5. ✅ Non-lossy scrollback rotation: when the live log passes 2× cap it
+   rotates to scrollback-<unix>.log (uncompressed, accumulates) instead
+   of the prior lossy head-truncate
+6. ✅ OSC 8 hyperlinks: TerminalSurfaceOpenURLDelegate routes cmd-clicked
+   URLs to NSWorkspace.open (filtered to http(s)/file/mailto)
+
+Wave 2 still pending:
+- In-pane search (Cmd-F overlay over scrollback). libghostty has no
+  native primitive for this — would require Mani-side scrollback
+  scanning + match overlay; non-trivial.
+- claude `--resume` session-id reconciliation when claude allocates a
+  new session id under the hood. Heuristic-only (no API tells us
+  oldId → newId), so deferred until the failure mode is observed.
+- Scrollback compression: rotated logs are uncompressed; gzip via
+  Compression.framework would cut disk by ~10× for typical PTY output.
+- Inline image protocols (Kitty / iTerm2 / Sixel) — libghostty handles
+  them natively if the byte stream contains them; nothing to wire.
+  Listed here only as a confirmation point.
 
 Out of scope for v0.2:
 - Multiple windows
@@ -347,23 +365,19 @@ When you sit down:
 
 ## What's next, prioritized
 
-See § "Phase 2: v0.2 backlog" above for the canonical list. The order
-favors process-hygiene fixes (because they affect dogfooding stability)
-before user-facing features.
+The v0.2 wave-2 list above tracks the pending items. The two most
+worth doing soon (highest leverage, lowest risk):
 
-**Top of stack:**
-
-1. Revert the `ManagedPTY` double-fork (commit `8b9e12b`). Originally
-   added trying to fix claude resize; the resize fix is now zsh+keystroke
-   injection (ADR-015), and the double-fork's only remaining effect is
-   leaving orphan intermediate processes when Mani is killed.
-2. Deterministic PTY teardown on Mani quit. Currently spawned PTYs become
-   orphans. Wire an `applicationWillTerminate` hook through to
-   `EffectRunner` so it kills every live PTY first.
-3. Restart button must SIGTERM/wait the live pid before respawning;
-   currently it spawns a second process on top of the first.
-4. Hide / disable command + args fields in `NewTaskSheet` when kind=Claude
-   (the factory ignores them; the form lies to the user).
+1. **claude session-id reconciliation.** When the user runs
+   `claude --resume <oldId>` and claude internally allocates a new
+   session id, the FSEvents watcher creates a phantom second job
+   instead of relinking. Heuristic: within ~30 s of a claude task
+   spawn, treat newly-discovered sessions in the same cwd as the
+   spawned task's session and emit `linkClaudeSession` to retarget.
+2. **In-pane search.** Cmd-F overlay that searches the per-task
+   scrollback file (not the live grid — libghostty doesn't expose
+   it). Match list with click-to-jump-to-line; copy-to-pasteboard
+   is the v1 action.
 
 ---
 

@@ -54,8 +54,7 @@ func randomAction(state: AppState, rng: inout LCG) -> Action? {
         let spec = ProcessSpec(
             command: "/bin/zsh", args: [], env: [:],
             cwd: URL(fileURLWithPath: "/tmp"), pid: nil,
-            initialInput: nil
-        )
+            initialInput: nil, restartPolicy: .never)
         return .createJob(
             at: wtPath, name: "j", kind: .shell,
             primary: spec, auxiliary: []

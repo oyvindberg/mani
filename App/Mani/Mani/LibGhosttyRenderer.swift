@@ -12,7 +12,7 @@ import GhosttyTheme
 // Same TerminalRenderer protocol contract as SwiftTermRenderer so TerminalPane
 // doesn't need to know which backend it has.
 
-final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewDelegate {
+final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewDelegate, TerminalSurfaceOpenURLDelegate {
 
     var view: NSView { terminalView }
     var inputHandler: ((Data) -> Void)? {
@@ -76,6 +76,19 @@ final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewD
         // (rows, cols) — the view's sizeChanged fires through the session's
         // `resize` closure, which we forward to our sizeHandler.
         _ = (rows, cols)
+    }
+
+    // MARK: TerminalSurfaceOpenURLDelegate
+
+    func terminalDidRequestOpenURL(_ url: String, kind: TerminalOpenURLKind) {
+        // OSC 8 hyperlinks (cmd-click) and recognized plain URLs both route
+        // here. Hand off to Launch Services. Filter to http(s)/file/mailto so
+        // a malicious sequence can't fire `tel:`/custom schemes silently.
+        guard let nsURL = URL(string: url) else { return }
+        let scheme = nsURL.scheme?.lowercased() ?? ""
+        let allowed: Set<String> = ["http", "https", "file", "mailto"]
+        guard allowed.contains(scheme) else { return }
+        NSWorkspace.shared.open(nsURL)
     }
 }
 
