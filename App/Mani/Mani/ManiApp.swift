@@ -84,6 +84,7 @@ struct ManiApp: App {
                         await Self.respawnSafelisted(store: store)
                     }
                     await Self.dedupeClaudeJobs(store: store)
+                    await Self.pruneStaleExternalClaudes(store: store)
                     Self.startSnapshotTimer(store: store)
                 }
         }
@@ -275,6 +276,51 @@ struct ManiApp: App {
                 }
             }
         }
+    }
+
+    // On launch, walk external claude jobs (those with command="(external
+    // claude)") and delete any whose underlying <sid>.jsonl is no longer on
+    // disk. Claude prunes transcript files according to its own retention
+    // policy; once the file is gone the session is unresumable, so the Job
+    // is just visual junk in the sidebar. Renamed externals are still
+    // pruned — the rename refers to a session that doesn't exist anymore.
+    private static func pruneStaleExternalClaudes(store: Store) async {
+        let projectsRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects")
+        var toRemove: [JobPath] = []
+        for project in store.state.projects {
+            for worktree in project.worktrees {
+                let slug = claudeSlug(for: worktree.path)
+                let slugDir = projectsRoot.appendingPathComponent(slug)
+                for job in worktree.jobs {
+                    guard job.primary.command == "(external claude)" else { continue }
+                    guard case let .claude(sid) = job.kind, let sid else { continue }
+                    let jsonlPath = slugDir
+                        .appendingPathComponent("\(sid).jsonl").path
+                    if !FileManager.default.fileExists(atPath: jsonlPath) {
+                        toRemove.append(JobPath(
+                            project: project.id, worktree: worktree.id, job: job.id
+                        ))
+                    }
+                }
+            }
+        }
+        guard !toRemove.isEmpty else { return }
+        NSLog("[mani] pruning \(toRemove.count) external claude jobs with missing transcripts")
+        for path in toRemove {
+            await store.dispatch(.deleteJob(at: path))
+        }
+    }
+
+    // Claude's slug convention for ~/.claude/projects/<slug>: leading dash
+    // followed by the absolute path with `/` replaced by `-`. Mirrors
+    // ClaudeHistoryScanner.sessions(forCwd:).
+    private static func claudeSlug(for worktreePath: URL) -> String {
+        let path = worktreePath.path
+        let trimmed = path.hasSuffix("/") ? String(path.dropLast()) : path
+        return "-" + trimmed
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .joined(separator: "-")
     }
 
     // One-time cleanup on launch: persisted state from older Mani builds
