@@ -346,6 +346,21 @@ private struct SidebarView: View {
         Button("Mark complete") {
             Task { await store.dispatch(.completeJob(at: path)) }
         }
+        if case .claude = job.kind, job.primary.pid != nil {
+            Divider()
+            Button("Fork conversation") {
+                let runner = store.runner
+                Task {
+                    // Type `/fork\r` into the live PTY. claude executes the
+                    // slash command and (per claude-code's hook contract)
+                    // fires SessionStart for the new session id — the
+                    // routing function in ManiCore catches that and creates
+                    // a sibling Job via discoverClaudeSession. See ADR-016.
+                    guard let pty = await runner.pty(for: path) else { return }
+                    pty.write(Data("/fork\r".utf8))
+                }
+            }
+        }
         Divider()
         Button("Delete task (also stops it)", role: .destructive) {
             Task {

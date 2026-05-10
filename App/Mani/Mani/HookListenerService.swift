@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import ManiCore
 
 // In-process Unix domain socket server for Claude Code hook envelopes.
 // Bundled with the app, listens on ~/Library/Application Support/Mani/hook.sock.
@@ -21,6 +22,8 @@ final class HookListenerService: ObservableObject {
 
     @Published private(set) var receivedCount: Int = 0
     @Published private(set) var lastEnvelope: ReceivedEnvelope?
+
+    var onSessionStart: ((SessionStartPayload) -> Void)?
 
     let socketPath: String
     private var sock: Int32 = -1
@@ -116,28 +119,58 @@ final class HookListenerService: ObservableObject {
         }
         let payload = String(data: data, encoding: .utf8) ?? "(\(data.count) non-utf8 bytes)"
         let envelope = ReceivedEnvelope(receivedAt: Date(), payload: payload)
-        let summary = HookListenerService.summarise(payload: payload)
+        let inner = HookListenerService.innerJSON(payload: payload)
+        let summary = HookListenerService.summarise(inner: inner, fallback: payload)
+        let sessionStart = HookListenerService.parseSessionStart(inner: inner)
         DispatchQueue.main.async { [weak self] in
-            self?.receivedCount += 1
-            self?.lastEnvelope = envelope
+            guard let self else { return }
+            self.receivedCount += 1
+            self.lastEnvelope = envelope
             NotificationService.shared.post(
                 title: "Claude hook",
                 body: summary
             )
+            if let sessionStart {
+                self.onSessionStart?(sessionStart)
+            }
         }
     }
 
-    private static func summarise(payload: String) -> String {
-        // Best-effort: extract `hook_event_name` from the inner payload JSON.
-        // Falls back to a generic preview.
-        if let data = payload.data(using: .utf8),
-           let outer = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let inner = outer["payload"] as? String,
-           let innerData = inner.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: innerData) as? [String: Any],
-           let event = json["hook_event_name"] as? String {
-            return event
+    // Hook envelopes are wrapped: { ..., "payload": "<json string>" }. The
+    // inner JSON has hook_event_name + event-specific fields.
+    private static func innerJSON(payload: String) -> [String: Any]? {
+        guard let data = payload.data(using: .utf8),
+              let outer = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        if let innerStr = outer["payload"] as? String,
+           let innerData = innerStr.data(using: .utf8),
+           let inner = try? JSONSerialization.jsonObject(with: innerData) as? [String: Any] {
+            return inner
         }
-        return String(payload.prefix(80))
+        // Some shims may forward the inner JSON directly without wrapping.
+        return outer
+    }
+
+    private static func summarise(inner: [String: Any]?, fallback: String) -> String {
+        if let event = inner?["hook_event_name"] as? String { return event }
+        return String(fallback.prefix(80))
+    }
+
+    private static func parseSessionStart(inner: [String: Any]?) -> SessionStartPayload? {
+        guard let inner,
+              (inner["hook_event_name"] as? String) == "SessionStart",
+              let sid = inner["session_id"] as? String
+        else { return nil }
+        let cwd = inner["cwd"] as? String
+        let transcript = inner["transcript_path"] as? String
+        let source = SessionStartPayload.Source(
+            rawValue: (inner["source"] as? String) ?? ""
+        )
+        return SessionStartPayload(
+            sessionId: sid,
+            cwd: cwd,
+            transcriptPath: transcript,
+            source: source
+        )
     }
 }

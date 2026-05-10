@@ -427,3 +427,71 @@ behavior.
   prompt-detection (we tried; it didn't help).
 - See `~/.claude/.../memory/project_claude_resize_dead_end.md` for the
   full investigation log.
+
+---
+
+## ADR-016 — Reconcile claude session ids via the SessionStart hook
+
+**Status.** Accepted (v0.2-wave-2).
+
+**Context.** When a Mani claude job spawns `claude --resume <oldId>`, claude
+may either (a) honor the resume and keep writing to `<oldId>.jsonl`, or
+(b) reject the resume and allocate a new session id `<newId>`. The user
+expects one sidebar entry tracking whatever claude is actually doing; the
+naive implementation produces a phantom second Job for `<newId>` because
+the FSEvents watcher creates a new `.discoverClaudeSession` entry. The
+same problem appears with `/clear`, `/compact`, and `/fork` — each of
+these allocates a fresh id under the hood.
+
+**Investigated signals.**
+
+- Process env: claude does NOT set `CLAUDE_CODE_SESSION_ID` in its own
+  environment (it only exports the var to children — shells, tools).
+  Verified with `ps -E -p <claude-pid>`.
+- lsof: claude doesn't keep `<id>.jsonl` open as a long-lived fd; each
+  event is open-write-close.
+- JSONL content: each `<id>.jsonl` declares its own `sessionId` but has
+  no `parentSessionId` / `forkedFrom` / `resumedFrom` lineage field.
+- The SessionStart hook: fires on every session entry (startup, resume,
+  clear, compact, fork). Payload includes `session_id` (claude's
+  authoritative truth), `cwd`, `transcript_path`, `hook_event_name`,
+  and `source`.
+
+**Decision.** Wire SessionStart through Mani's existing
+HookListenerService and route via a pure function `routeSessionStart` in
+ManiCore. Routing rules:
+
+- `source = resume | clear | compact`: retarget the most-recently-created
+  `.claude(*)` Job in the matching worktree whose sid differs, via
+  `linkClaudeSession`.
+- `source = startup`: link to a `.claude(nil)` slot in matching worktree
+  (Mani-spawned, no claude session attached yet) if one exists. Else
+  fall through to discovery.
+- `source = fork | other`: always `discoverClaudeSession` — creates a
+  sibling Job. Original Job stays at its prior sid so the user keeps
+  both forks visible in the sidebar.
+- Idempotent: if any Job already tracks `payload.session_id` in the
+  matching worktree, return nil (no action).
+- Skip cwds that match a too-broad worktree (the user's `$HOME` or `/`)
+  to avoid phantom jobs for unrelated claude sessions.
+
+**Rationale.** The hook is the only authoritative signal claude exposes
+about its own session lifecycle. It fires synchronously on every entry,
+includes the new session id directly, and distinguishes the transition
+kind via `source`. Routing in a pure ManiCore function keeps the logic
+testable from the existing unit-test target.
+
+**Implications.**
+- HookListenerService is now load-bearing for correctness, not just
+  observability. If the shim isn't registered or doesn't fire, the
+  FSEvents watcher remains as a fallback that creates phantom Jobs
+  for unrecognised sessions — that's by design (better noisy than
+  silent).
+- "Fork conversation" is a context-menu item on a live claude Job that
+  types `/fork\r` into the PTY. The new sibling Job appears via the
+  SessionStart hook's `fork` source. If claude's hook emits a different
+  source string in practice, the `.other` branch still falls through
+  to discovery, so forking works either way.
+- If the user resumes a session that's already tracked by a Job (sid
+  unchanged), routing is a no-op — `linkClaudeSession` to the same sid
+  would be a redundant rewrite.

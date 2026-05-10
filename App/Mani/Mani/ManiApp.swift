@@ -71,6 +71,12 @@ struct ManiApp: App {
                             )
                         }
                     }
+                    hookListener.onSessionStart = { [weak store] payload in
+                        guard let store else { return }
+                        Task { @MainActor in
+                            await Self.handleSessionStart(payload, store: store)
+                        }
+                    }
                     watcher.start()
                     hookListener.start()
                     // No auto-seed: first launch shows an empty-state CTA.
@@ -227,6 +233,22 @@ struct ManiApp: App {
                 return
             }
         }
+    }
+
+    // Routing is a pure function in ManiCore (testable from the unit-test
+    // target). We just feed it the current state + the home path to exclude
+    // and dispatch whatever action it returns. See ADR-016.
+    @MainActor
+    private static func handleSessionStart(
+        _ payload: SessionStartPayload,
+        store: Store
+    ) async {
+        let homePath = FileManager.default.homeDirectoryForCurrentUser
+            .resolvingSymlinksInPath().path
+        guard let action = routeSessionStart(
+            payload: payload, state: store.state, homePathToExclude: homePath
+        ) else { return }
+        await store.dispatch(action)
     }
 
     // Bump the unread badge on the job linked to this session whenever the
