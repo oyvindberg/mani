@@ -294,20 +294,28 @@ struct ManiApp: App {
         }
     }
 
-    // Walk all claude jobs and delete any whose underlying <sid>.jsonl is
-    // gone. Covers both external claude jobs (command="(external claude)",
-    // never had a Mani-owned PTY) and Mani-spawned claude jobs whose
-    // `claude --resume <sid>` failed (e.g. "No conversation found" — the
-    // file was pruned by claude's retention before the user got to it,
-    // or never existed). For Mani-spawned, we additionally require the
-    // primary pid to be nil — a live claude that just started may not
-    // have written its first event yet, and we don't want to delete an
-    // active task. Renamed jobs are pruned too; the rename refers to a
-    // session that no longer exists, so keeping the entry is just clutter.
+    // Walk all .claude(sid) jobs and delete any whose <sid>.jsonl is
+    // missing under ~/.claude/projects/<slug>/. Covers:
+    //   - External claude jobs whose transcript was pruned by claude's
+    //     retention (and we can no longer adopt them).
+    //   - Mani-spawned claude jobs whose `claude --resume <sid>` failed
+    //     with "No conversation found" — these leave a live zsh prompt
+    //     attached to a useless Job, so the pid==nil guard from earlier
+    //     versions wasn't enough.
+    //
+    // Safety rules:
+    //   - Only consider jobs older than 5 s. Claude takes ~1 s to write
+    //     its first event; we don't want to prune a task in the
+    //     post-spawn window before the JSONL appears.
+    //   - Only `.claude(sid)` with sid != nil. Unlinked `.claude(nil)`
+    //     slots stay (they're waiting for a hook/watcher link).
+    //   - Renamed jobs are pruned too: the rename refers to a session
+    //     that no longer exists, so it's stale clutter regardless.
     @MainActor
     private static func pruneStaleClaudeJobs(store: Store) async {
         let projectsRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
+        let now = Date()
         var toRemove: [JobPath] = []
         for project in store.state.projects {
             for worktree in project.worktrees {
@@ -315,9 +323,7 @@ struct ManiApp: App {
                 let slugDir = projectsRoot.appendingPathComponent(slug)
                 for job in worktree.jobs {
                     guard case let .claude(sid) = job.kind, let sid else { continue }
-                    let isExternal = job.primary.command == "(external claude)"
-                    let manispawnedAndStopped = !isExternal && job.primary.pid == nil
-                    guard isExternal || manispawnedAndStopped else { continue }
+                    guard now.timeIntervalSince(job.createdAt) > 5 else { continue }
                     let jsonlPath = slugDir
                         .appendingPathComponent("\(sid).jsonl").path
                     if !FileManager.default.fileExists(atPath: jsonlPath) {
