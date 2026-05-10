@@ -321,7 +321,6 @@ final class ClaudeSessionStartTests: XCTestCase {
             auxiliary: [],
             unread: 0,
             createdAt: createdAt,
-            completedAt: nil
-        )
+            completedAt: nil, renamed: false        )
     }
 }

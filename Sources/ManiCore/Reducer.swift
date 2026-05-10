@@ -101,7 +101,8 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             auxiliary: auxiliary,
             unread: 0,
             createdAt: Date(),
-            completedAt: nil
+            completedAt: nil,
+            renamed: false
         )
         let jobPath = JobPath(project: at.project, worktree: at.worktree, job: job.id)
         let event = Event.jobCreated(at: at, job)
@@ -185,7 +186,8 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             auxiliary: [],
             unread: 0,
             createdAt: Date(),
-            completedAt: nil
+            completedAt: nil,
+            renamed: false
         )
         let event = Event.jobCreated(at: at, job)
         return ([event], [.persistEvents([event])])
@@ -294,7 +296,10 @@ public func apply(_ state: inout AppState, _ event: Event) {
         mutateJob(&state, at) { $0.unread = 0 }
 
     case let .jobRenamed(at, name):
-        mutateJob(&state, at) { $0.name = name }
+        mutateJob(&state, at) {
+            $0.name = name
+            $0.renamed = true
+        }
 
     case let .jobDeleted(at):
         if let pi = state.projects.firstIndex(where: { $0.id == at.project }),

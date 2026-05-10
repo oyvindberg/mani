@@ -149,8 +149,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
             auxiliary: [],
             unread: 0,
             createdAt: Date(),
-            completedAt: nil
-        )
+            completedAt: nil, renamed: false        )
     }
 
     private func makeProject(jobs: [Job]) -> Project {

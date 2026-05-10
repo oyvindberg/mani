@@ -584,6 +584,35 @@ final class ReducerTests: XCTestCase {
         XCTAssertEqual(toRemove[0].job, low.id)
     }
 
+    func test_duplicateClaudeJobsToRemove_renamedBeatsLivePid() {
+        // The renamed flag MUST outrank live pid. Lost-rename was a real
+        // foot-gun in v0.2-wave-2 before the renamed flag existed.
+        let sid = "shared"
+        let renamedId = UUID()
+        let liveId = UUID()
+        var renamedJob = makeJob(
+            id: renamedId, kind: .claude(sessionId: sid),
+            primaryPid: nil, auxPids: []
+        )
+        renamedJob.name = "my custom name"
+        renamedJob.renamed = true
+        let liveJob = makeJob(
+            id: liveId, kind: .claude(sessionId: sid),
+            primaryPid: 9999, auxPids: []
+        )
+        let state = stateWith(projects: [
+            makeProject(id: UUID(), worktrees: [
+                makeWorktree(id: UUID(), jobs: [liveJob, renamedJob])
+            ])
+        ])
+
+        let toRemove = state.duplicateClaudeJobsToRemove()
+
+        XCTAssertEqual(toRemove.count, 1)
+        XCTAssertEqual(toRemove[0].job, liveId,
+            "expected the renamed Job to survive, not the live unnamed one")
+    }
+
     func test_duplicateClaudeJobsToRemove_ignoresUnlinkedAndUniqueSids() {
         let aId = UUID()
         let bId = UUID()
@@ -717,8 +746,7 @@ final class ReducerTests: XCTestCase {
                 pid: 1, initialInput: nil, restartPolicy: .never
             ),
             auxiliary: [auxSpec],
-            unread: 0, createdAt: Date(), completedAt: nil
-        )
+            unread: 0, createdAt: Date(), completedAt: nil, renamed: false        )
         let state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
                 makeWorktree(id: worktreeId, jobs: [job])
@@ -752,8 +780,7 @@ final class ReducerTests: XCTestCase {
                 cwd: URL(fileURLWithPath: "/wt"),
                 pid: 2, initialInput: nil, restartPolicy: .never
             )],
-            unread: 0, createdAt: Date(), completedAt: nil
-        )
+            unread: 0, createdAt: Date(), completedAt: nil, renamed: false        )
         let state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
                 makeWorktree(id: worktreeId, jobs: [job])
@@ -787,8 +814,7 @@ final class ReducerTests: XCTestCase {
                 cwd: URL(fileURLWithPath: "/wt"),
                 pid: 7, initialInput: nil, restartPolicy: .alwaysRestart
             )],
-            unread: 0, createdAt: Date(), completedAt: nil
-        )
+            unread: 0, createdAt: Date(), completedAt: nil, renamed: false        )
         let state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
                 makeWorktree(id: worktreeId, jobs: [job])
@@ -869,8 +895,7 @@ private func makeJob(id: UUID, kind: JobKind, primaryPid: Int32?, auxPids: [Int3
         },
         unread: 0,
         createdAt: Date(),
-        completedAt: nil
-    )
+        completedAt: nil, renamed: false    )
 }
 
 private func terminatedPids(in effects: [Effect]) -> [Int32] {

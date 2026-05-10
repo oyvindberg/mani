@@ -92,7 +92,13 @@ public struct AppState: Codable, Equatable {
         }
         var result: [JobPath] = []
         for (_, group) in bySid where group.count > 1 {
+            // Survivor priority: a user-renamed Job ALWAYS beats an
+            // auto-named one — losing a rename to a dedupe sweep silently
+            // happened once and is the kind of UX foot-gun we won't repeat.
+            // Within renamed-vs-renamed (or default-vs-default), fall back
+            // to live pid → unread → createdAt.
             let sorted = group.sorted { a, b in
+                if a.job.renamed != b.job.renamed { return a.job.renamed && !b.job.renamed }
                 let liveA = a.job.primary.pid != nil
                 let liveB = b.job.primary.pid != nil
                 if liveA != liveB { return liveA && !liveB }
