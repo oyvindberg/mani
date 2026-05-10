@@ -59,6 +59,12 @@ struct ContentView: View {
                                 project: path.project, worktree: path.worktree
                             )
                         )
+                    } else if case .diff = context.job.kind {
+                        DiffWorkspaceView(
+                            job: context.job,
+                            jobPath: path,
+                            worktreePath: context.worktree.path
+                        )
                     } else if context.job.primary.pid == nil {
                         StoppedJobView(job: context.job, jobPath: path)
                     } else {
@@ -306,6 +312,11 @@ private struct SidebarView: View {
         Button("Resume Claude session…") {
             resumeContext = ResumeContext(worktreePath: path, cwd: worktree.path)
         }
+        if case .git = worktree.kind {
+            Button("Open Diff Workspace") {
+                Task { await Self.spawnDiff(at: path, cwd: worktree.path, store: store) }
+            }
+        }
         Button("Open in IntelliJ") {
             Self.openInIntelliJ(worktree.path)
         }
@@ -335,6 +346,21 @@ private struct SidebarView: View {
         await store.resetForNewClaudeTask()
         await store.dispatch(.createJob(
             at: path, name: "claude", kind: .claude(sessionId: nil),
+            primary: spec, auxiliary: []
+        ))
+    }
+
+    private static func spawnDiff(at path: WorktreePath, cwd: URL, store: Store) async {
+        // The diff workspace is backed by a long-lived /bin/zsh -l. The view
+        // writes delta pipelines into the PTY when the user selects a file —
+        // no respawn per click. See DiffWorkspaceView.
+        let spec = ProcessSpec(
+            command: "/bin/zsh", args: ["-l"],
+            env: [:], cwd: cwd, pid: nil,
+            initialInput: nil, restartPolicy: .never
+        )
+        await store.dispatch(.createJob(
+            at: path, name: "diff", kind: .diff,
             primary: spec, auxiliary: []
         ))
     }
@@ -544,6 +570,7 @@ private extension Job {
         switch kind {
         case .shell: return "terminal"
         case .claude: return "sparkle"
+        case .diff: return "doc.text.below.ecg"
         case .custom: return "puzzlepiece.extension"
         }
     }
@@ -687,7 +714,7 @@ private struct StoppedJobView: View {
     }
 }
 
-private struct TerminalPane: NSViewRepresentable {
+struct TerminalPane: NSViewRepresentable {
     let jobPath: JobPath
     @EnvironmentObject var store: Store
 

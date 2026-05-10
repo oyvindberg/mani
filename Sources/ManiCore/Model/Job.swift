@@ -75,6 +75,7 @@ public struct Job: Codable, Equatable, Identifiable {
 public enum JobKind: Codable, Equatable {
     case claude(sessionId: String?)
     case shell
+    case diff
     case custom(label: String)
 }
 
