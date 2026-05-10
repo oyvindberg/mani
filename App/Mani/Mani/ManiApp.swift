@@ -85,6 +85,7 @@ struct ManiApp: App {
                     if !store.state.projects.isEmpty {
                         await Self.respawnSafelisted(store: store)
                     }
+                    await Self.dedupeClaudeJobs(store: store)
                     Self.startSnapshotTimer(store: store)
                 }
         }
@@ -271,6 +272,21 @@ struct ManiApp: App {
                     }
                 }
             }
+        }
+    }
+
+    // One-time cleanup on launch: persisted state from older Mani builds
+    // (before the reducer enforced sid uniqueness, ADR-016) can contain
+    // multiple claude jobs with the same session id. Walk the state, keep
+    // the "best" job per sid (live pid > most unread > most recent), and
+    // delete the rest via the standard deleteJob action so the deletion
+    // is durable on disk.
+    private static func dedupeClaudeJobs(store: Store) async {
+        let toRemove = store.state.duplicateClaudeJobsToRemove()
+        guard !toRemove.isEmpty else { return }
+        NSLog("[mani] deduping \(toRemove.count) duplicate claude jobs")
+        for path in toRemove {
+            await store.dispatch(.deleteJob(at: path))
         }
     }
 

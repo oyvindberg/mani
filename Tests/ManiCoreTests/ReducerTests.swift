@@ -484,6 +484,123 @@ final class ReducerTests: XCTestCase {
         XCTAssertTrue(effects.isEmpty)
     }
 
+    // MARK: - deleteJob + dedupe
+
+    func test_deleteJob_known_emitsEventAndTerminatesPids() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let jobId = UUID()
+        var state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, jobs: [
+                    makeJob(id: jobId, primaryPid: 42, auxPids: [43, 44])
+                ])
+            ])
+        ])
+        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+
+        let (events, effects) = reduce(state, .deleteJob(at: path))
+
+        XCTAssertEqual(events, [.jobDeleted(at: path)])
+        XCTAssertEqual(Set(terminatedPids(in: effects)), [42, 43, 44])
+        for e in events { apply(&state, e) }
+        XCTAssertTrue(state.projects[0].worktrees[0].jobs.isEmpty)
+    }
+
+    func test_deleteJob_deadJob_emitsEventNoTerminate() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let jobId = UUID()
+        let state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, jobs: [
+                    makeJob(id: jobId, primaryPid: nil, auxPids: [])
+                ])
+            ])
+        ])
+        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+
+        let (events, effects) = reduce(state, .deleteJob(at: path))
+
+        XCTAssertEqual(events, [.jobDeleted(at: path)])
+        XCTAssertTrue(terminatedPids(in: effects).isEmpty)
+    }
+
+    func test_deleteJob_unknown_isNoop() {
+        let state = AppState.empty
+        let (events, effects) = reduce(
+            state,
+            .deleteJob(at: JobPath(project: UUID(), worktree: UUID(), job: UUID()))
+        )
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertTrue(effects.isEmpty)
+    }
+
+    func test_duplicateClaudeJobsToRemove_prefersLivePid() {
+        let dupSid = "shared-sid"
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let live = makeJob(
+            id: UUID(), kind: .claude(sessionId: dupSid),
+            primaryPid: 100, auxPids: []
+        )
+        let dead = makeJob(
+            id: UUID(), kind: .claude(sessionId: dupSid),
+            primaryPid: nil, auxPids: []
+        )
+        let state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, jobs: [dead, live])
+            ])
+        ])
+
+        let toRemove = state.duplicateClaudeJobsToRemove()
+
+        XCTAssertEqual(toRemove.count, 1)
+        XCTAssertEqual(toRemove[0].job, dead.id)
+    }
+
+    func test_duplicateClaudeJobsToRemove_tieBreaksOnUnreadThenCreatedAt() {
+        let sid = "s"
+        let high = makeJob(
+            id: UUID(), kind: .claude(sessionId: sid),
+            primaryPid: nil, auxPids: []
+        )
+        var highWithUnread = high
+        highWithUnread.unread = 5
+        let low = makeJob(
+            id: UUID(), kind: .claude(sessionId: sid),
+            primaryPid: nil, auxPids: []
+        )
+        let state = stateWith(projects: [
+            makeProject(id: UUID(), worktrees: [
+                makeWorktree(id: UUID(), jobs: [low, highWithUnread])
+            ])
+        ])
+
+        let toRemove = state.duplicateClaudeJobsToRemove()
+
+        XCTAssertEqual(toRemove.count, 1)
+        XCTAssertEqual(toRemove[0].job, low.id)
+    }
+
+    func test_duplicateClaudeJobsToRemove_ignoresUnlinkedAndUniqueSids() {
+        let aId = UUID()
+        let bId = UUID()
+        let unlinkedId = UUID()
+        let state = stateWith(projects: [
+            makeProject(id: UUID(), worktrees: [
+                makeWorktree(id: UUID(), jobs: [
+                    makeJob(id: aId, kind: .claude(sessionId: "A"), primaryPid: nil, auxPids: []),
+                    makeJob(id: bId, kind: .claude(sessionId: "B"), primaryPid: nil, auxPids: []),
+                    makeJob(id: unlinkedId, kind: .claude(sessionId: nil), primaryPid: nil, auxPids: []),
+                ])
+            ])
+        ])
+
+        XCTAssertTrue(state.duplicateClaudeJobsToRemove().isEmpty)
+    }
+
     // MARK: - claude session-id uniqueness
 
     func test_linkClaudeSession_otherJobOwnsTheSid_isNoop() {

@@ -143,6 +143,23 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         let event = Event.jobRenamed(at: at, name: trimmed)
         return ([event], [.persistEvents([event])])
 
+    case let .deleteJob(at):
+        guard let job = findJob(state, at) else { return ([], []) }
+        let event = Event.jobDeleted(at: at)
+        var effects: [Effect] = [.persistEvents([event])]
+        // Terminate any live processes before removing the job from state,
+        // so the EffectRunner cleans up its PTY map. Primary + aux pids
+        // both qualify.
+        if let pid = job.primary.pid {
+            effects.append(.terminate(pid: pid, escalateAfter: 1.0))
+        }
+        for aux in job.auxiliary {
+            if let pid = aux.pid {
+                effects.append(.terminate(pid: pid, escalateAfter: 1.0))
+            }
+        }
+        return ([event], effects)
+
     case let .discoverClaudeSession(at, sessionId, cwd):
         guard findWorktree(state, at) != nil else { return ([], []) }
         // Globally idempotent: a claude session must be tracked by at most
@@ -278,6 +295,12 @@ public func apply(_ state: inout AppState, _ event: Event) {
 
     case let .jobRenamed(at, name):
         mutateJob(&state, at) { $0.name = name }
+
+    case let .jobDeleted(at):
+        if let pi = state.projects.firstIndex(where: { $0.id == at.project }),
+           let wi = state.projects[pi].worktrees.firstIndex(where: { $0.id == at.worktree }) {
+            state.projects[pi].worktrees[wi].jobs.removeAll { $0.id == at.job }
+        }
 
     case let .claudeSessionLinked(at, sessionId):
         mutateJob(&state, at) {

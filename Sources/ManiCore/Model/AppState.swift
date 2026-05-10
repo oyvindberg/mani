@@ -63,6 +63,49 @@ public struct AppState: Codable, Equatable {
         return nil
     }
 
+    // For each non-nil claude session id that appears on multiple Jobs,
+    // returns the JobPaths of the duplicates that should be deleted —
+    // i.e. the group minus the "best" surviving Job. Selection rule per
+    // group: prefer a Job with a live primary pid, then highest unread
+    // count, then most recent createdAt. Used by the dedupe sweep on
+    // app launch to clean up persisted dupes from older Mani builds
+    // that didn't enforce sid uniqueness in the reducer.
+    public func duplicateClaudeJobsToRemove() -> [JobPath] {
+        struct Entry {
+            let path: JobPath
+            let job: Job
+        }
+        var bySid: [String: [Entry]] = [:]
+        for project in projects {
+            for worktree in project.worktrees {
+                for job in worktree.jobs {
+                    if case let .claude(sid?) = job.kind {
+                        let path = JobPath(
+                            project: project.id,
+                            worktree: worktree.id,
+                            job: job.id
+                        )
+                        bySid[sid, default: []].append(Entry(path: path, job: job))
+                    }
+                }
+            }
+        }
+        var result: [JobPath] = []
+        for (_, group) in bySid where group.count > 1 {
+            let sorted = group.sorted { a, b in
+                let liveA = a.job.primary.pid != nil
+                let liveB = b.job.primary.pid != nil
+                if liveA != liveB { return liveA && !liveB }
+                if a.job.unread != b.job.unread { return a.job.unread > b.job.unread }
+                return a.job.createdAt > b.job.createdAt
+            }
+            for entry in sorted.dropFirst() {
+                result.append(entry.path)
+            }
+        }
+        return result
+    }
+
     // All `.claude` jobs across the state, paired with the (project,
     // worktree) UUIDs that own them. The Store uses this to terminate
     // their PTYs before invoking `withoutClaudeJobs()`.

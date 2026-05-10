@@ -384,9 +384,9 @@ private struct SidebarView: View {
             }
         }
         Divider()
-        Button("Delete task (also stops it)", role: .destructive) {
+        Button("Delete task", role: .destructive) {
             Task {
-                await store.dispatch(.setJobEnabled(at: path, enabled: false))
+                await store.dispatch(.deleteJob(at: path))
             }
         }
     }
