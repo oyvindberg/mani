@@ -44,10 +44,8 @@ struct ManiApp: App {
     }
 
     var body: some Scene {
-        Settings {
-            SettingsView()
-                .environmentObject(store)
-        }
+        // WindowGroup first so SwiftUI uses it as the default launch window.
+        // Settings is a separate scene reached via Cmd-, only.
         WindowGroup {
             ContentView()
                 .frame(minWidth: 800, minHeight: 500)
@@ -88,6 +86,10 @@ struct ManiApp: App {
                     await Self.dedupeClaudeJobs(store: store)
                     Self.startSnapshotTimer(store: store)
                 }
+        }
+        Settings {
+            SettingsView()
+                .environmentObject(store)
         }
     }
 
