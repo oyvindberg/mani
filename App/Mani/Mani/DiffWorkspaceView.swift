@@ -30,21 +30,61 @@ struct DiffWorkspaceView: View {
     // commands aren't echoed back into the pane. The library runs `stty
     // -echo` to suppress keystroke echo plus a clear-screen reset.
     @State private var hasInitialisedShell = false
+    // nil = check pending; "" = delta missing; else = resolved absolute path
+    @State private var deltaPath: String? = nil
 
     var body: some View {
         HSplitView {
             filePane
                 .frame(minWidth: 260, idealWidth: 320, maxWidth: 480)
-            TerminalPane(jobPath: jobPath)
-                .id(jobPath)
+            rightPane
         }
         .task {
             // Run the initial refresh and the one-shot shell setup off the
             // main actor; both can take 50–200 ms.
+            checkDelta()
             refreshFileList()
             initialiseShellIfNeeded()
         }
         .onChange(of: sourceRef) { _, _ in refreshFileList() }
+    }
+
+    @ViewBuilder
+    private var rightPane: some View {
+        if deltaPath == "" {
+            DeltaMissingCard()
+        } else {
+            TerminalPane(jobPath: jobPath)
+                .id(jobPath)
+        }
+    }
+
+    private func checkDelta() {
+        Task.detached(priority: .userInitiated) {
+            let resolved = Self.findExecutable("delta") ?? ""
+            await MainActor.run { deltaPath = resolved }
+        }
+    }
+
+    // Mirrors EffectRunner's augmented PATH so `delta` is found in the
+    // same locations a spawned Mani task would search. The Mac app-launched
+    // process inherits a stripped PATH from launchd, so we have to prepend
+    // the conventional user bin dirs.
+    private static func findExecutable(_ name: String) -> String? {
+        let extras = [
+            "\(NSHomeDirectory())/.local/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+        ]
+        let inherited = ProcessInfo.processInfo.environment["PATH"]?
+            .split(separator: ":").map(String.init) ?? []
+        for dir in extras + inherited {
+            let candidate = "\(dir)/\(name)"
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+        return nil
     }
 
     // MARK: File pane
@@ -341,5 +381,50 @@ struct DiffWorkspaceView: View {
                 refreshFileList()
             }
         }
+    }
+}
+
+private struct DeltaMissingCard: View {
+    private let installCommand = "brew install git-delta"
+    @State private var copied = false
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 40))
+                .foregroundStyle(.orange)
+            Text("delta is required")
+                .font(.title3)
+                .bold()
+            Text("The Diff Workspace renders git output through `delta` for syntax-highlighted diffs. It isn't on your PATH yet.")
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: 460)
+            HStack(spacing: 6) {
+                Text(installCommand)
+                    .font(.system(.body, design: .monospaced))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(SwiftUI.Color.secondary.opacity(0.15))
+                    .cornerRadius(4)
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(installCommand, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        copied = false
+                    }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .help(copied ? "Copied" : "Copy command")
+            }
+            Text("Re-open the Diff Workspace after installing.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
