@@ -52,7 +52,13 @@ struct ContentView: View {
                     .padding(.vertical, 6)
                     Divider()
                     if isExternalClaudeJob(context.job) {
-                        ExternalClaudeView(job: context.job)
+                        ExternalClaudeView(
+                            job: context.job,
+                            jobPath: path,
+                            worktreePath: WorktreePath(
+                                project: path.project, worktree: path.worktree
+                            )
+                        )
                     } else if context.job.primary.pid == nil {
                         StoppedJobView(job: context.job, jobPath: path)
                     } else {
@@ -353,6 +359,45 @@ private struct SidebarView: View {
         try? task.run()
     }
 
+    private func adoptExternalClaude(
+        jobPath: JobPath,
+        worktreePath: WorktreePath,
+        sessionId: String,
+        cwd: URL,
+        currentName: String,
+        wasRenamed: Bool
+    ) {
+        let preservedName = wasRenamed
+            ? currentName
+            : "claude (adopted \(sessionId.prefix(6)))"
+        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: sessionId)
+        Task {
+            await store.dispatch(.deleteJob(at: jobPath))
+            await store.dispatch(.createJob(
+                at: worktreePath,
+                name: preservedName,
+                kind: .claude(sessionId: sessionId),
+                primary: spec,
+                auxiliary: []
+            ))
+            if wasRenamed,
+               let newJob = store.state.projects
+                    .first(where: { $0.id == worktreePath.project })?
+                    .worktrees.first(where: { $0.id == worktreePath.worktree })?
+                    .jobs.first(where: {
+                        if case let .claude(s) = $0.kind, s == sessionId { return true }
+                        return false
+                    }) {
+                let newPath = JobPath(
+                    project: worktreePath.project,
+                    worktree: worktreePath.worktree,
+                    job: newJob.id
+                )
+                await store.dispatch(.renameJob(at: newPath, name: preservedName))
+            }
+        }
+    }
+
     @ViewBuilder
     private func jobMenu(project: Project, worktree: Worktree, job: Job) -> some View {
         let path = JobPath(project: project.id, worktree: worktree.id, job: job.id)
@@ -381,6 +426,16 @@ private struct SidebarView: View {
                     guard let pty = await runner.pty(for: path) else { return }
                     pty.write(Data("/fork\r".utf8))
                 }
+            }
+        }
+        if case let .claude(sid) = job.kind, let sid,
+           job.primary.command == "(external claude)" {
+            Divider()
+            Button("Adopt into Mani") {
+                adoptExternalClaude(jobPath: path, worktreePath: WorktreePath(
+                    project: project.id, worktree: worktree.id
+                ), sessionId: sid, cwd: job.primary.cwd, currentName: job.name,
+                   wasRenamed: job.renamed)
             }
         }
         Divider()
@@ -496,6 +551,9 @@ private extension Job {
 
 private struct ExternalClaudeView: View {
     let job: Job
+    let jobPath: JobPath
+    let worktreePath: WorktreePath
+    @EnvironmentObject var store: Store
     @EnvironmentObject var watcher: ClaudeWatcher
 
     var body: some View {
@@ -521,8 +579,60 @@ private struct ExternalClaudeView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            if appearsActive {
+                Text("⚠︎ This session looks active (a message arrived in the last minute). Close the external claude first — two processes resuming the same session id will conflict.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 540)
+            }
+            Button("Adopt into Mani") { adopt() }
+                .keyboardShortcut(.defaultAction)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var appearsActive: Bool {
+        guard case let .claude(sid) = job.kind, let sid,
+              let detected = watcher.sessions[sid],
+              let last = detected.lastMessageAt
+        else { return false }
+        return Date().timeIntervalSince(last) < 60
+    }
+
+    private func adopt() {
+        guard case let .claude(sid) = job.kind, let sid else { return }
+        let cwd = job.primary.cwd
+        let preservedName = job.renamed ? job.name : "claude (adopted \(sid.prefix(6)))"
+        let preservedRenamed = job.renamed
+        let oldPath = jobPath
+        let wt = worktreePath
+        Task {
+            // Order matters: delete the external first so the new Job's
+            // .claude(sid) doesn't trip the global uniqueness check.
+            await store.dispatch(.deleteJob(at: oldPath))
+            let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: sid)
+            await store.dispatch(.createJob(
+                at: wt,
+                name: preservedName,
+                kind: .claude(sessionId: sid),
+                primary: spec,
+                auxiliary: []
+            ))
+            if preservedRenamed,
+               let newJob = store.state.projects
+                    .first(where: { $0.id == wt.project })?
+                    .worktrees.first(where: { $0.id == wt.worktree })?
+                    .jobs.first(where: {
+                        if case let .claude(s) = $0.kind, s == sid { return true }
+                        return false
+                    }) {
+                let newPath = JobPath(
+                    project: wt.project, worktree: wt.worktree, job: newJob.id
+                )
+                await store.dispatch(.renameJob(at: newPath, name: preservedName))
+            }
+        }
     }
 
     private func labelled(_ label: String, _ value: String) -> some View {
