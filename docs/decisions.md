@@ -325,28 +325,23 @@ target (`Mani.xcodeproj`) when starting spike 1.
 
 ---
 
-## ADR-013 (provisional) — Hook scope: global vs per-cwd
+## ADR-013 — Hook scope: global only (for now)
 
-**Status.** Open. Not yet decided.
+**Status.** Accepted (v0.1 / v0.2).
 
 **Context.** Claude Code reads hooks from both `~/.claude/settings.json`
 (global) and per-cwd `.claude/settings.json` (project-local). Either or
 both can register Mani's shim.
 
-**Decision (proposed).** Global for v0.1: simpler, single registration
-covers all sessions. Per-cwd as a v0.2 option for users who want Mani
-hooks scoped to specific projects.
+**Decision.** Global only. Mani's shim is registered in
+`~/.claude/settings.json` via `HookRegistration.swift` on app launch.
+Per-cwd hook registration is not implemented; revisit only if a
+concrete user need surfaces.
 
-**Rationale.** Per-cwd has cleaner semantics but requires writing into
-each user repo (violates ADR-006 in spirit). Global is single-source.
-
-**Open questions.**
-- Does writing into `~/.claude/settings.json` raise concerns if the user
-  has hand-tuned hooks there? (Mitigation: merge, don't overwrite —
-  see `docs/claude-integration.md`.)
-- Does the user want per-cwd as the default for some workflow?
-
-**Action.** Confirm with user before implementing.
+**Rationale.** Per-cwd hooks would require writing into each user repo,
+violating ADR-006 ("nothing in user repos") in spirit. The global path
+is single-source, which makes uninstall/repair feasible. Merge logic
+already in place handles user-authored hooks safely.
 
 ---
 
@@ -376,3 +371,59 @@ the detail column.
 - Don't add tabs unless the user revisits this decision.
 - Cmd-Shift-]/[ for "next/prev task" (if added) cycles through the
   flattened task list shown in the sidebar, not a tab strip.
+
+---
+
+## ADR-015 — Claude tasks spawn via zsh + injected keystrokes
+
+**Status.** Accepted (v0.2-wave-1).
+
+**Context.** Claude Code's TUI does not fully reflow on `SIGWINCH` when
+launched directly via `forkpty + execve(claude)`. It DOES reflow when
+the user types `claude` at a real interactive shell prompt. Despite
+extensive investigation (env vars, termios, process group / session
+structure, `TERM_PROGRAM` identity, double-fork+`tcsetpgrp`, raw mode,
+DEC mode 2026, char-by-char synthetic typing) the underlying mechanism
+that makes claude take its full-redraw branch was never identified.
+
+**Decision.** Claude jobs spawn `/bin/zsh -l` and inject `claude\r` (or
+`claude --resume <id>\r`) into the master FD ~800 ms after fork. The
+delay is empirical — long enough for zsh to source rc files and render
+its first prompt before the synthetic keystrokes arrive. The plumbing:
+
+- `ProcessSpec.initialInput: String?` carries the bytes.
+- `EffectRunner` schedules the write `DispatchQueue.global().asyncAfter`
+  immediately after spawn.
+- `ClaudeTaskSpec.make(cwd:sessionId:)` is the single factory used by
+  every "new claude task" entry point.
+- `ClaudeTaskSpec.restartSpec(for:)` re-derives a fresh spec on Restart
+  for `.claude` jobs, severing reuse of stale persisted specs.
+- `Store.resetForNewClaudeTask()` strips all `.claude` jobs from state,
+  terminates their PTYs, and `compact()`s persistence (writes a fresh
+  `state.json` snapshot, truncates `events.jsonl` to zero bytes) before
+  any new claude task is created.
+
+**Rationale.** Treating direct `forkpty + execve(claude)` as broken and
+routing through a real shell is the only configuration that
+empirically restores resize-redraw. The synthetic keystroke injection
+is mechanically equivalent to the user typing the command, which is
+the working path. The `resetForNewClaudeTask` step kills a class of
+testing footgun where pre-zsh-injection persisted specs could be
+revived via the Restart button and silently reproduce the old broken
+behavior.
+
+**Implications.**
+- Claude jobs persist with `command="/bin/zsh"` and `args=["-l"]`. They
+  are indistinguishable from shell jobs at the `ProcessSpec` level
+  except for `initialInput`. This means `respawnSafelisted` (which
+  predicates on `command == "/bin/zsh"`) will auto-respawn claude jobs
+  on app launch alongside shells. Acceptable for now.
+- Don't add another spawn path for claude that bypasses
+  `ClaudeTaskSpec`. Centralization is load-bearing — it's what makes
+  the Restart re-derivation work.
+- The 800 ms delay is not load-bearing for correctness, only for
+  robustness against slow rc files. If a user reports a race where the
+  keystroke beats the prompt, increase the delay; do not switch to
+  prompt-detection (we tried; it didn't help).
+- See `~/.claude/.../memory/project_claude_resize_dead_end.md` for the
+  full investigation log.

@@ -12,9 +12,6 @@ enum PTYError: Error {
     case forkpty(errno: Int32)
 }
 
-@_silgen_name("fork") private func cfork() -> pid_t
-
-
 final class ManagedPTY: @unchecked Sendable {
     let masterFD: Int32
     let pid: pid_t
@@ -96,38 +93,8 @@ final class ManagedPTY: @unchecked Sendable {
                 cfmakeraw(&tio)
                 tcsetattr(0, TCSANOW, &tio)
             }
-            // Mimic an interactive shell's job-control setup before exec'ing
-            // the user's command:
-            //
-            //   forkpty → child A (session leader of new session, ctty=slave)
-            //   A.fork  → child B (grandchild)
-            //   B: setpgid(0,0) — own pgrp
-            //   B:  tcsetpgrp(0, B) — own pgrp is foreground of the slave
-            //   B: execve(claude)
-            //   A: waitpid(B); _exit
-            //
-            // Net result: the exec'd program is NOT the session leader (A is),
-            // IS pgrp leader (its own pgrp), and IS foreground. Same shape as
-            // claude when run from `claude` typed at a zsh prompt.
-            let grandchild = cfork()
-            if grandchild < 0 { _exit(126) }
-            if grandchild == 0 {
-                _ = setpgid(0, 0)
-                _ = tcsetpgrp(0, getpid())
-                execve(executable, argvCStrs, envCStrs)
-                _exit(127)
-            }
-            // Tell the parent (us, the intermediate) to make the grandchild
-            // foreground too, in case the kernel raced us.
-            _ = setpgid(grandchild, grandchild)
-            _ = tcsetpgrp(0, grandchild)
-            var status: Int32 = 0
-            _ = waitpid(grandchild, &status, 0)
-            if (status & 0x7f) == 0 {
-                _exit((status >> 8) & 0xff)
-            } else {
-                _exit(128 + (status & 0x7f))
-            }
+            execve(executable, argvCStrs, envCStrs)
+            _exit(127)
         }
 
         argvCStrs.forEach { free($0) }

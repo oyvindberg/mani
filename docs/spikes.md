@@ -447,37 +447,21 @@ Highlights:
 
 ---
 
-## Spike 8: End-to-end smoke 🔲
+## Spike 8: End-to-end smoke ✅
 
 **Question.** Do spikes 1, 2, and 3 actually work together?
 
-**Time budget.** 2 days.
+**Disposition.** Subsumed by v0.1 itself — the v0.1 build IS the
+composition of spikes 1–3 (terminal + PTY + hooks) plus the rest of
+the data model. The throwaway end-to-end window described in the
+original plan was skipped because shipping v0.1 with all three
+integrated provided the same evidence with no throwaway code to
+discard.
 
-**Approach.**
-
-Combine the artifacts from spikes 1–3 into a single throwaway window:
-
-1. One project (hardcoded), one folder worktree (hardcoded), two tasks
-   (one shell, one claude).
-2. Both tasks spawn via `ManagedPTY` (spike 2).
-3. Both render via SwiftTerm (spike 1).
-4. Hook shim is registered, listener runs in-process (spike 3).
-5. Click-to-kill each task; restart the app; confirm:
-   - Layout is back.
-   - Cwds are correct.
-   - Hook events for the resumed Claude session arrive at the listener.
-
-This is the proof that the architecture survives composition. If any
-piece silently broke when combined, this catches it.
-
-**Stop condition.**
-
-- ✅ green: layout restores, both tasks usable, hook events flow. Move to
-  v0.1 implementation.
-- 🔴 red: composition broke something. Diagnose, fix, re-run. Don't begin
-  v0.1 until green.
-
-**Disposition.** Throwaway. The lessons feed into v0.1's real code.
+**What we observed in v0.1.** Layout restoration, cwd preservation,
+hook events flowing for spawned and externally-discovered Claude
+sessions, all working. No composition surprise that warranted a
+dedicated smoke spike.
 
 ---
 

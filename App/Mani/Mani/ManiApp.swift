@@ -28,6 +28,19 @@ struct ManiApp: App {
 
         let socketPath = storeRoot.appendingPathComponent("hook.sock").path
         _hookListener = StateObject(wrappedValue: HookListenerService(socketPath: socketPath))
+
+        // Cmd-Q / quit menu: SIGTERM every live PTY before the app exits.
+        // macOS gives ~1s before force-quit, so we don't block waiting for
+        // reaps — Task.detached fires-and-forgets the terminate() calls and
+        // the kernel delivers SIGTERM regardless of whether Mani is still
+        // alive when the syscall completes.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: nil
+        ) { _ in
+            Task { await runner.terminateAll() }
+        }
     }
 
     var body: some Scene {

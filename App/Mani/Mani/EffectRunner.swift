@@ -25,6 +25,19 @@ actor EffectRunner {
         ptys[path]
     }
 
+    // Send SIGTERM to every live PTY. Used on graceful app quit so the
+    // forkpty children don't outlive Mani as orphans (init becomes their
+    // PPID, the master FD closes, and zsh/claude usually exit on the
+    // resulting SIGHUP — but actively SIGTERMing them is faster and
+    // deterministic). escalateAfter is short because macOS gives the
+    // app only ~1s during applicationWillTerminate before force-quit.
+    func terminateAll() {
+        for pty in ptys.values {
+            let captured = pty
+            Task.detached { captured.terminate(escalateAfter: 0.3) }
+        }
+    }
+
     func run(_ effect: Effect, dispatch: @escaping (Action) async -> Void) async {
         switch effect {
 

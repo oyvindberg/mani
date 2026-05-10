@@ -57,40 +57,59 @@ processes underneath, so the user has a panic switch at any level.
 
 ## What's built right now
 
-A `ManiCore` Swift Package with the data model + reducer pattern + 4 passing
-tests. All Foundation-only, no UI dependencies yet.
+v0.1 shipped end-to-end and v0.2's first wave (libghostty + theming +
+claude reflow workaround) is in. All eight spikes are green.
 
-Files (paths relative to repo root):
+Layout:
 
 ```
 Package.swift                              swift-tools 5.10, macOS 14+
-Sources/ManiCore/
-  Model/AppState.swift                     AppState, Settings
-  Model/Project.swift                      Project
-  Model/Worktree.swift                     Worktree, WorktreeKind (.git/.folder)
-  Model/Job.swift                          Job, JobKind, JobStatus
-  Model/ProcessSpec.swift                  ProcessSpec
+Sources/ManiCore/                          Foundation-only library
+  Model/                                   AppState, Project, Worktree, Job,
+                                           ProcessSpec (with initialInput),
+                                           JobKind/Status, Settings
   Paths.swift                              WorktreePath, JobPath
-  Action.swift                             full Action enum (~14 cases)
-  Event.swift                              full Event enum (~14 cases, Codable)
-  Effect.swift                             full Effect enum (~9 cases)
-  Reducer.swift                            reduce + apply; createProject and
-                                           setProjectEnabled implemented;
-                                           remaining cases are exhaustive no-ops
-Tests/ManiCoreTests/ReducerTests.swift     4 tests, all green
+  Action.swift, Event.swift, Effect.swift  three-type pipeline
+  Reducer.swift                            reduce + apply, all cases
+  PersistenceStore.swift                   events.jsonl + state.json + recovery
+Tests/ManiCoreTests/                       29 tests, green
+
+App/Mani/Mani.xcodeproj                    macOS app target
+App/Mani/Mani/
+  ManiApp.swift                            @main, Store wiring, settings recover
+  Store.swift                              Store + resetForNewClaudeTask
+  ContentView.swift                        NavigationSplitView, sidebar, panes
+  NewItemSheets.swift                      project / worktree / claude sheets
+  EffectRunner.swift                       process spawn, scrollback, git
+  ManagedPTY.swift                         forkpty + execve + signal sources
+  ClaudeTaskSpec.swift                     factory for claude job specs
+  LibGhosttyRenderer.swift                 libghostty backend behind protocol
+  TerminalRenderer.swift                   protocol (renderer-agnostic)
+  ScrollbackWriter.swift                   ring-buffer per-task log
+  ClaudeWatcher.swift                      FSEvents on ~/.claude/projects
+  HookListenerService.swift                AF_UNIX socket server
+  HookRegistration.swift                   merges shim into ~/.claude/settings.json
+  ClaudeHistoryScanner.swift               session enumerator for Resume sheet
+  NotificationService.swift                UNUserNotificationCenter
+  SettingsView.swift                       General + Terminal tabs
+  ColorHex.swift, ColorPalette.swift       project color picker
 ```
 
-Build: `swift build` (~6s). Tests: `swift test` (~7s, 4/4 pass).
+Build: `swift build` (~2s) and `xcodebuild -project App/Mani/Mani.xcodeproj
+-scheme Mani` for the app. Tests: `swift test` (29/29 green).
 
-What is **not** built:
+What is **not** built (deferred or punted):
 
-- Reducer cases beyond `createProject` / `setProjectEnabled`.
-- `apply` cases beyond the same two.
-- The persistence layer (`PersistenceStore`) — no events.jsonl writer, no
-  state.json compactor, no recovery code.
-- `EffectRunner` — no actual process spawning, no FS writes.
-- Any UI or app target. SwiftTerm not yet a dependency.
-- Claude integration (watcher, hooks, shim binary).
+- Auxiliary process **restart policies** (model has `auxiliary: []`; sheet
+  builds aux specs; no policy yet — see § "v0.2 backlog").
+- App-target tests for `EffectRunner`, `ClaudeTaskSpec`, the post-spawn
+  write delay, and the persistence-wipe flow.
+- Font picker in Settings (theme picker is in).
+- Search, hyperlinks, image protocols inside the terminal viewport.
+- Scrollback compression beyond the 32 MB ring cap.
+- Multiple windows.
+- Code signing, notarization, Sparkle auto-update.
+- Per-cwd `.claude/settings.json` hook scope (rejected per ADR-013).
 
 ---
 
@@ -137,41 +156,53 @@ See `docs/spikes.md` for the full list with stop conditions. Summary:
 The user explicitly opted into a larger v0.1 than initially proposed: full
 Claude integration is *in*, not deferred.
 
-**In scope:**
-- Full data model (already done, model layer)
+**Shipped:**
+- Full data model
 - Folder *and* git worktrees
-- Tasks: shell + claude
-- SwiftTerm renderer behind `TerminalRenderer` protocol
+- Tasks: shell + claude (claude via zsh + injected `claude\r`; see ADR-015)
+- TerminalRenderer protocol + libghostty backend (originally SwiftTerm; swapped
+  in v0.2-wave-1 per ADR-002)
 - Reducer + EffectRunner + persistence (state.json + events.jsonl + scrollback.log)
-- Sidebar tree (Project → Worktree → Task), enable/disable kill switches
-- Tabs per worktree
-- Crash recovery
+- Sidebar tree with project → worktree → task hierarchy and enable/disable
+  kill switches at every level
+- Crash recovery + selective auto-respawn (`respawnSafelisted`)
 - Claude watcher (FSEvents on `~/.claude/projects`)
-- Hook plumbing (shim binary, merged settings.json, Unix socket)
-- Session linking (cwd + recency for bare watcher; SessionStart hook for spawned tasks)
-- macOS user notifications + sidebar badges
-- **Per-project visual identity**: 3px sidebar border + 6-8px color band above content + tinted breadcrumb. *No theming inside the terminal viewport.*
+- Hook plumbing (in-process AF_UNIX listener, merged `settings.json` shim)
+- Session linking (cwd + recency for bare watcher; SessionStart hook for
+  spawned tasks)
+- macOS user notifications + sidebar badges (unread counts)
+- **Per-project visual identity**: 3px sidebar border + color band above
+  content + tinted breadcrumb. No theming inside the terminal viewport.
+- Settings UI (general + terminal tabs; theme picker)
 
-**Out of scope (deferred to v0.2+):**
-- Auxiliary processes (model has `auxiliary: []` reserved; just primary for v0.1)
-- Settings UI (config via plist)
-- Multiple windows
-- Search, hyperlinks, image protocols
-- Scrollback archive/compression beyond a ring-buffer cap
-- Code signing / notarization (run unsigned via `xattr -dr com.apple.quarantine`)
-- libghostty renderer
+**Explicitly not in v0.1 (per later ADRs):**
+- Tabs per worktree — dropped, sidebar is the only navigation (ADR-014).
 
-**Cut point if timeline is tight:** drop hooks (keep watcher only). Loses
-sub-second idle detection; saves ~3–4 days. Hooks become v0.2.
+### Phase 2: v0.2 backlog
 
-### Phase 2: v0.2+ (post-dogfooding, in rough order)
+Wave 1 done:
+- libghostty renderer (ADR-002 swap)
+- Theming via Ghostty theme catalog
+- Claude resize/reflow workaround via zsh + post-spawn keystroke injection
+  (ADR-015), with `Store.resetForNewClaudeTask()` to keep persisted specs
+  from haunting the UI
 
-1. Git worktree creation UX polish (edge cases)
+Wave 2 (in progress / planned):
+1. Process hygiene: deterministic PTY teardown on quit, kill-before-restart,
+   removing the now-redundant ManagedPTY double-fork
 2. Auxiliary processes with restart policies
-3. libghostty renderer behind the same `TerminalRenderer` protocol
-4. Theming, fonts, settings UI
-5. Search and hyperlinks
-6. Code signing + notarization + auto-update (Sparkle)
+3. Font picker in Settings (theme picker is in)
+4. App-target tests covering EffectRunner spawn flow, ClaudeTaskSpec,
+   resetForNewClaudeTask
+5. Per-restart scrollback rotation (one log per session, archived on restart)
+6. Search and hyperlinks inside the terminal viewport
+7. Scrollback compression / rotation beyond the 32 MB ring cap
+8. Inline image protocols (Sixel / iTerm2 / Kitty) — TBD which to support
+9. claude `--resume` session-id reconciliation when claude allocates a new id
+
+Out of scope for v0.2:
+- Multiple windows
+- Code signing / notarization / Sparkle auto-update
 
 ---
 
@@ -316,46 +347,23 @@ When you sit down:
 
 ## What's next, prioritized
 
-**Most urgent (gating risk):**
+See § "Phase 2: v0.2 backlog" above for the canonical list. The order
+favors process-hygiene fixes (because they affect dogfooding stability)
+before user-facing features.
 
-1. **Spike 1 — SwiftTerm embedding.** Needs an Xcode app target. Steps:
-   - Open `Package.swift` in Xcode (or create an Xcode project alongside
-     that depends on the local package).
-   - Add the SwiftTerm SPM dependency: `https://github.com/migueldeicaza/SwiftTerm`
-   - Build a minimal SwiftUI window with a `TerminalView` that runs `/bin/zsh`
-     and accepts input.
-   - Torture-test: `find / -type f 2>/dev/null`, `cat /dev/urandom | head -c 10000000`,
-     `vim` over SSH. Make sure rendering doesn't melt.
-   - Stop condition: if SwiftTerm can't keep up with normal Claude Code
-     workloads, escalate to the user before continuing. The whole stack
-     pivots if this fails.
+**Top of stack:**
 
-**Useful while spike 1 is gated:**
-
-2. Flesh out the remaining reducer cases with tests:
-   - `createWorktree`, `deleteWorktree`, `setWorktreeEnabled`,
-     `markWorktreeMissing`
-   - `createJob`, `setJobEnabled`, `completeJob`, `linkClaudeSession`
-   - `processStarted`, `processExited` (pid bookkeeping)
-   - `renameProject`, `deleteProject`
-3. Implement `apply` for the same cases.
-4. Add property-based or randomized tests over (action stream → state)
-   to catch reducer bugs.
-
-**Pre-spike-2 prep:**
-
-5. Sketch `ManagedPTY` (the PTY wrapper described in `docs/terminal.md`)
-   as a header / interface, no implementation yet. Lets us start the
-   `EffectRunner` skeleton in parallel with spike 1.
-
-**Do NOT do yet:**
-
-- Add SwiftTerm to `Package.swift`. It's a UI dependency; goes in the app
-  target, not in `ManiCore`.
-- Build the persistence layer. Architecture is settled but premature; better
-  to have one or two more reducer cases working first to know the shape of
-  what we're persisting.
-- Add a CLI or executable target. Mani is a Mac app, not a CLI.
+1. Revert the `ManagedPTY` double-fork (commit `8b9e12b`). Originally
+   added trying to fix claude resize; the resize fix is now zsh+keystroke
+   injection (ADR-015), and the double-fork's only remaining effect is
+   leaving orphan intermediate processes when Mani is killed.
+2. Deterministic PTY teardown on Mani quit. Currently spawned PTYs become
+   orphans. Wire an `applicationWillTerminate` hook through to
+   `EffectRunner` so it kills every live PTY first.
+3. Restart button must SIGTERM/wait the live pid before respawning;
+   currently it spawns a second process on top of the first.
+4. Hide / disable command + args fields in `NewTaskSheet` when kind=Claude
+   (the factory ignores them; the form lies to the user).
 
 ---
 

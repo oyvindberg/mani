@@ -300,32 +300,43 @@ struct NewTaskSheet: View {
             }
             Form {
                 TextField("Name", text: $name)
-                TextField("Command", text: $command)
-                TextField("Args (space-separated)", text: $argsString)
-            }
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text("Auxiliary processes")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("+ Add") {
-                        aux.append(AuxRow(command: "", argsString: ""))
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.caption)
+                if kind == .shell {
+                    TextField("Command", text: $command)
+                    TextField("Args (space-separated)", text: $argsString)
+                } else {
+                    // Claude jobs always spawn /bin/zsh -l + injected `claude\r`
+                    // (ADR-015). Showing/editing the command field would lie —
+                    // ClaudeTaskSpec.make ignores the form values.
+                    Text("Spawned via /bin/zsh -l with `claude` injected at the prompt.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                ForEach($aux) { $row in
+            }
+            if kind == .shell {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        TextField("command", text: $row.command)
-                            .textFieldStyle(.roundedBorder)
-                        TextField("args", text: $row.argsString)
-                            .textFieldStyle(.roundedBorder)
-                        Button {
-                            aux.removeAll { $0.id == row.id }
-                        } label: {
-                            Image(systemName: "minus.circle")
+                        Text("Auxiliary processes")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("+ Add") {
+                            aux.append(AuxRow(command: "", argsString: ""))
                         }
                         .buttonStyle(.borderless)
+                        .font(.caption)
+                    }
+                    ForEach($aux) { $row in
+                        HStack {
+                            TextField("command", text: $row.command)
+                                .textFieldStyle(.roundedBorder)
+                            TextField("args", text: $row.argsString)
+                                .textFieldStyle(.roundedBorder)
+                            Button {
+                                aux.removeAll { $0.id == row.id }
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.borderless)
+                        }
                     }
                 }
             }
@@ -343,17 +354,19 @@ struct NewTaskSheet: View {
                             env: [:], cwd: cwd, pid: nil,
                             initialInput: nil
                           )
-                    let auxSpecs: [ProcessSpec] = aux.compactMap { row in
-                        guard !row.command.isEmpty else { return nil }
-                        let auxArgs = row.argsString
-                            .split(whereSeparator: { $0.isWhitespace })
-                            .map(String.init)
-                        return ProcessSpec(
-                            command: row.command, args: auxArgs,
-                            env: [:], cwd: cwd, pid: nil,
-                            initialInput: nil
-                        )
-                    }
+                    let auxSpecs: [ProcessSpec] = (kind == .claude)
+                        ? []
+                        : aux.compactMap { row in
+                            guard !row.command.isEmpty else { return nil }
+                            let auxArgs = row.argsString
+                                .split(whereSeparator: { $0.isWhitespace })
+                                .map(String.init)
+                            return ProcessSpec(
+                                command: row.command, args: auxArgs,
+                                env: [:], cwd: cwd, pid: nil,
+                                initialInput: nil
+                            )
+                        }
                     let jobKind: JobKind = (kind == .claude)
                         ? .claude(sessionId: nil)
                         : .shell
