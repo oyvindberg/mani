@@ -433,6 +433,133 @@ final class ReducerTests: XCTestCase {
         XCTAssertEqual(state.projects[0].worktrees[0].jobs[0].auxiliary[0].pid, 5151)
     }
 
+    // MARK: - renameJob
+
+    func test_renameJob_known_emitsEventAndApplies() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let jobId = UUID()
+        var state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, jobs: [
+                    makeJob(id: jobId, primaryPid: 1, auxPids: [])
+                ])
+            ])
+        ])
+        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+
+        let (events, effects) = reduce(state, .renameJob(at: path, name: "  api server  "))
+
+        // Trimmed, persisted, applied.
+        XCTAssertEqual(events, [.jobRenamed(at: path, name: "api server")])
+        XCTAssertEqual(effects.count, 1)
+        for e in events { apply(&state, e) }
+        XCTAssertEqual(state.projects[0].worktrees[0].jobs[0].name, "api server")
+    }
+
+    func test_renameJob_emptyAfterTrim_isNoop() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let jobId = UUID()
+        let state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, jobs: [
+                    makeJob(id: jobId, primaryPid: nil, auxPids: [])
+                ])
+            ])
+        ])
+        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+
+        let (events, effects) = reduce(state, .renameJob(at: path, name: "   "))
+
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertTrue(effects.isEmpty)
+    }
+
+    func test_renameJob_unknownPath_isNoop() {
+        let state = AppState.empty
+        let path = JobPath(project: UUID(), worktree: UUID(), job: UUID())
+        let (events, effects) = reduce(state, .renameJob(at: path, name: "x"))
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertTrue(effects.isEmpty)
+    }
+
+    // MARK: - claude session-id uniqueness
+
+    func test_linkClaudeSession_otherJobOwnsTheSid_isNoop() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let ownerId = UUID()
+        let targetId = UUID()
+        let owner = makeJob(
+            id: ownerId, kind: .claude(sessionId: "shared"),
+            primaryPid: nil, auxPids: []
+        )
+        let target = makeJob(
+            id: targetId, kind: .claude(sessionId: nil),
+            primaryPid: nil, auxPids: []
+        )
+        let state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, jobs: [owner, target])
+            ])
+        ])
+        let path = JobPath(project: projectId, worktree: worktreeId, job: targetId)
+
+        let (events, effects) = reduce(state, .linkClaudeSession(at: path, sessionId: "shared"))
+
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertTrue(effects.isEmpty)
+    }
+
+    func test_linkClaudeSession_sameJobReLinkingItsOwnSid_isAllowed() {
+        // A sid the SAME job already tracks is fine to re-link (no-op on
+        // disk, but not a "conflict" — the owner *is* this job).
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let jobId = UUID()
+        let job = makeJob(
+            id: jobId, kind: .claude(sessionId: "live"),
+            primaryPid: nil, auxPids: []
+        )
+        let state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, jobs: [job])
+            ])
+        ])
+        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+
+        let (events, effects) = reduce(state, .linkClaudeSession(at: path, sessionId: "live"))
+
+        XCTAssertEqual(events, [.claudeSessionLinked(at: path, sessionId: "live")])
+        XCTAssertEqual(effects.count, 1)
+    }
+
+    func test_discoverClaudeSession_sidTrackedInOtherWorktree_isNoop() {
+        let projectId = UUID()
+        let wtA = UUID()
+        let wtB = UUID()
+        let existing = makeJob(
+            id: UUID(), kind: .claude(sessionId: "live"),
+            primaryPid: nil, auxPids: []
+        )
+        let state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: wtA, jobs: [existing]),
+                makeWorktree(id: wtB, jobs: [])
+            ])
+        ])
+
+        let (events, effects) = reduce(state, .discoverClaudeSession(
+            at: WorktreePath(project: projectId, worktree: wtB),
+            sessionId: "live",
+            cwd: URL(fileURLWithPath: "/somewhere")
+        ))
+
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertTrue(effects.isEmpty)
+    }
+
     func test_processExited_clearsPid() {
         let projectId = UUID()
         let worktreeId = UUID()

@@ -127,18 +127,27 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         guard let job = findJob(state, at), case .claude = job.kind else {
             return ([], [])
         }
+        // Globally idempotent: refuse to link if a different job (anywhere
+        // in state) already tracks this session id. claude sessions live
+        // in a single cwd / worktree, so duplicates would be a bug.
+        if let owner = state.jobOwningClaudeSession(sessionId), owner != at {
+            return ([], [])
+        }
         let event = Event.claudeSessionLinked(at: at, sessionId: sessionId)
+        return ([event], [.persistEvents([event])])
+
+    case let .renameJob(at, name):
+        guard findJob(state, at) != nil else { return ([], []) }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return ([], []) }
+        let event = Event.jobRenamed(at: at, name: trimmed)
         return ([event], [.persistEvents([event])])
 
     case let .discoverClaudeSession(at, sessionId, cwd):
         guard findWorktree(state, at) != nil else { return ([], []) }
-        // Idempotent: if a job already tracks this sessionId in this worktree, no-op.
-        if let existing = state.projects.first(where: { $0.id == at.project })?
-            .worktrees.first(where: { $0.id == at.worktree })?.jobs,
-           existing.contains(where: { job in
-               if case let .claude(sid) = job.kind, sid == sessionId { return true }
-               return false
-           }) {
+        // Globally idempotent: a claude session must be tracked by at most
+        // one job across the entire state. If any job already has it, no-op.
+        if state.jobOwningClaudeSession(sessionId) != nil {
             return ([], [])
         }
         let job = Job(
@@ -266,6 +275,9 @@ public func apply(_ state: inout AppState, _ event: Event) {
 
     case let .jobRead(at):
         mutateJob(&state, at) { $0.unread = 0 }
+
+    case let .jobRenamed(at, name):
+        mutateJob(&state, at) { $0.name = name }
 
     case let .claudeSessionLinked(at, sessionId):
         mutateJob(&state, at) {

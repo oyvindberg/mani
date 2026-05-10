@@ -17,6 +17,7 @@ public enum Event: Codable, Equatable {
     case jobCompleted(at: JobPath, completedAt: Date)
     case jobUnreadBumped(at: JobPath, by: Int)
     case jobRead(at: JobPath)
+    case jobRenamed(at: JobPath, name: String)
     case claudeSessionLinked(at: JobPath, sessionId: String)
 
     case processStarted(at: JobPath, index: Int, pid: Int32)

@@ -190,11 +190,18 @@ private struct SidebarView: View {
     @EnvironmentObject var hookListener: HookListenerService
     @Binding var selectedJobId: UUID?
     @State private var resumeContext: ResumeContext?
+    @State private var renameContext: RenameContext?
 
     struct ResumeContext: Identifiable {
         let id = UUID()
         let worktreePath: WorktreePath
         let cwd: URL
+    }
+
+    struct RenameContext: Identifiable {
+        let id = UUID()
+        let jobPath: JobPath
+        let currentName: String
     }
 
     var body: some View {
@@ -252,6 +259,17 @@ private struct SidebarView: View {
                 isPresented: Binding(
                     get: { resumeContext != nil },
                     set: { if !$0 { resumeContext = nil } }
+                )
+            )
+        }
+        .sheet(item: $renameContext) { ctx in
+            RenameJobSheet(
+                store: store,
+                jobPath: ctx.jobPath,
+                currentName: ctx.currentName,
+                isPresented: Binding(
+                    get: { renameContext != nil },
+                    set: { if !$0 { renameContext = nil } }
                 )
             )
         }
@@ -338,6 +356,10 @@ private struct SidebarView: View {
     @ViewBuilder
     private func jobMenu(project: Project, worktree: Worktree, job: Job) -> some View {
         let path = JobPath(project: project.id, worktree: worktree.id, job: job.id)
+        Button("Rename…") {
+            renameContext = RenameContext(jobPath: path, currentName: job.name)
+        }
+        Divider()
         Button(job.enabled ? "Stop task" : "Re-enable") {
             Task {
                 await store.dispatch(.setJobEnabled(at: path, enabled: !job.enabled))
@@ -406,6 +428,9 @@ private struct SidebarView: View {
                 Image(systemName: job.statusSymbol)
                     .foregroundStyle(job.statusColor)
                     .font(.system(size: 9))
+                Image(systemName: job.kindSymbol)
+                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11))
                 Text(job.name)
                     .strikethrough(!job.enabled)
                 Spacer()
@@ -454,6 +479,17 @@ private extension Job {
         case .stopped: return "stop.circle.fill"
         case .completed: return "checkmark.circle.fill"
         case .failed: return "xmark.circle.fill"
+        }
+    }
+
+    // Per-kind icon shown alongside the (user-editable) name in the sidebar.
+    // The name is freely renameable; the icon keeps the kind legible at a
+    // glance even when names diverge from the default "shell"/"claude".
+    var kindSymbol: String {
+        switch kind {
+        case .shell: return "terminal"
+        case .claude: return "sparkle"
+        case .custom: return "puzzlepiece.extension"
         }
     }
 }

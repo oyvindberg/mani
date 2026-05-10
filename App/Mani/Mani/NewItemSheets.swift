@@ -153,6 +153,47 @@ struct NewWorktreeSheet: View {
     }
 }
 
+struct RenameJobSheet: View {
+    let store: Store
+    let jobPath: JobPath
+    let currentName: String
+    @Binding var isPresented: Bool
+    @State private var name: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Rename task").font(.headline)
+            TextField("Name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { commit() }
+            HStack {
+                Spacer()
+                Button("Cancel") { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Rename") { commit() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(trimmedName.isEmpty || trimmedName == currentName)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+        .onAppear { name = currentName }
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func commit() {
+        guard !trimmedName.isEmpty, trimmedName != currentName else { return }
+        let final = trimmedName
+        Task {
+            await store.dispatch(.renameJob(at: jobPath, name: final))
+            isPresented = false
+        }
+    }
+}
+
 struct ResumeClaudeSheet: View {
     let store: Store
     let worktreePath: WorktreePath

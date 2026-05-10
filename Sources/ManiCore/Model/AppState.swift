@@ -40,6 +40,29 @@ public struct AppState: Codable, Equatable {
         return copy
     }
 
+    // The JobPath of the (single) job that already tracks this claude
+    // session id, or nil if no job does. Used by the reducer to enforce
+    // global uniqueness: linkClaudeSession refuses to set a sid that
+    // belongs to a different job, and discoverClaudeSession refuses to
+    // create a new job for a sid that's already tracked anywhere.
+    // Invariant: at most one job per sid across the whole state.
+    public func jobOwningClaudeSession(_ sessionId: String) -> JobPath? {
+        for project in projects {
+            for worktree in project.worktrees {
+                for job in worktree.jobs {
+                    if case let .claude(sid) = job.kind, sid == sessionId {
+                        return JobPath(
+                            project: project.id,
+                            worktree: worktree.id,
+                            job: job.id
+                        )
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
     // All `.claude` jobs across the state, paired with the (project,
     // worktree) UUIDs that own them. The Store uses this to terminate
     // their PTYs before invoking `withoutClaudeJobs()`.
