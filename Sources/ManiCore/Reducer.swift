@@ -154,7 +154,8 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
                 args: [],
                 env: [:],
                 cwd: cwd,
-                pid: nil
+                pid: nil,
+                initialInput: nil
             ),
             auxiliary: [],
             unread: 0,

@@ -17,6 +17,41 @@ final class Store: ObservableObject {
         self.runner = runner
     }
 
+    // Strip all .claude jobs from state, terminate their live PTYs, then
+    // call compact() — which writes a fresh state.json snapshot and
+    // TRUNCATES events.jsonl. Intended to be called immediately before
+    // creating a new claude task: guarantees that no stale claude spec
+    // from an earlier Mani version (or earlier session) can survive on
+    // disk and resurrect via Restart, and that no live claude PTY is
+    // leaked behind a vanished UI entry. Project, worktree, and non-claude
+    // job state is preserved.
+    func resetForNewClaudeTask() async {
+        for project in state.projects {
+            for worktree in project.worktrees {
+                for job in worktree.jobs {
+                    guard case .claude = job.kind else { continue }
+                    if let pid = job.primary.pid {
+                        await runner.run(
+                            .terminate(pid: pid, escalateAfter: 1.0),
+                            dispatch: { _ in }
+                        )
+                    }
+                }
+            }
+        }
+        var clean = state
+        for projIdx in clean.projects.indices {
+            for wtIdx in clean.projects[projIdx].worktrees.indices {
+                clean.projects[projIdx].worktrees[wtIdx].jobs.removeAll { job in
+                    if case .claude = job.kind { return true }
+                    return false
+                }
+            }
+        }
+        await runner.compact(clean)
+        state = clean
+    }
+
     func dispatch(_ action: Action) async {
         let (events, effects) = reduce(state, action)
 

@@ -15,7 +15,7 @@ enum PTYError: Error {
 @_silgen_name("fork") private func cfork() -> pid_t
 
 
-final class ManagedPTY {
+final class ManagedPTY: @unchecked Sendable {
     let masterFD: Int32
     let pid: pid_t
 

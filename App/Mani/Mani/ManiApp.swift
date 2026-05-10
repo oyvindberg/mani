@@ -153,7 +153,8 @@ struct ManiApp: App {
             args: ["-l"],
             env: [:],
             cwd: home,
-            pid: nil
+            pid: nil,
+            initialInput: nil
         )
         await store.dispatch(.createJob(
             at: path,

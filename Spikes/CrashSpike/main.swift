@@ -53,7 +53,8 @@ func randomAction(state: AppState, rng: inout LCG) -> Action? {
     if worktree.jobs.isEmpty || r < 70 {
         let spec = ProcessSpec(
             command: "/bin/zsh", args: [], env: [:],
-            cwd: URL(fileURLWithPath: "/tmp"), pid: nil
+            cwd: URL(fileURLWithPath: "/tmp"), pid: nil,
+            initialInput: nil
         )
         return .createJob(
             at: wtPath, name: "j", kind: .shell,

@@ -255,14 +255,16 @@ final class ReducerTests: XCTestCase {
             args: [],
             env: [:],
             cwd: URL(fileURLWithPath: "/wt"),
-            pid: nil
+            pid: nil,
+            initialInput: nil
         )
         let aux = ProcessSpec(
             command: "/usr/bin/dev",
             args: ["server"],
             env: [:],
             cwd: URL(fileURLWithPath: "/wt"),
-            pid: nil
+            pid: nil,
+            initialInput: nil
         )
 
         let (events, effects) = reduce(state, .createJob(
@@ -290,7 +292,8 @@ final class ReducerTests: XCTestCase {
         let path = WorktreePath(project: UUID(), worktree: UUID())
         let spec = ProcessSpec(
             command: "/bin/zsh", args: [], env: [:],
-            cwd: URL(fileURLWithPath: "/p"), pid: nil
+            cwd: URL(fileURLWithPath: "/p"), pid: nil,
+            initialInput: nil
         )
         let (events, effects) = reduce(state, .createJob(
             at: path, name: "x", kind: .shell, primary: spec, auxiliary: []
@@ -504,7 +507,8 @@ private func makeJob(id: UUID, kind: JobKind, primaryPid: Int32?, auxPids: [Int3
             args: [],
             env: [:],
             cwd: URL(fileURLWithPath: "/wt/main"),
-            pid: primaryPid
+            pid: primaryPid,
+            initialInput: nil
         ),
         auxiliary: auxPids.map { pid in
             ProcessSpec(
@@ -512,7 +516,8 @@ private func makeJob(id: UUID, kind: JobKind, primaryPid: Int32?, auxPids: [Int3
                 args: [],
                 env: [:],
                 cwd: URL(fileURLWithPath: "/wt/main"),
-                pid: pid
+                pid: pid,
+                initialInput: nil
             )
         },
         unread: 0,

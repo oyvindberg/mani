@@ -124,7 +124,8 @@ struct NewWorktreeSheet: View {
                                 args: ["-l"],
                                 env: [:],
                                 cwd: pathURL,
-                                pid: nil
+                                pid: nil,
+                                initialInput: nil
                             )
                             await store.dispatch(.createJob(
                                 at: wtPath, name: "shell", kind: .shell,
@@ -224,12 +225,9 @@ struct ResumeClaudeSheet: View {
     }
 
     private func resume(session: ClaudeHistoryScanner.Session) {
-        let spec = ProcessSpec(
-            command: "/usr/bin/env",
-            args: ["claude", "--resume", session.id],
-            env: [:], cwd: cwd, pid: nil
-        )
+        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: session.id)
         Task {
+            await store.resetForNewClaudeTask()
             await store.dispatch(.createJob(
                 at: worktreePath,
                 name: "claude (resumed \(session.id.prefix(6)))",
@@ -241,12 +239,9 @@ struct ResumeClaudeSheet: View {
     }
 
     private func startFresh() {
-        let spec = ProcessSpec(
-            command: "/usr/bin/env",
-            args: ["claude"],
-            env: [:], cwd: cwd, pid: nil
-        )
+        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: nil)
         Task {
+            await store.resetForNewClaudeTask()
             await store.dispatch(.createJob(
                 at: worktreePath, name: "claude",
                 kind: .claude(sessionId: nil),
@@ -295,12 +290,11 @@ struct NewTaskSheet: View {
                     argsString = "-l"
                     if name.isEmpty || name == "claude" { name = "shell" }
                 case .claude:
-                    // zsh -ic so claude gets the termios setup it expects
-                    // (matters for SIGWINCH redraws of its TUI frame).
-                    // Single-word command keeps the args text field's
-                    // whitespace-split parser happy.
+                    // Plain login shell here; the actual `claude` invocation
+                    // is injected post-spawn (initialInput) so the TUI's
+                    // resize-redraw matches the user's manual workflow.
                     command = "/bin/zsh"
-                    argsString = "-ic claude"
+                    argsString = "-l"
                     if name.isEmpty || name == "shell" { name = "claude" }
                 }
             }
@@ -342,9 +336,13 @@ struct NewTaskSheet: View {
                     let args = argsString
                         .split(whereSeparator: { $0.isWhitespace })
                         .map(String.init)
-                    let spec = ProcessSpec(
-                        command: command, args: args, env: [:], cwd: cwd, pid: nil
-                    )
+                    let spec: ProcessSpec = (kind == .claude)
+                        ? ClaudeTaskSpec.make(cwd: cwd, sessionId: nil)
+                        : ProcessSpec(
+                            command: command, args: args,
+                            env: [:], cwd: cwd, pid: nil,
+                            initialInput: nil
+                          )
                     let auxSpecs: [ProcessSpec] = aux.compactMap { row in
                         guard !row.command.isEmpty else { return nil }
                         let auxArgs = row.argsString
@@ -352,14 +350,17 @@ struct NewTaskSheet: View {
                             .map(String.init)
                         return ProcessSpec(
                             command: row.command, args: auxArgs,
-                            env: [:], cwd: cwd, pid: nil
+                            env: [:], cwd: cwd, pid: nil,
+                            initialInput: nil
                         )
                     }
                     let jobKind: JobKind = (kind == .claude)
                         ? .claude(sessionId: nil)
                         : .shell
                     let jobName = name.isEmpty ? kind.rawValue.lowercased() : name
+                    let isClaude = (kind == .claude)
                     Task {
+                        if isClaude { await store.resetForNewClaudeTask() }
                         await store.dispatch(.createJob(
                             at: worktreePath,
                             name: jobName,

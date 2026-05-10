@@ -298,7 +298,9 @@ private struct SidebarView: View {
 
     private static func spawnShell(at path: WorktreePath, cwd: URL, store: Store) async {
         let spec = ProcessSpec(
-            command: "/bin/zsh", args: ["-l"], env: [:], cwd: cwd, pid: nil
+            command: "/bin/zsh", args: ["-l"],
+            env: [:], cwd: cwd, pid: nil,
+            initialInput: nil
         )
         await store.dispatch(.createJob(
             at: path, name: "shell", kind: .shell, primary: spec, auxiliary: []
@@ -306,10 +308,8 @@ private struct SidebarView: View {
     }
 
     private static func spawnClaude(at path: WorktreePath, cwd: URL, store: Store) async {
-        let spec = ProcessSpec(
-            command: "/usr/bin/env", args: ["claude"],
-            env: [:], cwd: cwd, pid: nil
-        )
+        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: nil)
+        await store.resetForNewClaudeTask()
         await store.dispatch(.createJob(
             at: path, name: "claude", kind: .claude(sessionId: nil),
             primary: spec, auxiliary: []
@@ -504,8 +504,11 @@ private struct StoppedJobView: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: 600)
             Button("Restart") {
+                // Claude jobs always rebuild via ClaudeTaskSpec — never reuse
+                // job.primary, since that may be a stale pre-zsh-injection spec
+                // persisted from an earlier Mani build.
                 let runner = store.runner
-                let spec = job.primary
+                let spec = ClaudeTaskSpec.restartSpec(for: job)
                 let path = jobPath
                 Task {
                     await runner.run(

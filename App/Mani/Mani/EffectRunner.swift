@@ -71,22 +71,30 @@ actor EffectRunner {
                 let extraPath = "\(homeBin):/opt/homebrew/bin:/usr/local/bin"
                 let existing = env["PATH"] ?? "/usr/bin:/bin"
                 env["PATH"] = "\(extraPath):\(existing)"
-                // rawMode=true if any of the args mention claude. The user's
-                // manual flow (typing claude at zsh prompt) leaves termios
-                // in ZLE's raw mode when claude starts; reproducing that at
-                // exec time appears to be what claude's full-redraw branch
-                // is actually keying on.
-                let mentionsClaude = spec.args.contains(where: { $0.contains("claude") })
                 let pty = try ManagedPTY(
                     executable: spec.command,
                     args: spec.args,
                     env: env,
                     cwd: spec.cwd.path,
-                    rawMode: mentionsClaude
+                    rawMode: false
                 )
                 ptys[path] = pty
                 pty.onExit = { code in
                     Task { await dispatch(.processExited(at: path, index: index, code: code)) }
+                }
+
+                // Synthetic-typing path: when a job spec carries an initialInput
+                // (e.g. a claude job that spawns zsh and injects "claude\r"),
+                // write it after a delay so the shell has finished sourcing
+                // ~/.zshrc and rendering the first prompt. Mirrors the user's
+                // manual flow of typing into a settled prompt — required for
+                // claude's TUI to reflow on SIGWINCH.
+                if let input = spec.initialInput, !input.isEmpty {
+                    let bytes = Data(input.utf8)
+                    let captured = pty
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.8) { [captured, bytes] in
+                        captured.write(bytes)
+                    }
                 }
 
                 // Tier 1 scrollback: tee the same byte stream the renderer uses
