@@ -84,8 +84,9 @@ struct ManiApp: App {
                         await Self.respawnSafelisted(store: store)
                     }
                     await Self.dedupeClaudeJobs(store: store)
-                    await Self.pruneStaleExternalClaudes(store: store)
+                    await Self.pruneStaleClaudeJobs(store: store)
                     Self.startSnapshotTimer(store: store)
+                    Self.startStaleClaudePruneTimer(store: store)
                 }
         }
         Settings {
@@ -125,6 +126,21 @@ struct ManiApp: App {
     // the WindowGroup task is torn down (app quit) is automatic via
     // structured concurrency. Interval is read from settings on each tick so
     // changing it in the Settings pane takes effect on the next snapshot.
+    // Periodically re-run pruneStaleClaudeJobs so an adopted/resumed
+    // claude that immediately exits ("No conversation found", crash,
+    // process killed externally) is cleaned up without requiring a
+    // relaunch. 30s feels right — short enough that dead Jobs don't
+    // linger noticeably, long enough not to thrash dispatch.
+    private static func startStaleClaudePruneTimer(store: Store) {
+        Task { @MainActor [weak store] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+                guard let store else { return }
+                await Self.pruneStaleClaudeJobs(store: store)
+            }
+        }
+    }
+
     private static func startSnapshotTimer(store: Store) {
         Task { @MainActor [weak store] in
             while !Task.isCancelled {
@@ -278,13 +294,18 @@ struct ManiApp: App {
         }
     }
 
-    // On launch, walk external claude jobs (those with command="(external
-    // claude)") and delete any whose underlying <sid>.jsonl is no longer on
-    // disk. Claude prunes transcript files according to its own retention
-    // policy; once the file is gone the session is unresumable, so the Job
-    // is just visual junk in the sidebar. Renamed externals are still
-    // pruned — the rename refers to a session that doesn't exist anymore.
-    private static func pruneStaleExternalClaudes(store: Store) async {
+    // Walk all claude jobs and delete any whose underlying <sid>.jsonl is
+    // gone. Covers both external claude jobs (command="(external claude)",
+    // never had a Mani-owned PTY) and Mani-spawned claude jobs whose
+    // `claude --resume <sid>` failed (e.g. "No conversation found" — the
+    // file was pruned by claude's retention before the user got to it,
+    // or never existed). For Mani-spawned, we additionally require the
+    // primary pid to be nil — a live claude that just started may not
+    // have written its first event yet, and we don't want to delete an
+    // active task. Renamed jobs are pruned too; the rename refers to a
+    // session that no longer exists, so keeping the entry is just clutter.
+    @MainActor
+    private static func pruneStaleClaudeJobs(store: Store) async {
         let projectsRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
         var toRemove: [JobPath] = []
@@ -293,8 +314,10 @@ struct ManiApp: App {
                 let slug = claudeSlug(for: worktree.path)
                 let slugDir = projectsRoot.appendingPathComponent(slug)
                 for job in worktree.jobs {
-                    guard job.primary.command == "(external claude)" else { continue }
                     guard case let .claude(sid) = job.kind, let sid else { continue }
+                    let isExternal = job.primary.command == "(external claude)"
+                    let manispawnedAndStopped = !isExternal && job.primary.pid == nil
+                    guard isExternal || manispawnedAndStopped else { continue }
                     let jsonlPath = slugDir
                         .appendingPathComponent("\(sid).jsonl").path
                     if !FileManager.default.fileExists(atPath: jsonlPath) {
@@ -306,7 +329,7 @@ struct ManiApp: App {
             }
         }
         guard !toRemove.isEmpty else { return }
-        NSLog("[mani] pruning \(toRemove.count) external claude jobs with missing transcripts")
+        NSLog("[mani] pruning \(toRemove.count) claude jobs with missing transcripts")
         for path in toRemove {
             await store.dispatch(.deleteJob(at: path))
         }
