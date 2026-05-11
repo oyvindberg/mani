@@ -630,47 +630,64 @@ struct SidebarView: View {
             return true
         }
         let wtPath = WorktreePath(project: project.id, worktree: worktree.id)
-        WorktreeHeaderRow(
-            project: project,
-            worktree: worktree,
-            isExpanded: worktreeExpanded,
-            diffJobId: diffJobId,
-            selectedJobId: selectedJobId
-        ) {
-            withAnimation(.easeInOut(duration: 0.15)) {
-                if worktreeExpanded { collapsedWorktrees.insert(worktree.id) }
-                else { collapsedWorktrees.remove(worktree.id) }
+        VStack(alignment: .leading, spacing: 0) {
+            WorktreeHeaderRow(
+                project: project,
+                worktree: worktree,
+                isExpanded: worktreeExpanded,
+                diffJobId: diffJobId,
+                selectedJobId: selectedJobId
+            ) {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    if worktreeExpanded { collapsedWorktrees.insert(worktree.id) }
+                    else { collapsedWorktrees.remove(worktree.id) }
+                }
+            } onSelectDiff: {
+                if let diffJobId { selectedJobId = diffJobId }
+            } onNewShell: {
+                Task { await Self.spawnShell(at: wtPath, cwd: worktree.path, store: store) }
+            } onNewClaude: {
+                Task { await Self.spawnClaude(at: wtPath, cwd: worktree.path, store: store) }
+            } onContextMenu: {
+                AnyView(worktreeMenu(project: project, worktree: worktree))
             }
-        } onSelectDiff: {
-            if let diffJobId { selectedJobId = diffJobId }
-        } onNewShell: {
-            Task { await Self.spawnShell(at: wtPath, cwd: worktree.path, store: store) }
-        } onNewClaude: {
-            Task { await Self.spawnClaude(at: wtPath, cwd: worktree.path, store: store) }
-        } onContextMenu: {
-            AnyView(worktreeMenu(project: project, worktree: worktree))
-        }
-        if worktreeExpanded {
-            let (managed, externals) = partitionVisibleJobs(visibleJobs)
-            ForEach(managed) { job in
-                JobRow(
-                    project: project,
-                    job: job,
-                    selected: selectedJobId == job.id
-                ) {
-                    selectedJobId = job.id
-                } onContextMenu: {
-                    AnyView(jobMenu(project: project, worktree: worktree, job: job))
+            if worktreeExpanded {
+                let (managed, externals) = partitionVisibleJobs(visibleJobs)
+                if !managed.isEmpty || !externals.isEmpty {
+                    Divider()
+                        .padding(.horizontal, 0)
+                }
+                ForEach(managed) { job in
+                    JobRow(
+                        project: project,
+                        job: job,
+                        selected: selectedJobId == job.id
+                    ) {
+                        selectedJobId = job.id
+                    } onContextMenu: {
+                        AnyView(jobMenu(project: project, worktree: worktree, job: job))
+                    }
+                }
+                if !externals.isEmpty {
+                    pastSessionsGroup(
+                        project: project,
+                        worktree: worktree,
+                        externals: externals
+                    )
                 }
             }
-            if !externals.isEmpty {
-                pastSessionsGroup(
-                    project: project,
-                    worktree: worktree,
-                    externals: externals
-                )
-            }
         }
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(SwiftUI.Color.secondary.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(SwiftUI.Color.secondary.opacity(0.18), lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
     }
 
     // Split jobs into "managed" (Mani-spawned, full-row treatment) and
