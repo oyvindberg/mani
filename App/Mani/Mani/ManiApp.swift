@@ -86,6 +86,7 @@ struct ManiApp: App {
                     await Self.dedupeClaudeJobs(store: store)
                     await Self.pruneStaleClaudeJobs(store: store)
                     await Self.ensureDiffJobsForGitWorktrees(store: store)
+                    await Self.migrateRenamedFlags(store: store)
                     Self.startSnapshotTimer(store: store)
                     Self.startStaleClaudePruneTimer(store: store)
                 }
@@ -127,6 +128,44 @@ struct ManiApp: App {
     // the WindowGroup task is torn down (app quit) is automatic via
     // structured concurrency. Interval is read from settings on each tick so
     // changing it in the Settings pane takes effect on the next snapshot.
+    // One-time migration: state.json files written before the `renamed`
+    // flag existed default it to false. A name that diverges from the
+    // auto-generated default pattern for its kind is almost certainly a
+    // user rename — backfill the flag so the next dedupe sweep doesn't
+    // throw it away. Idempotent: jobs whose `renamed` flag is already
+    // true OR whose name matches the default pattern are skipped.
+    @MainActor
+    private static func migrateRenamedFlags(store: Store) async {
+        for project in store.state.projects {
+            for worktree in project.worktrees {
+                for job in worktree.jobs {
+                    if job.renamed { continue }
+                    if isDefaultJobName(job.name, kind: job.kind) { continue }
+                    let path = JobPath(
+                        project: project.id, worktree: worktree.id, job: job.id
+                    )
+                    await store.dispatch(.renameJob(at: path, name: job.name))
+                }
+            }
+        }
+    }
+
+    private static func isDefaultJobName(_ name: String, kind: JobKind) -> Bool {
+        switch kind {
+        case .shell:    return name == "shell"
+        case .diff:     return name == "diff"
+        case .custom:   return false
+        case let .claude(sid):
+            if name == "claude" { return true }
+            if let sid {
+                let prefix = sid.prefix(6)
+                return name == "claude (resumed \(prefix))"
+                    || name == "claude (adopted \(prefix))"
+            }
+            return false
+        }
+    }
+
     // Every git-checkout worktree gets a permanent .diff Job (the Diff
     // Workspace is a fixture of the worktree, not something the user
     // spawns). The check is filesystem-based — Mani's WorktreeKind .folder

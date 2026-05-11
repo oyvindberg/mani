@@ -201,6 +201,19 @@ struct DiffWorkspaceView: View {
                 Text("(\(countLeaves(trackedTree)))")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
+                if !trackedPaths.isEmpty {
+                    Menu {
+                        Button("Stage all") { stage(paths: trackedPaths) }
+                        Button("Discard all…", role: .destructive) {
+                            discardWithConfirm(paths: trackedPaths)
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Bulk actions")
+                }
                 Button {
                     refreshFileList()
                 } label: {
