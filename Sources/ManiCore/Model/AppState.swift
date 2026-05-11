@@ -19,7 +19,8 @@ public struct AppState: Codable, Equatable {
             snapshotIntervalSeconds: 30,
             terminalTheme: "Dracula",
             terminalFontFamily: "",
-            terminalFontSize: 13
+            terminalFontSize: 13,
+            claudeInvocation: "claude"
         )
     )
 
@@ -144,19 +145,26 @@ public struct Settings: Codable, Equatable {
     public var terminalFontFamily: String
     // Point size for the terminal font.
     public var terminalFontSize: Int
+    // Default invocation of the claude binary. Per-project Project.
+    // claudeInvocation overrides this. `--resume <sid>` is appended at
+    // spawn time by ClaudeTaskSpec.make; the invocation should NOT
+    // include `--resume`.
+    public var claudeInvocation: String
 
     public init(
         scrollbackCapBytes: Int,
         snapshotIntervalSeconds: Int,
         terminalTheme: String,
         terminalFontFamily: String,
-        terminalFontSize: Int
+        terminalFontSize: Int,
+        claudeInvocation: String
     ) {
         self.scrollbackCapBytes = scrollbackCapBytes
         self.snapshotIntervalSeconds = snapshotIntervalSeconds
         self.terminalTheme = terminalTheme
         self.terminalFontFamily = terminalFontFamily
         self.terminalFontSize = terminalFontSize
+        self.claudeInvocation = claudeInvocation
     }
 
     // Backward-compat decode: state.json files written before later fields
@@ -168,5 +176,6 @@ public struct Settings: Codable, Equatable {
         self.terminalTheme = (try? c.decodeIfPresent(String.self, forKey: .terminalTheme)) ?? "Dracula"
         self.terminalFontFamily = (try? c.decodeIfPresent(String.self, forKey: .terminalFontFamily)) ?? ""
         self.terminalFontSize = (try? c.decodeIfPresent(Int.self, forKey: .terminalFontSize)) ?? 13
+        self.claudeInvocation = (try? c.decodeIfPresent(String.self, forKey: .claudeInvocation)) ?? "claude"
     }
 }

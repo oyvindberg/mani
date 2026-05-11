@@ -45,6 +45,24 @@ struct SettingsView: View {
                     label: { Text("Snapshot every \(intervalBinding.wrappedValue) s") }
                 )
             }
+            Section {
+                let invocationBinding = Binding<String>(
+                    get: { store.state.settings.claudeInvocation },
+                    set: { value in
+                        var s = store.state.settings
+                        s.claudeInvocation = value
+                        Task { await store.dispatch(.updateSettings(s)) }
+                    }
+                )
+                TextField("Command", text: invocationBinding, prompt: Text("claude"))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(.body, design: .monospaced))
+                Text("Typed into a fresh /bin/zsh -l after spawn. `--resume <sid>` is appended automatically when resuming. Override per project from the sidebar context menu.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Claude command")
+            }
         }
         .formStyle(.grouped)
     }

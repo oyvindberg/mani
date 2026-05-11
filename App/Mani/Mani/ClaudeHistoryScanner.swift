@@ -137,6 +137,13 @@ enum ClaudeHistoryScanner {
         if recent.count > limit { recent.removeFirst(recent.count - limit) }
     }
 
+    // Exposed for SafekeepingSweepWorker, which already has the URL
+    // in hand (it's iterating ~/.claude/projects directly) and just
+    // wants the same summary as sessions(forCwd:) produces per file.
+    static func parsePublic(jsonl: URL) -> Session? {
+        parse(jsonl: jsonl)
+    }
+
     static func sessions(forCwd cwd: String) -> [Session] {
         // Claude's slug convention: leading dash, then path with `/` → `-`.
         let trimmed = cwd.hasSuffix("/") ? String(cwd.dropLast()) : cwd

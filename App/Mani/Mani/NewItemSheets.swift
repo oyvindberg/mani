@@ -264,7 +264,11 @@ struct ResumeClaudeSheet: View {
     }
 
     private func resume(session: ClaudeHistoryScanner.Session) {
-        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: session.id)
+        let project = store.state.projects.first(where: { $0.id == worktreePath.project })
+        let invocation = ClaudeTaskSpec.resolveInvocation(
+            project: project, settings: store.state.settings
+        )
+        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: session.id, invocation: invocation)
         Task {
             await store.resetForNewClaudeTask()
             await store.dispatch(.createJob(
@@ -278,7 +282,11 @@ struct ResumeClaudeSheet: View {
     }
 
     private func startFresh() {
-        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: nil)
+        let project = store.state.projects.first(where: { $0.id == worktreePath.project })
+        let invocation = ClaudeTaskSpec.resolveInvocation(
+            project: project, settings: store.state.settings
+        )
+        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: nil, invocation: invocation)
         Task {
             await store.resetForNewClaudeTask()
             await store.dispatch(.createJob(
@@ -395,8 +403,12 @@ struct NewTaskSheet: View {
                     let args = argsString
                         .split(whereSeparator: { $0.isWhitespace })
                         .map(String.init)
+                    let claudeProject = store.state.projects.first(where: { $0.id == worktreePath.project })
+                    let claudeInvocation = ClaudeTaskSpec.resolveInvocation(
+                        project: claudeProject, settings: store.state.settings
+                    )
                     let spec: ProcessSpec = (kind == .claude)
-                        ? ClaudeTaskSpec.make(cwd: cwd, sessionId: nil)
+                        ? ClaudeTaskSpec.make(cwd: cwd, sessionId: nil, invocation: claudeInvocation)
                         : ProcessSpec(
                             command: command, args: args,
                             env: [:], cwd: cwd, pid: nil,

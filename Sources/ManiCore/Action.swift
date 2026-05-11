@@ -5,6 +5,7 @@ public enum Action {
     case renameProject(id: UUID, name: String)
     case setProjectEnabled(id: UUID, enabled: Bool)
     case setProjectColor(id: UUID, color: String)
+    case setProjectClaudeInvocation(id: UUID, invocation: String?)
     case deleteProject(id: UUID)
 
     case createWorktree(projectId: UUID, name: String, kind: WorktreeKind, path: URL)

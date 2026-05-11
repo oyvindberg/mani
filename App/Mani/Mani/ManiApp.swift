@@ -12,6 +12,9 @@ struct ManiApp: App {
     // .task once the store + initial state are ready.
     private let worktreeStatsPoller: WorktreeStatsPoller
     private let jobStatsPoller: JobStatsPoller
+    private let safekeepingStore: SafekeepingStore
+    @StateObject private var sweeper: SafekeepingSweeper
+    @StateObject private var archiveCache: SessionArchiveCache = SessionArchiveCache.shared
 
     init() {
         let appSupport = FileManager.default.urls(
@@ -37,6 +40,14 @@ struct ManiApp: App {
         worktreeStatsPoller = WorktreeStatsPoller(store: store)
         jobStatsPoller = JobStatsPoller(store: store)
 
+        let safekeeping = try! SafekeepingStore(appSupportRoot: storeRoot)
+        self.safekeepingStore = safekeeping
+        _sweeper = StateObject(wrappedValue: SafekeepingSweeper(
+            store: store,
+            archive: safekeeping,
+            cache: SessionArchiveCache.shared
+        ))
+
         // Cmd-Q / quit menu: SIGTERM every live PTY before the app exits.
         // macOS gives ~1s before force-quit, so we don't block waiting for
         // reaps — Task.detached fires-and-forgets the terminate() calls and
@@ -60,6 +71,9 @@ struct ManiApp: App {
                 .environmentObject(store)
                 .environmentObject(watcher)
                 .environmentObject(hookListener)
+                .environmentObject(sweeper)
+                .environmentObject(archiveCache)
+                .environmentObject(safekeepingStore)
                 .task {
                     NotificationService.shared.requestAuthorization()
                     Self.registerHookShimIfPossible()
@@ -95,7 +109,12 @@ struct ManiApp: App {
                     await Self.pruneStaleClaudeJobs(store: store)
                     await Self.ensureDiffJobsForGitWorktrees(store: store)
                     await Self.migrateRenamedFlags(store: store)
-                    await Self.discoverHistoricalClaudeSessions(store: store)
+                    await Self.bootstrapSafekeepingFromDisk(
+                        store: store,
+                        cache: archiveCache,
+                        archive: safekeepingStore
+                    )
+                    sweeper.start()
                     worktreeStatsPoller.start()
                     jobStatsPoller.start()
                     Self.startSnapshotTimer(store: store)
@@ -135,44 +154,56 @@ struct ManiApp: App {
         HookRegistration.register(shimPath: shimPath)
     }
 
-    // Periodic snapshot per Tier 3 of docs/persistence.md. Cancellation when
-    // the WindowGroup task is torn down (app quit) is automatic via
-    // structured concurrency. Interval is read from settings on each tick so
-    // changing it in the Settings pane takes effect on the next snapshot.
-    // Backfill: walk every worktree, scan ~/.claude/projects/<slug>/ for
-    // existing session JSONLs, and dispatch discoverClaudeSession for any
-    // sid we don't already track. Catches historical conversations the
-    // user had in a worktree before Mani started watching it. The
-    // FSEvents watcher only fires for NEW files; without this sweep,
-    // pre-existing transcripts would never appear in the sidebar even
-    // though they're resumable. discoverClaudeSession is globally
-    // idempotent so re-running this is safe.
+    // Boot: load each project's sessions-index.json into the
+    // SessionArchiveCache so the sidebar paints immediately with
+    // last-known state. No JSONL parsing here — the index is a
+    // pre-summarized JSON file maintained by SafekeepingSweeper. The
+    // legacy ExternalSessionInfoCache is mirrored from the same
+    // entries so PastSessionRow continues to work unchanged.
+    //
+    // We do NOT dispatch discoverClaudeSession for archived sessions:
+    // those go through the "Archived worktrees" sidebar group instead,
+    // which renders directly from the cache. Live external claude
+    // sessions are still picked up by ClaudeWatcher.onNewSession.
     @MainActor
-    private static func discoverHistoricalClaudeSessions(store: Store) async {
+    private static func bootstrapSafekeepingFromDisk(
+        store: Store,
+        cache: SessionArchiveCache,
+        archive: SafekeepingStore
+    ) async {
         for project in store.state.projects {
-            for worktree in project.worktrees {
-                let sessions = ClaudeHistoryScanner.sessions(forCwd: worktree.path.path)
-                for session in sessions {
-                    ExternalSessionInfoCache.shared.record(
-                        sid: session.id,
-                        info: ExternalSessionInfoCache.Info(
-                            firstUserMessage: session.firstUserMessage,
-                            lastMessageAt: session.lastMessageAt,
-                            messageCount: session.messageCount
-                        )
-                    )
-                    if store.state.jobOwningClaudeSession(session.id) != nil {
-                        continue
-                    }
-                    let wtPath = WorktreePath(
-                        project: project.id, worktree: worktree.id
-                    )
-                    await store.dispatch(.discoverClaudeSession(
-                        at: wtPath,
-                        sessionId: session.id,
-                        cwd: worktree.path
-                    ))
+            cache.loadFromDisk(for: project.id, store: archive)
+        }
+        cache.bootstrapComplete = true
+
+        // For entries whose originating worktree is still in the
+        // project, dispatch discoverClaudeSession so PastSessionRow
+        // continues to render under that worktree. The reducer is
+        // globally idempotent on sessionId so re-firing on every boot
+        // (events.jsonl already has the createJob from last time) is
+        // a no-op. Archived-worktree entries deliberately get no Job
+        // — the sidebar reads them straight from the cache via the
+        // "Archived worktrees" group instead.
+        let homePath = FileManager.default.homeDirectoryForCurrentUser
+            .resolvingSymlinksInPath().path
+        for project in store.state.projects {
+            let pairs = project.worktrees.map {
+                ($0.id, $0.path.resolvingSymlinksInPath().path)
+            }
+            for entry in cache.entries(for: project.id) {
+                guard let (worktreeId, _) = pairs.first(where: { id, wt in
+                    if wt == homePath || wt == "/" { return false }
+                    return entry.originatingCwd == wt
+                        || entry.originatingCwd.hasPrefix(wt + "/")
+                }) else { continue }
+                if store.state.jobOwningClaudeSession(entry.sessionId) != nil {
+                    continue
                 }
+                await store.dispatch(.discoverClaudeSession(
+                    at: WorktreePath(project: project.id, worktree: worktreeId),
+                    sessionId: entry.sessionId,
+                    cwd: URL(fileURLWithPath: entry.originatingCwd)
+                ))
             }
         }
     }

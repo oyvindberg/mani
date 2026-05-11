@@ -7,7 +7,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
 
     func test_make_freshSession_injectsClaudeNewline() {
         let cwd = URL(fileURLWithPath: "/Users/me/wt")
-        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: nil)
+        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: nil, invocation: "claude")
 
         XCTAssertEqual(spec.command, "/bin/zsh")
         XCTAssertEqual(spec.args, ["-l"])
@@ -19,10 +19,66 @@ final class ClaudeTaskSpecTests: XCTestCase {
     func test_make_resumeSession_injectsResumeWithSessionId() {
         let spec = ClaudeTaskSpec.make(
             cwd: URL(fileURLWithPath: "/Users/me/wt"),
-            sessionId: "abc-123"
+            sessionId: "abc-123",
+            invocation: "claude"
         )
 
         XCTAssertEqual(spec.initialInput, "claude --resume abc-123\r")
+    }
+
+    func test_make_customInvocation_usesProvidedPrefix() {
+        let spec = ClaudeTaskSpec.make(
+            cwd: URL(fileURLWithPath: "/cwd"),
+            sessionId: nil,
+            invocation: "claude --dangerously-skip-permissions"
+        )
+
+        XCTAssertEqual(spec.initialInput, "claude --dangerously-skip-permissions\r")
+    }
+
+    func test_make_customInvocation_resumePrependsToFlagPrefix() {
+        let spec = ClaudeTaskSpec.make(
+            cwd: URL(fileURLWithPath: "/cwd"),
+            sessionId: "s1",
+            invocation: "claude --dangerously-skip-permissions"
+        )
+
+        XCTAssertEqual(spec.initialInput, "claude --dangerously-skip-permissions --resume s1\r")
+    }
+
+    func test_make_emptyInvocation_fallsBackToClaude() {
+        let spec = ClaudeTaskSpec.make(
+            cwd: URL(fileURLWithPath: "/cwd"),
+            sessionId: nil,
+            invocation: "   "
+        )
+
+        XCTAssertEqual(spec.initialInput, "claude\r")
+    }
+
+    // MARK: - .resolveInvocation
+
+    func test_resolveInvocation_projectNil_usesSettings() {
+        var s = anySettings()
+        s.claudeInvocation = "claude --dangerously-skip-permissions"
+        let resolved = ClaudeTaskSpec.resolveInvocation(project: nil, settings: s)
+        XCTAssertEqual(resolved, "claude --dangerously-skip-permissions")
+    }
+
+    func test_resolveInvocation_projectOverride_takesPrecedence() {
+        var project = makeProject(jobs: [])
+        project.claudeInvocation = "claude --my-flag"
+        var s = anySettings()
+        s.claudeInvocation = "claude"
+        let resolved = ClaudeTaskSpec.resolveInvocation(project: project, settings: s)
+        XCTAssertEqual(resolved, "claude --my-flag")
+    }
+
+    func test_resolveInvocation_projectEmpty_fallsBackToClaude() {
+        var project = makeProject(jobs: [])
+        project.claudeInvocation = "   "
+        let resolved = ClaudeTaskSpec.resolveInvocation(project: project, settings: anySettings())
+        XCTAssertEqual(resolved, "claude")
     }
 
     // MARK: - .restartSpec
@@ -40,7 +96,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
             initialInput: nil, restartPolicy: .never)
         let job = makeJob(kind: .claude(sessionId: "old-session"), spec: stale)
 
-        let restart = ClaudeTaskSpec.restartSpec(for: job)
+        let restart = ClaudeTaskSpec.restartSpec(for: job, invocation: "claude")
 
         XCTAssertEqual(restart.command, "/bin/zsh")
         XCTAssertEqual(restart.args, ["-l"])
@@ -58,7 +114,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
             initialInput: nil, restartPolicy: .never)
         let job = makeJob(kind: .claude(sessionId: nil), spec: stale)
 
-        let restart = ClaudeTaskSpec.restartSpec(for: job)
+        let restart = ClaudeTaskSpec.restartSpec(for: job, invocation: "claude")
 
         XCTAssertEqual(restart.initialInput, "claude\r")
     }
@@ -73,7 +129,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
             initialInput: nil, restartPolicy: .never)
         let job = makeJob(kind: .shell, spec: original)
 
-        let restart = ClaudeTaskSpec.restartSpec(for: job)
+        let restart = ClaudeTaskSpec.restartSpec(for: job, invocation: "claude")
 
         XCTAssertEqual(restart, original)
     }
@@ -171,7 +227,8 @@ final class ClaudeTaskSpecTests: XCTestCase {
                     primary: false
                 )
             ],
-            createdAt: Date()
+            createdAt: Date(),
+            claudeInvocation: nil
         )
     }
 
@@ -190,7 +247,8 @@ final class ClaudeTaskSpecTests: XCTestCase {
             snapshotIntervalSeconds: 30,
             terminalTheme: "Dracula",
             terminalFontFamily: "",
-            terminalFontSize: 13
+            terminalFontSize: 13,
+            claudeInvocation: "claude"
         )
     }
 }

@@ -7,6 +7,11 @@ public struct Project: Codable, Equatable, Identifiable {
     public var enabled: Bool
     public var worktrees: [Worktree]
     public var createdAt: Date
+    // Optional override for the claude binary invocation used by this
+    // project's tasks. nil = inherit Settings.claudeInvocation. The
+    // resolved invocation is the prefix; ClaudeTaskSpec.make appends
+    // `--resume <sid>` for resume flows.
+    public var claudeInvocation: String?
 
     public init(
         id: UUID,
@@ -14,7 +19,8 @@ public struct Project: Codable, Equatable, Identifiable {
         color: String,
         enabled: Bool,
         worktrees: [Worktree],
-        createdAt: Date
+        createdAt: Date,
+        claudeInvocation: String?
     ) {
         self.id = id
         self.name = name
@@ -22,10 +28,11 @@ public struct Project: Codable, Equatable, Identifiable {
         self.enabled = enabled
         self.worktrees = worktrees
         self.createdAt = createdAt
+        self.claudeInvocation = claudeInvocation
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, color, enabled, worktrees, createdAt
+        case id, name, color, enabled, worktrees, createdAt, claudeInvocation
     }
 
     // Backward-compat: state.json files written before the rootDir
@@ -38,5 +45,6 @@ public struct Project: Codable, Equatable, Identifiable {
         self.enabled = try c.decode(Bool.self, forKey: .enabled)
         self.worktrees = try c.decode([Worktree].self, forKey: .worktrees)
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+        self.claudeInvocation = try? c.decodeIfPresent(String.self, forKey: .claudeInvocation)
     }
 }

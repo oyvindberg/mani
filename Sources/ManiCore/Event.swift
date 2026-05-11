@@ -5,6 +5,7 @@ public enum Event: Codable, Equatable {
     case projectRenamed(id: UUID, name: String)
     case projectEnabledChanged(id: UUID, enabled: Bool)
     case projectColorChanged(id: UUID, color: String)
+    case projectClaudeInvocationChanged(id: UUID, invocation: String?)
     case projectDeleted(id: UUID)
 
     case worktreeCreated(projectId: UUID, Worktree)

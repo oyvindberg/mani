@@ -295,7 +295,8 @@ final class ClaudeSessionStartTests: XCTestCase {
                             primary: false
                         )
                     ],
-                    createdAt: Date()
+                    createdAt: Date(),
+                    claudeInvocation: nil
                 )
             ],
             settings: Settings(
@@ -303,7 +304,8 @@ final class ClaudeSessionStartTests: XCTestCase {
                 snapshotIntervalSeconds: 30,
                 terminalTheme: "Dracula",
                 terminalFontFamily: "",
-                terminalFontSize: 13
+                terminalFontSize: 13,
+                claudeInvocation: "claude"
             )
         )
     }

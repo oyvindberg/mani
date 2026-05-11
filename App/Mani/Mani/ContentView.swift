@@ -276,14 +276,18 @@ struct SidebarView: View {
     @EnvironmentObject var store: Store
     @EnvironmentObject var watcher: ClaudeWatcher
     @EnvironmentObject var hookListener: HookListenerService
+    @EnvironmentObject var sweeper: SafekeepingSweeper
+    @EnvironmentObject var archiveCache: SessionArchiveCache
     @Binding var selectedJobId: UUID?
     @State private var resumeContext: ResumeContext?
     @State private var renameContext: RenameContext?
     @State private var collapsedProjects: Set<UUID> = []
     @State private var collapsedWorktrees: Set<UUID> = []
     @State private var expandedPastSessions: Set<UUID> = []
+    @State private var expandedArchivedProjects: Set<UUID> = []
     @State private var colorPickerProjectId: UUID?
     @State private var newWorktreeForProject: Project?
+    @State private var claudeInvocationProjectId: UUID?
 
     struct ResumeContext: Identifiable {
         let id = UUID()
@@ -332,6 +336,9 @@ struct SidebarView: View {
             VStack(alignment: .leading, spacing: 2) {
                 statusRow(icon: "eye", text: "\(watcher.sessions.count) Claude sessions tracked")
                 statusRow(icon: "antenna.radiowaves.left.and.right", text: "\(hookListener.receivedCount) hook envelopes")
+                if sweeper.isRunning || !archiveCache.bootstrapComplete {
+                    statusRow(icon: "arrow.triangle.2.circlepath", text: "Scanning Claude history…")
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
@@ -383,6 +390,21 @@ struct SidebarView: View {
                 )
             )
         }
+        .sheet(item: Binding(
+            get: { claudeInvocationProjectId.flatMap { id in
+                store.state.projects.first(where: { $0.id == id })
+            } },
+            set: { if $0 == nil { claudeInvocationProjectId = nil } }
+        )) { project in
+            ProjectClaudeInvocationSheet(
+                store: store,
+                project: project,
+                isPresented: Binding(
+                    get: { claudeInvocationProjectId != nil },
+                    set: { if !$0 { claudeInvocationProjectId = nil } }
+                )
+            )
+        }
     }
 
     @ViewBuilder
@@ -392,6 +414,9 @@ struct SidebarView: View {
         }
         Button("Change color…") {
             colorPickerProjectId = project.id
+        }
+        Button("Claude command…") {
+            claudeInvocationProjectId = project.id
         }
         Divider()
         Button(project.enabled ? "Disable project (stop all tasks)" : "Enable project") {
@@ -447,7 +472,11 @@ struct SidebarView: View {
     }
 
     private static func spawnClaude(at path: WorktreePath, cwd: URL, store: Store) async {
-        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: nil)
+        let project = store.state.projects.first(where: { $0.id == path.project })
+        let invocation = ClaudeTaskSpec.resolveInvocation(
+            project: project, settings: store.state.settings
+        )
+        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: nil, invocation: invocation)
         await store.resetForNewClaudeTask()
         await store.dispatch(.createJob(
             at: path, name: "claude", kind: .claude(sessionId: nil),
@@ -504,7 +533,11 @@ struct SidebarView: View {
         let preservedName = wasRenamed
             ? currentName
             : "claude (adopted \(sessionId.prefix(6)))"
-        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: sessionId)
+        let project = store.state.projects.first(where: { $0.id == worktreePath.project })
+        let invocation = ClaudeTaskSpec.resolveInvocation(
+            project: project, settings: store.state.settings
+        )
+        let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: sessionId, invocation: invocation)
         Task {
             await store.dispatch(.deleteJob(at: jobPath))
             await store.dispatch(.createJob(
@@ -615,6 +648,107 @@ struct SidebarView: View {
             ForEach(project.worktrees) { worktree in
                 worktreeGroup(project: project, worktree: worktree)
             }
+            archivedWorktreesGroup(project: project)
+        }
+    }
+
+    // Sessions whose originating cwd no longer matches any current
+    // worktree in the project — i.e. the worktree was removed or
+    // moved off disk. Rendered inside a single collapsible group
+    // grouped by originating-worktree name so the user can find
+    // them under the same label they had before the cleanup.
+    @ViewBuilder
+    private func archivedWorktreesGroup(project: Project) -> some View {
+        let homePath = FileManager.default.homeDirectoryForCurrentUser
+            .resolvingSymlinksInPath().path
+        let worktreePaths = project.worktrees.map {
+            $0.path.resolvingSymlinksInPath().path
+        }.filter { $0 != homePath && $0 != "/" }
+        let (_, archived) = archiveCache.entriesByPresence(
+            for: project.id, worktreePaths: worktreePaths
+        )
+        if !archived.isEmpty {
+            let isExpanded = expandedArchivedProjects.contains(project.id)
+            HStack(spacing: 0) {
+                Rectangle()
+                    .fill(SwiftUI.Color(hex: project.color))
+                    .frame(width: 3)
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .frame(width: 10)
+                    Image(systemName: "archivebox")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Text("Archived worktrees")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("(\(archived.count))")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                }
+                .padding(.leading, 22)
+                .padding(.trailing, 10)
+            }
+            .padding(.vertical, 3)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    if isExpanded { expandedArchivedProjects.remove(project.id) }
+                    else { expandedArchivedProjects.insert(project.id) }
+                }
+            }
+            if isExpanded {
+                let grouped = Dictionary(grouping: archived) {
+                    $0.originatingWorktreeName
+                }
+                let names = grouped.keys.sorted()
+                ForEach(names, id: \.self) { name in
+                    archivedWorktreeSection(
+                        project: project,
+                        worktreeName: name,
+                        entries: (grouped[name] ?? []).sorted {
+                            ($0.lastMessageAt ?? .distantPast)
+                                > ($1.lastMessageAt ?? .distantPast)
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func archivedWorktreeSection(
+        project: Project,
+        worktreeName: String,
+        entries: [SessionIndexEntry]
+    ) -> some View {
+        HStack(spacing: 0) {
+            Rectangle()
+                .fill(SwiftUI.Color(hex: project.color).opacity(0.6))
+                .frame(width: 3)
+            HStack(spacing: 6) {
+                Image(systemName: "folder.badge.minus")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                Text(worktreeName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("(\(entries.count))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .padding(.leading, 36)
+            .padding(.trailing, 10)
+        }
+        .padding(.vertical, 2)
+        ForEach(entries, id: \.sessionId) { entry in
+            ArchivedSessionRow(project: project, entry: entry)
+                .padding(.leading, 8)
         }
     }
 
@@ -830,6 +964,7 @@ private struct ExternalClaudeView: View {
     let worktreePath: WorktreePath
     @EnvironmentObject var store: Store
     @EnvironmentObject var watcher: ClaudeWatcher
+    @EnvironmentObject var safekeepingStore: SafekeepingStore
 
     @State private var loading = true
     @State private var detail: ClaudeHistoryScanner.Session?
@@ -1004,9 +1139,39 @@ private struct ExternalClaudeView: View {
     }
 
     private func load() async {
-        guard let url = transcriptURL else { loading = false; return }
-        await Task.detached(priority: .userInitiated) { [url] in
-            let result = ClaudeHistoryScanner.detail(jsonl: url, recentLimit: 5)
+        guard let sid = sessionId else { loading = false; return }
+        let projectId = jobPath.project
+        let live = transcriptURL
+        let archive = safekeepingStore
+        await Task.detached(priority: .userInitiated) {
+            // Prefer the safekept gzip: it survives even if
+            // claude.ai's retention deleted the original. Decompress
+            // to a temp .jsonl so the existing line-stream parser
+            // works unchanged. Fall back to the live source if there
+            // is no archive yet (hot, first-sweep cases).
+            let urlForParse: URL?
+            if archive.hasTranscript(sessionId: sid, for: projectId) {
+                do {
+                    let data = try archive.readArchivedTranscript(
+                        sessionId: sid, for: projectId
+                    )
+                    let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+                        .appendingPathComponent("mani-archive-\(sid).jsonl")
+                    try data.write(to: tmp, options: [.atomic])
+                    urlForParse = tmp
+                } catch {
+                    urlForParse = live
+                }
+            } else {
+                urlForParse = live
+            }
+            guard let urlForParse else {
+                await MainActor.run { loading = false }
+                return
+            }
+            let result = ClaudeHistoryScanner.detail(
+                jsonl: urlForParse, recentLimit: 5
+            )
             await MainActor.run {
                 if let result {
                     detail = result.0
@@ -1031,11 +1196,15 @@ private struct ExternalClaudeView: View {
         let preservedRenamed = job.renamed
         let oldPath = jobPath
         let wt = worktreePath
+        let project = store.state.projects.first(where: { $0.id == wt.project })
+        let invocation = ClaudeTaskSpec.resolveInvocation(
+            project: project, settings: store.state.settings
+        )
         Task {
             // Order matters: delete the external first so the new Job's
             // .claude(sid) doesn't trip the global uniqueness check.
             await store.dispatch(.deleteJob(at: oldPath))
-            let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: sid)
+            let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: sid, invocation: invocation)
             await store.dispatch(.createJob(
                 at: wt,
                 name: preservedName,
@@ -1092,7 +1261,11 @@ private struct StoppedJobView: View {
                 // job.primary, since that may be a stale pre-zsh-injection spec
                 // persisted from an earlier Mani build.
                 let runner = store.runner
-                let spec = ClaudeTaskSpec.restartSpec(for: job)
+                let project = store.state.projects.first(where: { $0.id == jobPath.project })
+                let invocation = ClaudeTaskSpec.resolveInvocation(
+                    project: project, settings: store.state.settings
+                )
+                let spec = ClaudeTaskSpec.restartSpec(for: job, invocation: invocation)
                 let path = jobPath
                 Task {
                     await runner.run(

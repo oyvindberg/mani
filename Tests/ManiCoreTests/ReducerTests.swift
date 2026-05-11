@@ -863,7 +863,7 @@ private func stateWith(projects: [Project]) -> AppState {
     AppState(
         schemaVersion: 1,
         projects: projects,
-        settings: Settings(scrollbackCapBytes: 1024, snapshotIntervalSeconds: 30, terminalTheme: "Dracula", terminalFontFamily: "", terminalFontSize: 13)
+        settings: Settings(scrollbackCapBytes: 1024, snapshotIntervalSeconds: 30, terminalTheme: "Dracula", terminalFontFamily: "", terminalFontSize: 13, claudeInvocation: "claude")
     )
 }
 
@@ -874,7 +874,8 @@ private func makeProject(id: UUID, worktrees: [Worktree]) -> Project {
         color: "#ff5500",
         enabled: true,
         worktrees: worktrees,
-        createdAt: Date()
+        createdAt: Date(),
+        claudeInvocation: nil
     )
 }
 

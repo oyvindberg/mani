@@ -33,7 +33,8 @@ final class PersistenceStoreTests: XCTestCase {
             color: "#abcdef",
             enabled: true,
             worktrees: [],
-            createdAt: Date()
+            createdAt: Date(),
+            claudeInvocation: nil
         ))
         return s
     }

@@ -10,7 +10,8 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             color: color,
             enabled: true,
             worktrees: [],
-            createdAt: Date()
+            createdAt: Date(),
+            claudeInvocation: nil
         )
         let event = Event.projectCreated(project)
         return ([event], [.persistEvents([event])])
@@ -34,6 +35,11 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
     case let .setProjectColor(id, color):
         guard state.projects.contains(where: { $0.id == id }) else { return ([], []) }
         let event = Event.projectColorChanged(id: id, color: color)
+        return ([event], [.persistEvents([event])])
+
+    case let .setProjectClaudeInvocation(id, invocation):
+        guard state.projects.contains(where: { $0.id == id }) else { return ([], []) }
+        let event = Event.projectClaudeInvocationChanged(id: id, invocation: invocation)
         return ([event], [.persistEvents([event])])
 
     case let .deleteProject(id):
@@ -272,6 +278,11 @@ public func apply(_ state: inout AppState, _ event: Event) {
     case let .projectColorChanged(id, color):
         if let i = state.projects.firstIndex(where: { $0.id == id }) {
             state.projects[i].color = color
+        }
+
+    case let .projectClaudeInvocationChanged(id, invocation):
+        if let i = state.projects.firstIndex(where: { $0.id == id }) {
+            state.projects[i].claudeInvocation = invocation
         }
 
     case let .projectEnabledChanged(id, enabled):

@@ -20,12 +20,21 @@ import Foundation
 //      (e.g. /usr/bin/env claude) will be re-spawned with the current
 //      shape regardless of what was written to events.jsonl long ago.
 public enum ClaudeTaskSpec {
-    public static func make(cwd: URL, sessionId: String?) -> ProcessSpec {
+    // `invocation` is the prefix written into the shell, e.g. "claude"
+    // or "claude --dangerously-skip-permissions". `--resume <sid>` is
+    // appended automatically when `sessionId` is non-nil.
+    public static func make(
+        cwd: URL,
+        sessionId: String?,
+        invocation: String
+    ) -> ProcessSpec {
+        let trimmed = invocation.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = trimmed.isEmpty ? "claude" : trimmed
         let typed: String
         if let sessionId {
-            typed = "claude --resume \(sessionId)\r"
+            typed = "\(prefix) --resume \(sessionId)\r"
         } else {
-            typed = "claude\r"
+            typed = "\(prefix)\r"
         }
         return ProcessSpec(
             command: "/bin/zsh",
@@ -37,11 +46,26 @@ public enum ClaudeTaskSpec {
     }
 
     // For the Restart button: claude jobs always rebuild from the current
-    // factory; everything else reuses the persisted spec verbatim.
-    public static func restartSpec(for job: Job) -> ProcessSpec {
+    // factory; everything else reuses the persisted spec verbatim. The
+    // caller passes the project- or settings-resolved invocation so a
+    // re-spawned task picks up any config change since the original
+    // spawn (e.g. user enabled --dangerously-skip-permissions later).
+    public static func restartSpec(for job: Job, invocation: String) -> ProcessSpec {
         if case let .claude(sessionId) = job.kind {
-            return make(cwd: job.primary.cwd, sessionId: sessionId)
+            return make(cwd: job.primary.cwd, sessionId: sessionId, invocation: invocation)
         }
         return job.primary
+    }
+
+    // Helper used everywhere the invocation needs to be resolved: per-
+    // project override falls back to settings default; an empty or
+    // whitespace-only string falls back to literal "claude".
+    public static func resolveInvocation(
+        project: Project?,
+        settings: Settings
+    ) -> String {
+        let raw = project?.claudeInvocation ?? settings.claudeInvocation
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "claude" : trimmed
     }
 }

@@ -476,3 +476,80 @@ struct PastSessionRow: View {
         sessionId.flatMap { infoCache.entries[$0] }
     }
 }
+
+// Row for a safekept session whose originating worktree is no longer
+// in the project's live worktrees. Doesn't render off a Job because
+// these don't have one — they live only in the SessionArchiveCache.
+// Click does nothing yet (a future "Adopt as worktree" / "Resume in
+// new worktree" action would dispatch through Store).
+struct ArchivedSessionRow: View {
+    let project: Project
+    let entry: SessionIndexEntry
+
+    @State private var hovered = false
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Rectangle()
+                .fill(SwiftUI.Color(hex: project.color).opacity(0.5))
+                .frame(width: 3)
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange.opacity(0.55))
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        if let when = entry.lastMessageAt {
+                            Text(Self.relativeFormatter.localizedString(
+                                for: when, relativeTo: Date()
+                            ))
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        } else {
+                            Text("session \(entry.sessionId.prefix(8))")
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.tertiary)
+                        }
+                        if entry.messageCount > 0 {
+                            Text("\(entry.messageCount) msg\(entry.messageCount == 1 ? "" : "s")")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        if entry.archivedAt != nil {
+                            Image(systemName: "archivebox.fill")
+                                .font(.system(size: 8))
+                                .foregroundStyle(.tertiary)
+                        }
+                        Spacer()
+                    }
+                    if let preview = entry.firstUserMessage, !preview.isEmpty {
+                        Text(preview)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else {
+                        Text("(no user message)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .italic()
+                    }
+                }
+            }
+            .padding(.leading, 22)
+            .padding(.trailing, 10)
+            .opacity(0.85)
+        }
+        .padding(.vertical, 3)
+        .background(hovered ? SwiftUI.Color.secondary.opacity(0.08) : .clear)
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+    }
+}
