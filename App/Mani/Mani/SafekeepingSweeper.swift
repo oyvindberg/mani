@@ -89,6 +89,12 @@ final class SafekeepingSweeper: ObservableObject {
         for (projectId, entries) in diffs {
             cache.replace(entries: entries, for: projectId)
         }
+        // Reactive discovery: a project the user just created (or a
+        // claude conversation that pre-existed the project) needs
+        // Jobs dispatched once the cache catches up. Without this
+        // call, those sessions would only show up after the next
+        // app restart's bootstrap pass.
+        await ManiApp.reconcileJobsForArchivedSessions(store: store, cache: cache)
     }
 }
 
@@ -135,8 +141,12 @@ enum SafekeepingSweepWorker {
             let jsonls = (try? FileManager.default.contentsOfDirectory(
                 at: slugDir, includingPropertiesForKeys: [.contentModificationDateKey]
             )) ?? []
+            var sidsCoveredByJsonlPass: Set<String> = []
 
             for jsonl in jsonls where jsonl.pathExtension == "jsonl" {
+                sidsCoveredByJsonlPass.insert(
+                    jsonl.deletingPathExtension().lastPathComponent
+                )
                 let sessionId = jsonl.deletingPathExtension().lastPathComponent
 
                 // First-line peek: cheap. Gives us cwd + sometimes the
@@ -204,6 +214,77 @@ enum SafekeepingSweepWorker {
                     changed.insert(projectId)
                 }
             }
+
+            // Second pass: claude's own sessions-index.json (one per
+            // slug dir) is the authoritative list of session metadata
+            // in newer claude versions where the on-disk JSONL has
+            // been migrated off the slug-root. We harvest summary
+            // info from there for any sessionId we didn't already
+            // cover via the flat-JSONL pass. Entries whose fullPath
+            // doesn't exist are still surfaced (read-only past
+            // sessions) — we just skip the gzip archive step.
+            let claudeIndexURL = slugDir
+                .appendingPathComponent("sessions-index.json", isDirectory: false)
+            if FileManager.default.fileExists(atPath: claudeIndexURL.path),
+               let data = try? Data(contentsOf: claudeIndexURL),
+               let parsed = ClaudeOwnSessionsIndex.parse(data: data) {
+                for record in parsed.entries {
+                    if sidsCoveredByJsonlPass.contains(record.sessionId) { continue }
+                    let cwd = record.projectPath
+                    if cwd == homePath || cwd == "/" { continue }
+                    guard let match = bestMatch(cwd: cwd, projects: projects)
+                    else { continue }
+                    let projectId = match.id
+
+                    let fullPath = URL(fileURLWithPath: record.fullPath)
+                    let transcriptExists = FileManager.default
+                        .fileExists(atPath: fullPath.path)
+
+                    let existing = indexes[projectId]?.entries
+                        .first(where: { $0.sessionId == record.sessionId })
+
+                    var archivedAt: Date? = existing?.archivedAt
+                    var transcriptBytes: Int = existing?.transcriptBytes ?? 0
+
+                    let alreadyArchived = archive.hasTranscript(
+                        sessionId: record.sessionId, for: projectId
+                    )
+                    if transcriptExists, !alreadyArchived {
+                        do {
+                            let bytes = try archive.archiveTranscript(
+                                from: fullPath, sessionId: record.sessionId,
+                                for: projectId
+                            )
+                            archivedAt = Date()
+                            transcriptBytes = bytes
+                        } catch {
+                            NSLog("[mani] safekeeping archive failed for \(record.sessionId): \(error)")
+                        }
+                    }
+
+                    let entry = SessionIndexEntry(
+                        sessionId: record.sessionId,
+                        originatingCwd: cwd,
+                        originatingWorktreeName: URL(fileURLWithPath: cwd).lastPathComponent,
+                        firstUserMessage: record.firstPrompt ?? record.summary,
+                        lastMessageAt: record.modified,
+                        messageCount: record.messageCount ?? 0,
+                        transcriptBytes: transcriptBytes,
+                        archivedAt: archivedAt
+                    )
+
+                    if existing != entry {
+                        var idx = indexes[projectId] ?? .empty
+                        if let i = idx.entries.firstIndex(where: { $0.sessionId == record.sessionId }) {
+                            idx.entries[i] = entry
+                        } else {
+                            idx.entries.append(entry)
+                        }
+                        indexes[projectId] = idx
+                        changed.insert(projectId)
+                    }
+                }
+            }
         }
 
         // Flush changed indexes to disk. Errors here are logged but
@@ -268,5 +349,61 @@ enum SafekeepingSweepWorker {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return (json["cwd"] as? String, json["sessionId"] as? String)
+    }
+}
+
+// Reader for claude's own sessions-index.json file (one per slug
+// dir). Format example:
+//   { "version": 1, "entries": [
+//       { "sessionId": "...", "fullPath": "...", "firstPrompt": "...",
+//         "summary": "...", "messageCount": 58, "modified": "...",
+//         "projectPath": "...", ... }
+//   ]}
+// We only pluck the fields we need; missing ones decode as nil.
+enum ClaudeOwnSessionsIndex {
+
+    struct Record {
+        let sessionId: String
+        let fullPath: String
+        let firstPrompt: String?
+        let summary: String?
+        let messageCount: Int?
+        let modified: Date?
+        let projectPath: String
+    }
+
+    struct Parsed {
+        let entries: [Record]
+    }
+
+    static func parse(data: Data) -> Parsed? {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        guard let entriesRaw = root["entries"] as? [[String: Any]] else { return nil }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let isoNoFrac = ISO8601DateFormatter()
+        isoNoFrac.formatOptions = [.withInternetDateTime]
+
+        var out: [Record] = []
+        for raw in entriesRaw {
+            guard let sid = raw["sessionId"] as? String,
+                  let fullPath = raw["fullPath"] as? String,
+                  let projectPath = raw["projectPath"] as? String
+            else { continue }
+            let modified: Date? = (raw["modified"] as? String).flatMap {
+                iso.date(from: $0) ?? isoNoFrac.date(from: $0)
+            }
+            out.append(Record(
+                sessionId: sid,
+                fullPath: fullPath,
+                firstPrompt: raw["firstPrompt"] as? String,
+                summary: raw["summary"] as? String,
+                messageCount: raw["messageCount"] as? Int,
+                modified: modified,
+                projectPath: projectPath
+            ))
+        }
+        return Parsed(entries: out)
     }
 }

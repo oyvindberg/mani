@@ -15,6 +15,7 @@ struct ManiApp: App {
     private let safekeepingStore: SafekeepingStore
     @StateObject private var sweeper: SafekeepingSweeper
     @StateObject private var archiveCache: SessionArchiveCache = SessionArchiveCache.shared
+    @StateObject private var activityTracker = JobActivityTracker()
 
     init() {
         let appSupport = FileManager.default.urls(
@@ -74,6 +75,7 @@ struct ManiApp: App {
                 .environmentObject(sweeper)
                 .environmentObject(archiveCache)
                 .environmentObject(safekeepingStore)
+                .environmentObject(activityTracker)
                 .task {
                     NotificationService.shared.requestAuthorization()
                     Self.registerHookShimIfPossible()
@@ -83,9 +85,11 @@ struct ManiApp: App {
                             await Self.handleDiscoveredSession(detected, store: store)
                         }
                     }
-                    watcher.onMessages = { [weak store] detected, delta in
+                    let tracker = activityTracker
+                    watcher.onMessages = { [weak store, tracker] detected, delta in
                         guard let store else { return }
                         Task { @MainActor in
+                            tracker.recordActivity(sid: detected.sessionId)
                             await Self.handleSessionMessages(
                                 detected, delta: delta, store: store
                             )
@@ -106,7 +110,6 @@ struct ManiApp: App {
                         await Self.respawnSafelisted(store: store)
                     }
                     await Self.dedupeClaudeJobs(store: store)
-                    await Self.pruneStaleClaudeJobs(store: store)
                     await Self.ensureDiffJobsForGitWorktrees(store: store)
                     await Self.migrateRenamedFlags(store: store)
                     await Self.bootstrapSafekeepingFromDisk(
@@ -114,7 +117,20 @@ struct ManiApp: App {
                         cache: archiveCache,
                         archive: safekeepingStore
                     )
+                    // Immediate (synchronous wrt boot) sweep so the cache
+                    // covers anything not yet safekept. The reconcile
+                    // step inside runOnce dispatches discoverClaudeSession
+                    // for matched entries, bringing newly-recognized
+                    // sessions into the sidebar before the first prune
+                    // tick can run.
+                    await sweeper.runOnce()
+                    // Prune AFTER both the bootstrap reconcile AND the
+                    // immediate sweep — those add back any jobs we lost
+                    // in a previous bad-prune cycle, then prune kills
+                    // only the truly orphaned ones.
+                    await Self.pruneStaleClaudeJobs(store: store)
                     sweeper.start()
+                    activityTracker.start()
                     worktreeStatsPoller.start()
                     jobStatsPoller.start()
                     Self.startSnapshotTimer(store: store)
@@ -175,15 +191,23 @@ struct ManiApp: App {
             cache.loadFromDisk(for: project.id, store: archive)
         }
         cache.bootstrapComplete = true
+        await reconcileJobsForArchivedSessions(store: store, cache: cache)
+    }
 
-        // For entries whose originating worktree is still in the
-        // project, dispatch discoverClaudeSession so PastSessionRow
-        // continues to render under that worktree. The reducer is
-        // globally idempotent on sessionId so re-firing on every boot
-        // (events.jsonl already has the createJob from last time) is
-        // a no-op. Archived-worktree entries deliberately get no Job
-        // — the sidebar reads them straight from the cache via the
-        // "Archived worktrees" group instead.
+    // For each cached session whose originating worktree is still in
+    // the project AND no Job currently tracks it, dispatch
+    // discoverClaudeSession so PastSessionRow appears under that
+    // worktree. The reducer is globally idempotent on sessionId so
+    // re-firing is safe.
+    //
+    // Called from: bootstrap (once at launch) and SafekeepingSweeper
+    // after each sweep — so a project added at runtime picks up its
+    // past conversations on the next tick instead of waiting for an
+    // app restart.
+    @MainActor
+    static func reconcileJobsForArchivedSessions(
+        store: Store, cache: SessionArchiveCache
+    ) async {
         let homePath = FileManager.default.homeDirectoryForCurrentUser
             .resolvingSymlinksInPath().path
         for project in store.state.projects {
@@ -450,6 +474,14 @@ struct ManiApp: App {
                 }
             }
         }
+        // No Job tracks this session id. Treat the message arrival
+        // as a fresh discovery opportunity — covers the case where
+        // the session's onNewSession fired against an empty project
+        // list (claude was already running when the user added the
+        // project, or FSEvents missed the initial create). The
+        // discoverClaudeSession reducer is globally idempotent so
+        // re-firing is safe.
+        await handleDiscoveredSession(detected, store: store)
     }
 
     // Walk all .claude(sid) jobs and delete any whose <sid>.jsonl is
@@ -471,20 +503,54 @@ struct ManiApp: App {
     //     that no longer exists, so it's stale clutter regardless.
     @MainActor
     private static func pruneStaleClaudeJobs(store: Store) async {
+        // Build a set of every session id that's recognized by either
+        // claude itself OR our safekeep cache:
+        //   - Flat <sid>.jsonl files anywhere under ~/.claude/projects.
+        //   - Entries in claude's own per-slug sessions-index.json
+        //     (newer format — flat JSONLs migrated to per-session
+        //     subdirs but the index still lists them).
+        //   - Entries in our own safekeep cache (we've seen them at
+        //     least once, so they're not stale from our POV).
+        // Old behavior used the per-worktree-slug path and kept
+        // false-positive deleting valid jobs whose transcript lived
+        // under a sibling slug.
         let projectsRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
+        var liveSids: Set<String> = []
+        if let slugs = try? FileManager.default.contentsOfDirectory(
+            at: projectsRoot, includingPropertiesForKeys: nil
+        ) {
+            for slugDir in slugs {
+                guard let files = try? FileManager.default.contentsOfDirectory(
+                    at: slugDir, includingPropertiesForKeys: nil
+                ) else { continue }
+                for file in files where file.pathExtension == "jsonl" {
+                    liveSids.insert(file.deletingPathExtension().lastPathComponent)
+                }
+                let claudeIndexURL = slugDir
+                    .appendingPathComponent("sessions-index.json", isDirectory: false)
+                if let data = try? Data(contentsOf: claudeIndexURL),
+                   let parsed = ClaudeOwnSessionsIndex.parse(data: data) {
+                    for record in parsed.entries {
+                        liveSids.insert(record.sessionId)
+                    }
+                }
+            }
+        }
+        for entries in SessionArchiveCache.shared.entriesByProject.values {
+            for entry in entries {
+                liveSids.insert(entry.sessionId)
+            }
+        }
+
         let now = Date()
         var toRemove: [JobPath] = []
         for project in store.state.projects {
             for worktree in project.worktrees {
-                let slug = claudeSlug(for: worktree.path)
-                let slugDir = projectsRoot.appendingPathComponent(slug)
                 for job in worktree.jobs {
                     guard case let .claude(sid) = job.kind, let sid else { continue }
                     guard now.timeIntervalSince(job.createdAt) > 5 else { continue }
-                    let jsonlPath = slugDir
-                        .appendingPathComponent("\(sid).jsonl").path
-                    if !FileManager.default.fileExists(atPath: jsonlPath) {
+                    if !liveSids.contains(sid) {
                         toRemove.append(JobPath(
                             project: project.id, worktree: worktree.id, job: job.id
                         ))

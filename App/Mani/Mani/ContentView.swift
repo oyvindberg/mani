@@ -5,6 +5,7 @@ import ManiCore
 
 struct ContentView: View {
     @EnvironmentObject var store: Store
+    @EnvironmentObject var activityTracker: JobActivityTracker
     @State private var selectedJobId: UUID?
     @State private var showingNewProject = false
     @State private var showingNewWorktree = false
@@ -47,6 +48,9 @@ struct ContentView: View {
                         Text(context.job.name).bold()
                             .foregroundStyle(SwiftUI.Color(hex: context.project.color))
                         Spacer()
+                        ReadyClaudesBar(onSelect: { jobId in
+                            selectedJobId = jobId
+                        })
                         // Search scrollback. Only meaningful for jobs whose
                         // PTY writes a scrollback log — the diff workspace
                         // does too, and search there is occasionally handy
@@ -105,6 +109,7 @@ struct ContentView: View {
                 }
             }
         }
+        .background(readyShortcuts)
         .onAppear {
             if selectedJobId == nil { selectedJobId = firstJobId() }
         }
@@ -157,6 +162,62 @@ struct ContentView: View {
                 )
             }
         }
+    }
+
+    // Same sort as ReadyClaudesBar so ⌘1 always matches the leftmost
+    // pill, ⌘2 the next, etc. Recomputed on every body invocation —
+    // SwiftUI rerenders when activityTracker or store publish, so
+    // the shortcut targets stay current.
+    private func readyJobIdsOrdered() -> [UUID] {
+        struct Entry {
+            let jobId: UUID
+            let settledAt: Date?
+            let createdAt: Date
+        }
+        var out: [Entry] = []
+        for project in store.state.projects {
+            for worktree in project.worktrees {
+                for job in worktree.jobs {
+                    guard case let .claude(sid) = job.kind, let sid else { continue }
+                    if activityTracker.isThinking(sid: sid) { continue }
+                    guard job.unread > 0 else { continue }
+                    out.append(Entry(
+                        jobId: job.id,
+                        settledAt: activityTracker.settledAt[sid],
+                        createdAt: job.createdAt
+                    ))
+                }
+            }
+        }
+        out.sort { lhs, rhs in
+            (lhs.settledAt ?? lhs.createdAt) > (rhs.settledAt ?? rhs.createdAt)
+        }
+        return out.map(\.jobId)
+    }
+
+    // Invisible, zero-size buttons that hold keyboard shortcuts.
+    // Backgrounded onto the body so they're always part of the view
+    // hierarchy regardless of which detail pane is mounted. ⌘J cycles
+    // the freshest ready claude; ⌘1..⌘9 jump directly to slot N.
+    @ViewBuilder
+    private var readyShortcuts: some View {
+        let ids = readyJobIdsOrdered()
+        ZStack {
+            Button("Jump to next ready Claude") {
+                if let first = ids.first { selectedJobId = first }
+            }
+            .keyboardShortcut("j", modifiers: [.command])
+            .opacity(0).frame(width: 0, height: 0)
+            ForEach(0..<9, id: \.self) { i in
+                let key = KeyEquivalent(Character("\(i + 1)"))
+                Button("Jump to ready Claude \(i + 1)") {
+                    if i < ids.count { selectedJobId = ids[i] }
+                }
+                .keyboardShortcut(key, modifiers: [.command])
+                .opacity(0).frame(width: 0, height: 0)
+            }
+        }
+        .allowsHitTesting(false)
     }
 
     private func scrollbackPath(for jobId: UUID) -> String {
@@ -278,6 +339,7 @@ struct SidebarView: View {
     @EnvironmentObject var hookListener: HookListenerService
     @EnvironmentObject var sweeper: SafekeepingSweeper
     @EnvironmentObject var archiveCache: SessionArchiveCache
+    @EnvironmentObject var activityTracker: JobActivityTracker
     @Binding var selectedJobId: UUID?
     @State private var resumeContext: ResumeContext?
     @State private var renameContext: RenameContext?
@@ -320,12 +382,9 @@ struct SidebarView: View {
                 } else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(Array(store.state.projects.enumerated()), id: \.element.id) { idx, project in
+                            ForEach(Array(store.state.projects.enumerated()), id: \.element.id) { _, project in
                                 projectGroup(project: project)
-                                if idx < store.state.projects.count - 1 {
-                                    Divider()
-                                        .padding(.vertical, 4)
-                                }
+                                    .padding(.vertical, 4)
                             }
                         }
                         .padding(.vertical, 6)
@@ -632,24 +691,50 @@ struct SidebarView: View {
             return true
         }
         let projectExpanded = !collapsedProjects.contains(project.id)
-        ProjectHeaderRow(
-            project: project,
-            isExpanded: projectExpanded,
-            jobCount: visibleJobs.count
-        ) {
-            withAnimation(.easeInOut(duration: 0.15)) {
-                if projectExpanded { collapsedProjects.insert(project.id) }
-                else { collapsedProjects.remove(project.id) }
+        let color = SwiftUI.Color(hex: project.color)
+        return HStack(spacing: 0) {
+            // Single continuous color bar spans the entire project
+            // group (header + every worktree + archived block) so a
+            // glance at the sidebar shows the project hierarchy as
+            // one cohesive block.
+            Rectangle()
+                .fill(color)
+                .frame(width: 4)
+            VStack(alignment: .leading, spacing: 0) {
+                ProjectHeaderRow(
+                    project: project,
+                    isExpanded: projectExpanded,
+                    jobCount: visibleJobs.count
+                ) {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        if projectExpanded { collapsedProjects.insert(project.id) }
+                        else { collapsedProjects.remove(project.id) }
+                    }
+                } onContextMenu: {
+                    AnyView(projectMenu(project: project))
+                }
+                if projectExpanded {
+                    ForEach(Array(project.worktrees.enumerated()), id: \.element.id) { idx, worktree in
+                        if idx > 0 {
+                            Rectangle()
+                                .fill(color.opacity(0.22))
+                                .frame(height: 0.5)
+                                .padding(.leading, 6)
+                        }
+                        worktreeGroup(project: project, worktree: worktree)
+                    }
+                    archivedWorktreesGroup(project: project)
+                }
             }
-        } onContextMenu: {
-            AnyView(projectMenu(project: project))
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        if projectExpanded {
-            ForEach(project.worktrees) { worktree in
-                worktreeGroup(project: project, worktree: worktree)
-            }
-            archivedWorktreesGroup(project: project)
-        }
+        .background(color.opacity(0.06))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7)
+                .strokeBorder(color.opacity(0.28), lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 7))
+        .padding(.horizontal, 5)
     }
 
     // Sessions whose originating cwd no longer matches any current
@@ -669,30 +754,25 @@ struct SidebarView: View {
         )
         if !archived.isEmpty {
             let isExpanded = expandedArchivedProjects.contains(project.id)
-            HStack(spacing: 0) {
-                Rectangle()
-                    .fill(SwiftUI.Color(hex: project.color))
-                    .frame(width: 3)
-                HStack(spacing: 6) {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .frame(width: 10)
-                    Image(systemName: "archivebox")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    Text("Archived worktrees")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("(\(archived.count))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                }
-                .padding(.leading, 22)
-                .padding(.trailing, 10)
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(width: 10)
+                Image(systemName: "archivebox")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text("Archived worktrees")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("(\(archived.count))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
             }
+            .padding(.leading, 14)
+            .padding(.trailing, 10)
             .padding(.vertical, 3)
             .contentShape(Rectangle())
             .onTapGesture {
@@ -726,29 +806,23 @@ struct SidebarView: View {
         worktreeName: String,
         entries: [SessionIndexEntry]
     ) -> some View {
-        HStack(spacing: 0) {
-            Rectangle()
-                .fill(SwiftUI.Color(hex: project.color).opacity(0.6))
-                .frame(width: 3)
-            HStack(spacing: 6) {
-                Image(systemName: "folder.badge.minus")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                Text(worktreeName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("(\(entries.count))")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                Spacer()
-            }
-            .padding(.leading, 36)
-            .padding(.trailing, 10)
+        HStack(spacing: 6) {
+            Image(systemName: "folder.badge.minus")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+            Text(worktreeName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("(\(entries.count))")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Spacer()
         }
+        .padding(.leading, 28)
+        .padding(.trailing, 10)
         .padding(.vertical, 2)
         ForEach(entries, id: \.sessionId) { entry in
             ArchivedSessionRow(project: project, entry: entry)
-                .padding(.leading, 8)
         }
     }
 
@@ -770,7 +844,10 @@ struct SidebarView: View {
                 worktree: worktree,
                 isExpanded: worktreeExpanded,
                 diffJobId: diffJobId,
-                selectedJobId: selectedJobId
+                selectedJobId: selectedJobId,
+                anyChildThinking: worktreeAnyThinking(worktree),
+                anyChildReady: worktreeAnyReady(worktree),
+                anyChildJustReady: worktreeAnyJustReady(worktree)
             ) {
                 withAnimation(.easeInOut(duration: 0.15)) {
                     if worktreeExpanded { collapsedWorktrees.insert(worktree.id) }
@@ -787,10 +864,6 @@ struct SidebarView: View {
             }
             if worktreeExpanded {
                 let (managed, externals) = partitionVisibleJobs(visibleJobs)
-                if !managed.isEmpty || !externals.isEmpty {
-                    Divider()
-                        .padding(.horizontal, 0)
-                }
                 ForEach(managed) { job in
                     JobRow(
                         project: project,
@@ -811,17 +884,35 @@ struct SidebarView: View {
                 }
             }
         }
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(SwiftUI.Color.secondary.opacity(0.06))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(SwiftUI.Color.secondary.opacity(0.18), lineWidth: 0.5)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
+    }
+
+    private func claudeSid(_ job: Job) -> String? {
+        if case let .claude(sid) = job.kind { return sid }
+        return nil
+    }
+
+    private func worktreeAnyThinking(_ worktree: Worktree) -> Bool {
+        for job in worktree.jobs {
+            if activityTracker.isThinking(sid: claudeSid(job)) { return true }
+        }
+        return false
+    }
+
+    private func worktreeAnyReady(_ worktree: Worktree) -> Bool {
+        for job in worktree.jobs {
+            guard let sid = claudeSid(job) else { continue }
+            if activityTracker.isThinking(sid: sid) { return false }
+            if job.unread > 0 { return true }
+        }
+        return false
+    }
+
+    private func worktreeAnyJustReady(_ worktree: Worktree) -> Bool {
+        for job in worktree.jobs {
+            guard let sid = claudeSid(job), job.unread > 0 else { continue }
+            if activityTracker.justBecameReady(sid: sid) { return true }
+        }
+        return false
     }
 
     // Split jobs into "managed" (Mani-spawned, full-row treatment) and
@@ -847,31 +938,26 @@ struct SidebarView: View {
         externals: [Job]
     ) -> some View {
         let isExpanded = expandedPastSessions.contains(worktree.id)
-        HStack(spacing: 0) {
-            Rectangle()
-                .fill(SwiftUI.Color(hex: project.color))
-                .frame(width: 3)
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .frame(width: 10)
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                Text("Past sessions")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("(\(externals.count))")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                Spacer()
-            }
-            .padding(.leading, 22)
-            .padding(.trailing, 10)
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                .frame(width: 10)
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Text("Past sessions")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("(\(externals.count))")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Spacer()
         }
-        .padding(.vertical, 3)
+        .padding(.leading, 24)
+        .padding(.trailing, 10)
+        .padding(.vertical, 2)
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.15)) {
