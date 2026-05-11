@@ -285,14 +285,14 @@ final class ClaudeSessionStartTests: XCTestCase {
             projects: [
                 Project(
                     id: projectId, name: "p", color: "#000",
-                    rootDir: URL(fileURLWithPath: "/p"),
                     enabled: true,
                     worktrees: [
                         Worktree(
                             id: worktreeId, name: "wt",
                             path: worktreePath, kind: .folder,
                             enabled: true, missing: false,
-                            jobs: jobs, createdAt: Date()
+                            jobs: jobs, createdAt: Date(),
+                            primary: false
                         )
                     ],
                     createdAt: Date()

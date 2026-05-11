@@ -1,7 +1,7 @@
 import Foundation
 
 public enum Action {
-    case createProject(name: String, color: String, rootDir: URL)
+    case createProject(name: String, color: String)
     case renameProject(id: UUID, name: String)
     case setProjectEnabled(id: UUID, enabled: Bool)
     case setProjectColor(id: UUID, color: String)
@@ -10,6 +10,7 @@ public enum Action {
     case createWorktree(projectId: UUID, name: String, kind: WorktreeKind, path: URL)
     case setWorktreeEnabled(at: WorktreePath, enabled: Bool)
     case markWorktreeMissing(at: WorktreePath)
+    case setWorktreePrimary(at: WorktreePath)
     case deleteWorktree(at: WorktreePath)
 
     case createJob(at: WorktreePath, name: String, kind: JobKind, primary: ProcessSpec, auxiliary: [ProcessSpec])

@@ -9,8 +9,7 @@ final class ReducerTests: XCTestCase {
         let state = AppState.empty
         let action = Action.createProject(
             name: "atlas",
-            color: "#ff5500",
-            rootDir: URL(fileURLWithPath: "/Users/me/pr/atlas")
+            color: "#ff5500"
         )
 
         let (events, effects) = reduce(state, action)
@@ -132,9 +131,14 @@ final class ReducerTests: XCTestCase {
         XCTAssertFalse(state.projects[0].worktrees[0].missing)
     }
 
-    func test_createWorktree_git_alsoEmitsCreateGitWorktreeEffect() {
+    func test_createWorktree_git_withPrimary_emitsCreateGitWorktreeFromPrimary() {
         let projectId = UUID()
-        let state = stateWith(projects: [makeProject(id: projectId, worktrees: [])])
+        var primary = makeWorktree(id: UUID(), jobs: [])
+        primary.primary = true
+        primary.path = URL(fileURLWithPath: "/wt/main")
+        let state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [primary])
+        ])
 
         let (_, effects) = reduce(state, .createWorktree(
             projectId: projectId,
@@ -151,10 +155,32 @@ final class ReducerTests: XCTestCase {
             return XCTFail("expected createGitWorktree effect")
         }
         XCTAssertEqual(pid, projectId)
-        XCTAssertEqual(repoRoot, URL(fileURLWithPath: "/p/atlas"))
+        XCTAssertEqual(repoRoot, URL(fileURLWithPath: "/wt/main"))
         XCTAssertEqual(branch, "feat/auth")
         XCTAssertEqual(path, URL(fileURLWithPath: "/wt/feat"))
         XCTAssertEqual(baseRef, "main")
+    }
+
+    func test_createWorktree_git_withoutPrimary_skipsEffect() {
+        // When the project has no primary worktree yet (e.g. user is
+        // adding their very first worktree as a `.git` kind), we can't
+        // know which repo to `git worktree add` from, so the effect is
+        // skipped. The worktree row still appears in state — the user
+        // has to populate the directory themselves.
+        let projectId = UUID()
+        let state = stateWith(projects: [makeProject(id: projectId, worktrees: [])])
+
+        let (_, effects) = reduce(state, .createWorktree(
+            projectId: projectId,
+            name: "feat",
+            kind: .git(branch: "feat/auth", baseRef: "main"),
+            path: URL(fileURLWithPath: "/wt/feat")
+        ))
+
+        XCTAssertFalse(effects.contains(where: { effect in
+            if case .createGitWorktree = effect { return true }
+            return false
+        }))
     }
 
     func test_createWorktree_unknownProject_isNoop() {
@@ -846,7 +872,6 @@ private func makeProject(id: UUID, worktrees: [Worktree]) -> Project {
         id: id,
         name: "atlas",
         color: "#ff5500",
-        rootDir: URL(fileURLWithPath: "/p/atlas"),
         enabled: true,
         worktrees: worktrees,
         createdAt: Date()
@@ -862,7 +887,8 @@ private func makeWorktree(id: UUID, jobs: [Job]) -> Worktree {
         enabled: true,
         missing: false,
         jobs: jobs,
-        createdAt: Date()
+        createdAt: Date(),
+        primary: false
     )
 }
 

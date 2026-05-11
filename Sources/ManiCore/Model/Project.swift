@@ -4,7 +4,6 @@ public struct Project: Codable, Equatable, Identifiable {
     public let id: UUID
     public var name: String
     public var color: String
-    public var rootDir: URL
     public var enabled: Bool
     public var worktrees: [Worktree]
     public var createdAt: Date
@@ -13,7 +12,6 @@ public struct Project: Codable, Equatable, Identifiable {
         id: UUID,
         name: String,
         color: String,
-        rootDir: URL,
         enabled: Bool,
         worktrees: [Worktree],
         createdAt: Date
@@ -21,9 +19,24 @@ public struct Project: Codable, Equatable, Identifiable {
         self.id = id
         self.name = name
         self.color = color
-        self.rootDir = rootDir
         self.enabled = enabled
         self.worktrees = worktrees
         self.createdAt = createdAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, color, enabled, worktrees, createdAt
+    }
+
+    // Backward-compat: state.json files written before the rootDir
+    // removal still carry that field. Ignore it on decode.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.color = try c.decode(String.self, forKey: .color)
+        self.enabled = try c.decode(Bool.self, forKey: .enabled)
+        self.worktrees = try c.decode([Worktree].self, forKey: .worktrees)
+        self.createdAt = try c.decode(Date.self, forKey: .createdAt)
     }
 }

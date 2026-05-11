@@ -10,6 +10,7 @@ public enum Event: Codable, Equatable {
     case worktreeCreated(projectId: UUID, Worktree)
     case worktreeEnabledChanged(at: WorktreePath, enabled: Bool)
     case worktreeMarkedMissing(at: WorktreePath)
+    case worktreePrimaryChanged(at: WorktreePath)
     case worktreeDeleted(at: WorktreePath)
 
     case jobCreated(at: WorktreePath, Job)

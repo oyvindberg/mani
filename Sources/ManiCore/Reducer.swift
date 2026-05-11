@@ -3,12 +3,11 @@ import Foundation
 public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], effects: [Effect]) {
     switch action {
 
-    case let .createProject(name, color, rootDir):
+    case let .createProject(name, color):
         let project = Project(
             id: UUID(),
             name: name,
             color: color,
-            rootDir: rootDir,
             enabled: true,
             worktrees: [],
             createdAt: Date()
@@ -50,6 +49,9 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         guard let project = state.projects.first(where: { $0.id == projectId }) else {
             return ([], [])
         }
+        // First worktree added becomes primary automatically; the user
+        // can promote a different one later via setWorktreePrimary.
+        let isFirstWorktree = project.worktrees.isEmpty
         let worktree = Worktree(
             id: UUID(),
             name: name,
@@ -58,20 +60,32 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             enabled: true,
             missing: false,
             jobs: [],
-            createdAt: Date()
+            createdAt: Date(),
+            primary: isFirstWorktree
         )
         let event = Event.worktreeCreated(projectId: projectId, worktree)
         var effects: [Effect] = [.persistEvents([event])]
         if case let .git(branch, baseRef) = kind {
-            effects.append(.createGitWorktree(
-                projectId: projectId,
-                repoRoot: project.rootDir,
-                branch: branch,
-                path: path,
-                baseRef: baseRef
-            ))
+            // `git worktree add` runs in the project's primary worktree
+            // (its checkout's gitdir). Without a primary we skip the
+            // effect; the worktree row appears in the sidebar as a
+            // bare path that the user can populate manually.
+            if let primary = project.worktrees.first(where: { $0.primary }) {
+                effects.append(.createGitWorktree(
+                    projectId: projectId,
+                    repoRoot: primary.path,
+                    branch: branch,
+                    path: path,
+                    baseRef: baseRef
+                ))
+            }
         }
         return ([event], effects)
+
+    case let .setWorktreePrimary(at):
+        guard findWorktree(state, at) != nil else { return ([], []) }
+        let event = Event.worktreePrimaryChanged(at: at)
+        return ([event], [.persistEvents([event])])
 
     case let .setWorktreeEnabled(at, enabled):
         guard let worktree = findWorktree(state, at) else { return ([], []) }
@@ -278,6 +292,14 @@ public func apply(_ state: inout AppState, _ event: Event) {
 
     case let .worktreeMarkedMissing(at):
         mutateWorktree(&state, at) { $0.missing = true }
+
+    case let .worktreePrimaryChanged(at):
+        if let pi = state.projects.firstIndex(where: { $0.id == at.project }) {
+            for wi in state.projects[pi].worktrees.indices {
+                state.projects[pi].worktrees[wi].primary =
+                    (state.projects[pi].worktrees[wi].id == at.worktree)
+            }
+        }
 
     case let .worktreeDeleted(at):
         if let pi = state.projects.firstIndex(where: { $0.id == at.project }) {

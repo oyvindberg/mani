@@ -9,7 +9,6 @@ struct NewProjectSheet: View {
     let store: Store
     @Binding var isPresented: Bool
     @State private var name: String = ""
-    @State private var rootDir: String = NSHomeDirectory()
     @State private var color: String = ColorPalette.swatches.first ?? "#e74c3c"
 
     var body: some View {
@@ -17,15 +16,14 @@ struct NewProjectSheet: View {
             Text("New project").font(.headline)
             Form {
                 TextField("Name", text: $name)
-                HStack {
-                    TextField("Root directory", text: $rootDir)
-                    Button("Choose…") { pickFolder() }
-                }
             }
             VStack(alignment: .leading, spacing: 6) {
                 Text("Color").font(.caption).foregroundStyle(.secondary)
                 ColorSwatchPicker(hex: $color)
             }
+            Text("Add worktrees after creation. The first worktree becomes the project's primary.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             HStack {
                 Spacer()
                 Button("Cancel") { isPresented = false }.keyboardShortcut(.cancelAction)
@@ -33,8 +31,7 @@ struct NewProjectSheet: View {
                     Task {
                         await store.dispatch(.createProject(
                             name: name.isEmpty ? "untitled" : name,
-                            color: color,
-                            rootDir: URL(fileURLWithPath: rootDir)
+                            color: color
                         ))
                         isPresented = false
                     }
@@ -45,16 +42,6 @@ struct NewProjectSheet: View {
         }
         .padding(20)
         .frame(width: 420)
-    }
-
-    private func pickFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url {
-            rootDir = url.path
-        }
     }
 }
 

@@ -420,6 +420,11 @@ struct SidebarView: View {
             Self.openInIntelliJ(worktree.path)
         }
         Divider()
+        if !worktree.primary {
+            Button("Make primary") {
+                Task { await store.dispatch(.setWorktreePrimary(at: path)) }
+            }
+        }
         Button(worktree.enabled ? "Disable worktree (stop tasks)" : "Enable worktree") {
             Task {
                 await store.dispatch(.setWorktreeEnabled(at: path, enabled: !worktree.enabled))

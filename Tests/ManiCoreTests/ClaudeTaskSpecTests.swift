@@ -157,7 +157,6 @@ final class ClaudeTaskSpecTests: XCTestCase {
             id: UUID(),
             name: "p",
             color: "#000",
-            rootDir: URL(fileURLWithPath: "/p"),
             enabled: true,
             worktrees: [
                 Worktree(
@@ -168,7 +167,8 @@ final class ClaudeTaskSpecTests: XCTestCase {
                     enabled: true,
                     missing: false,
                     jobs: jobs,
-                    createdAt: Date()
+                    createdAt: Date(),
+                    primary: false
                 )
             ],
             createdAt: Date()

@@ -247,8 +247,7 @@ struct ManiApp: App {
         let home = FileManager.default.homeDirectoryForCurrentUser
         await store.dispatch(.createProject(
             name: "scratch",
-            color: "#ff5500",
-            rootDir: home
+            color: "#ff5500"
         ))
         guard let project = store.state.projects.first else { return }
         await store.dispatch(.createWorktree(

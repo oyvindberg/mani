@@ -30,8 +30,7 @@ func randomAction(state: AppState, rng: inout LCG) -> Action? {
         let id = rng.next() % 100_000
         return .createProject(
             name: "p\(id)",
-            color: "#ff5500",
-            rootDir: URL(fileURLWithPath: "/tmp/p\(id)")
+            color: "#ff5500"
         )
     }
 

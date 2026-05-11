@@ -31,7 +31,6 @@ final class PersistenceStoreTests: XCTestCase {
             id: UUID(),
             name: name,
             color: "#abcdef",
-            rootDir: URL(fileURLWithPath: "/tmp"),
             enabled: true,
             worktrees: [],
             createdAt: Date()

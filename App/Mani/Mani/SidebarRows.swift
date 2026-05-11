@@ -126,6 +126,12 @@ struct WorktreeHeaderRow: View {
                     .font(.system(.subheadline, design: .default).weight(.medium))
                     .foregroundStyle(.secondary)
                     .opacity(worktree.enabled ? 1 : 0.5)
+                if worktree.primary {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.yellow)
+                        .help("Primary worktree — `git worktree add` runs from here")
+                }
                 if worktree.missing {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 9))
