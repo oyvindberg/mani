@@ -143,6 +143,14 @@ struct ManiApp: App {
             for worktree in project.worktrees {
                 let sessions = ClaudeHistoryScanner.sessions(forCwd: worktree.path.path)
                 for session in sessions {
+                    ExternalSessionInfoCache.shared.record(
+                        sid: session.id,
+                        info: ExternalSessionInfoCache.Info(
+                            firstUserMessage: session.firstUserMessage,
+                            lastMessageAt: session.lastMessageAt,
+                            messageCount: session.messageCount
+                        )
+                    )
                     if store.state.jobOwningClaudeSession(session.id) != nil {
                         continue
                     }
@@ -381,6 +389,13 @@ struct ManiApp: App {
         delta: Int,
         store: Store
     ) async {
+        if let last = detected.lastMessageAt {
+            ExternalSessionInfoCache.shared.touch(
+                sid: detected.sessionId,
+                lastMessageAt: last,
+                messageCount: detected.messageCount
+            )
+        }
         for project in store.state.projects {
             for worktree in project.worktrees {
                 for job in worktree.jobs {

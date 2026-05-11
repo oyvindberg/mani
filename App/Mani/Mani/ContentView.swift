@@ -281,6 +281,7 @@ struct SidebarView: View {
     @State private var renameContext: RenameContext?
     @State private var collapsedProjects: Set<UUID> = []
     @State private var collapsedWorktrees: Set<UUID> = []
+    @State private var expandedPastSessions: Set<UUID> = []
     @State private var colorPickerProjectId: UUID?
     @State private var newWorktreeForProject: Project?
 
@@ -645,8 +646,104 @@ struct SidebarView: View {
             AnyView(worktreeMenu(project: project, worktree: worktree))
         }
         if worktreeExpanded {
-            ForEach(visibleJobs) { job in
+            let (managed, externals) = partitionVisibleJobs(visibleJobs)
+            ForEach(managed) { job in
                 JobRow(
+                    project: project,
+                    job: job,
+                    selected: selectedJobId == job.id
+                ) {
+                    selectedJobId = job.id
+                } onContextMenu: {
+                    AnyView(jobMenu(project: project, worktree: worktree, job: job))
+                }
+            }
+            if !externals.isEmpty {
+                pastSessionsGroup(
+                    project: project,
+                    worktree: worktree,
+                    externals: externals
+                )
+            }
+        }
+    }
+
+    // Split jobs into "managed" (Mani-spawned, full-row treatment) and
+    // "external" (discovered claude transcripts that go under a compact
+    // collapsible). External marker: command is "(external claude)".
+    private func partitionVisibleJobs(_ jobs: [Job]) -> ([Job], [Job]) {
+        var managed: [Job] = []
+        var externals: [Job] = []
+        for job in jobs {
+            if job.primary.command == "(external claude)" {
+                externals.append(job)
+            } else {
+                managed.append(job)
+            }
+        }
+        return (managed, externals)
+    }
+
+    @ViewBuilder
+    private func pastSessionsGroup(
+        project: Project,
+        worktree: Worktree,
+        externals: [Job]
+    ) -> some View {
+        let isExpanded = expandedPastSessions.contains(worktree.id)
+        HStack(spacing: 0) {
+            Rectangle()
+                .fill(SwiftUI.Color(hex: project.color))
+                .frame(width: 3)
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(width: 10)
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                Text("Past sessions")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("(\(externals.count))")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Spacer()
+            }
+            .padding(.leading, 22)
+            .padding(.trailing, 10)
+        }
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                if isExpanded { expandedPastSessions.remove(worktree.id) }
+                else { expandedPastSessions.insert(worktree.id) }
+            }
+        }
+        if isExpanded {
+            // Sort externals newest-first by lastMessageAt (from the
+            // info cache); fall back to UUID order otherwise.
+            let cache = ExternalSessionInfoCache.shared
+            let sorted = externals.sorted { a, b in
+                let aSid: String? = {
+                    if case let .claude(s) = a.kind { return s }
+                    return nil
+                }()
+                let bSid: String? = {
+                    if case let .claude(s) = b.kind { return s }
+                    return nil
+                }()
+                let aWhen = aSid.flatMap { cache.entries[$0]?.lastMessageAt }
+                    ?? .distantPast
+                let bWhen = bSid.flatMap { cache.entries[$0]?.lastMessageAt }
+                    ?? .distantPast
+                return aWhen > bWhen
+            }
+            ForEach(sorted) { job in
+                PastSessionRow(
                     project: project,
                     job: job,
                     selected: selectedJobId == job.id

@@ -238,3 +238,93 @@ struct JobRow: View {
         return nil
     }
 }
+
+// MARK: - Past session row
+
+// Compact row for an EXTERNAL claude session (a transcript Mani didn't
+// spawn). Renders relative date + msg count on a top line and a
+// truncated first-user-message preview underneath. Tap selects the
+// underlying Job so the user can adopt / delete from the right pane.
+struct PastSessionRow: View {
+    let project: Project
+    let job: Job
+    let selected: Bool
+    let onTap: () -> Void
+    let onContextMenu: () -> AnyView
+
+    @ObservedObject private var infoCache = ExternalSessionInfoCache.shared
+
+    private var sessionId: String? {
+        if case let .claude(sid) = job.kind { return sid }
+        return nil
+    }
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Rectangle()
+                .fill(SwiftUI.Color(hex: project.color))
+                .frame(width: 3)
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.orange.opacity(0.7))
+                    .frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        if let when = info?.lastMessageAt {
+                            Text(Self.relativeFormatter.localizedString(
+                                for: when, relativeTo: Date()
+                            ))
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                        } else {
+                            Text("session \((sessionId ?? "").prefix(8))")
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.tertiary)
+                        }
+                        if let count = info?.messageCount, count > 0 {
+                            Text("\(count) msg\(count == 1 ? "" : "s")")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                        Spacer()
+                    }
+                    if let preview = info?.firstUserMessage, !preview.isEmpty {
+                        Text(preview)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } else {
+                        Text("(no user message)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .italic()
+                    }
+                }
+            }
+            .padding(.leading, 22)
+            .padding(.trailing, 10)
+            .opacity(job.enabled ? 1 : 0.55)
+        }
+        .padding(.vertical, 3)
+        .background(
+            selected
+                ? SwiftUI.Color.accentColor.opacity(0.18)
+                : SwiftUI.Color.clear
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onTap)
+        .contextMenu { onContextMenu() }
+    }
+
+    private var info: ExternalSessionInfoCache.Info? {
+        sessionId.flatMap { infoCache.entries[$0] }
+    }
+}
