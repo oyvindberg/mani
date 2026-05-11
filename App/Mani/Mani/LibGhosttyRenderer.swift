@@ -28,6 +28,20 @@ final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewD
     private let session: InMemoryTerminalSession
     private let terminalView: GhosttyTerminal.TerminalView
     private let controller: TerminalController
+    // PTY output subscription is OWNED by the renderer (not the SwiftUI
+    // Coordinator) so that re-mounting TerminalPane on the same JobPath
+    // — which happens any time the user navigates away and back — does
+    // not stack additional subscribers on the same PTY. Setting a new
+    // value drops the previous one, whose deinit cancels the kernel-side
+    // handler registration. See TerminalRendererCache for the caching
+    // story this enables.
+    private var outputSub: ManagedPTY.OutputSubscription?
+    // True iff this renderer has already been wired to a PTY at least
+    // once. First-attach gets the captured-output replay (so the
+    // initial banner / spawn output isn't lost during the brief polling
+    // window between PTY spawn and renderer attach); subsequent attaches
+    // skip the replay so the visible scrollback isn't duplicated.
+    private var hasEverAttached: Bool = false
 
     init(themeName: String, fontFamily: String, fontSize: Int) {
         let bridge = CallbackBridge()
@@ -69,6 +83,19 @@ final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewD
 
     func feed(_ data: Data) {
         session.receive(data)
+    }
+
+    // Subscribe (or re-subscribe) to a PTY's output stream. The renderer
+    // holds the resulting OutputSubscription, so assigning a new one
+    // cancels the previous registration via its deinit — no risk of
+    // duplicate feeds when a fresh Coordinator attaches to a cached
+    // renderer instance.
+    func attachToPTY(_ pty: ManagedPTY) {
+        let replay = !hasEverAttached
+        outputSub = pty.addOutputHandler(replayCaptured: replay) { [weak self] data in
+            DispatchQueue.main.async { self?.feed(data) }
+        }
+        hasEverAttached = true
     }
 
     func resize(rows: UInt16, cols: UInt16) {

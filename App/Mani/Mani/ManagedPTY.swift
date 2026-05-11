@@ -41,9 +41,22 @@ final class ManagedPTY: @unchecked Sendable {
     private let captureCap = 1_048_576
 
     func addOutputHandler(_ handler: @escaping (Data) -> Void) -> OutputSubscription {
+        addOutputHandler(replayCaptured: true, handler)
+    }
+
+    // `replayCaptured` controls whether the new handler is immediately
+    // fed the buffered output collected before subscription. Use `true`
+    // for first-attach (renderer that hasn't seen anything yet), and
+    // `false` for re-attach to a cached renderer whose surface already
+    // contains those bytes — replay would otherwise double the visible
+    // history. See TerminalRendererCache + LibGhosttyRenderer.attachToPTY.
+    func addOutputHandler(
+        replayCaptured: Bool,
+        _ handler: @escaping (Data) -> Void
+    ) -> OutputSubscription {
         let id = UUID()
         outputHandlersLock.lock()
-        let snapshot = capturedOutput
+        let snapshot = replayCaptured ? capturedOutput : Data()
         outputHandlers[id] = handler
         outputHandlersLock.unlock()
         if !snapshot.isEmpty { handler(snapshot) }

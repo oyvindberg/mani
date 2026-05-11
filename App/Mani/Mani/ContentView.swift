@@ -780,9 +780,11 @@ struct TerminalPane: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> NSView {
-        // libghostty-backed renderer (per ADR-002 v0.2 swap). To fall back to
-        // SwiftTerm during a regression hunt, replace with `SwiftTermRenderer()`.
-        let renderer: TerminalRenderer = LibGhosttyRenderer(
+        // libghostty-backed renderer (per ADR-002 v0.2 swap). Cached per
+        // JobPath so tab-switching back doesn't tear down the surface and
+        // replay scrollback. See TerminalRendererCache.
+        let renderer = TerminalRendererCache.shared.renderer(
+            for: jobPath,
             themeName: store.state.settings.terminalTheme,
             fontFamily: store.state.settings.terminalFontFamily,
             fontSize: store.state.settings.terminalFontSize
@@ -799,13 +801,16 @@ struct TerminalPane: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {}
 
+    @MainActor
     final class Coordinator {
-        private var renderer: TerminalRenderer?
+        private var renderer: LibGhosttyRenderer?
         private weak var pty: ManagedPTY?
-        private var outputSub: ManagedPTY.OutputSubscription?
 
-        func attach(renderer: TerminalRenderer, store: Store, jobPath: JobPath) {
+        func attach(renderer: LibGhosttyRenderer, store: Store, jobPath: JobPath) {
             self.renderer = renderer
+            // Wire input + size to whichever PTY this Coordinator finds.
+            // (Re-)assigned per attach; the previous coordinator's closure
+            // is replaced atomically before the renderer's UI fires.
             renderer.inputHandler = { [weak self] data in self?.pty?.write(data) }
             renderer.sizeHandler = { [weak self] rows, cols in
                 self?.pty?.resize(rows: UInt16(rows), cols: UInt16(cols))
@@ -825,9 +830,10 @@ struct TerminalPane: NSViewRepresentable {
 
         private func bind(pty: ManagedPTY) {
             self.pty = pty
-            outputSub = pty.addOutputHandler { [weak self] chunk in
-                DispatchQueue.main.async { self?.renderer?.feed(chunk) }
-            }
+            // Hand the subscription to the renderer. The renderer owns it
+            // and drops the old one (if any) on assignment, so re-attach
+            // never produces duplicate feeds.
+            renderer?.attachToPTY(pty)
             pty.resize(rows: 40, cols: 120)
         }
     }
