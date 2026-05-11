@@ -629,6 +629,7 @@ struct SidebarView: View {
             if case .diff = job.kind { return false }
             return true
         }
+        let wtPath = WorktreePath(project: project.id, worktree: worktree.id)
         WorktreeHeaderRow(
             project: project,
             worktree: worktree,
@@ -642,6 +643,10 @@ struct SidebarView: View {
             }
         } onSelectDiff: {
             if let diffJobId { selectedJobId = diffJobId }
+        } onNewShell: {
+            Task { await Self.spawnShell(at: wtPath, cwd: worktree.path, store: store) }
+        } onNewClaude: {
+            Task { await Self.spawnClaude(at: wtPath, cwd: worktree.path, store: store) }
         } onContextMenu: {
             AnyView(worktreeMenu(project: project, worktree: worktree))
         }

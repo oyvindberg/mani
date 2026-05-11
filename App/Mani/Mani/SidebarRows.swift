@@ -103,63 +103,158 @@ struct WorktreeHeaderRow: View {
     let selectedJobId: UUID?
     let onToggle: () -> Void
     let onSelectDiff: () -> Void
+    let onNewShell: () -> Void
+    let onNewClaude: () -> Void
     let onContextMenu: () -> AnyView
 
+    @ObservedObject private var statsCache = WorktreeStatsCache.shared
+
+    private var dirSuffix: String {
+        // The path's last component. If the user's worktree.name already
+        // matches it we don't show it again on the second line.
+        URL(fileURLWithPath: worktree.path.path).lastPathComponent
+    }
+
+    private var gitStats: WorktreeGitStats? {
+        statsCache.stats[worktree.id]
+    }
+
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 0) {
             // Project color stripe — full height of the row, anchored
             // left so it lines up with the rows below for "everything
             // under atlas is the same atlas" continuity.
             Rectangle()
                 .fill(SwiftUI.Color(hex: project.color))
                 .frame(width: 3)
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    .frame(width: 10)
-                Image(systemName: worktreeIcon)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Text(worktree.name)
-                    .font(.system(.subheadline, design: .default).weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .opacity(worktree.enabled ? 1 : 0.5)
-                if worktree.primary {
-                    Image(systemName: "star.fill")
-                        .font(.system(size: 8))
-                        .foregroundStyle(.yellow)
-                        .help("Primary worktree — `git worktree add` runs from here")
-                }
-                if worktree.missing {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.orange)
-                        .help("Path no longer exists")
-                }
-                Spacer()
-                if let diffJobId {
-                    Button(action: onSelectDiff) {
-                        Image(systemName: "arrow.left.arrow.right")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(
-                                selectedJobId == diffJobId
-                                    ? SwiftUI.Color.accentColor
-                                    : .secondary
-                            )
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Diff workspace")
-                }
+            VStack(alignment: .leading, spacing: 3) {
+                topLine
+                bottomLine
             }
             .padding(.leading, 8)
             .padding(.trailing, 10)
+            .padding(.vertical, 6)
         }
-        .padding(.vertical, 4)
         .contentShape(Rectangle())
         .onTapGesture(perform: onToggle)
         .contextMenu { onContextMenu() }
+    }
+
+    private var topLine: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                .frame(width: 10)
+            Image(systemName: worktreeIcon)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            Text(worktree.name)
+                .font(.system(.subheadline, design: .default).weight(.semibold))
+                .opacity(worktree.enabled ? 1 : 0.5)
+            if worktree.primary {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 8))
+                    .foregroundStyle(.yellow)
+                    .help("Primary worktree — `git worktree add` runs from here")
+            }
+            if worktree.missing {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.orange)
+                    .help("Path no longer exists")
+            }
+            Spacer()
+            gitBadges
+        }
+    }
+
+    @ViewBuilder
+    private var gitBadges: some View {
+        if let stats = gitStats {
+            if let branch = stats.branch {
+                HStack(spacing: 3) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 9))
+                    Text(branch)
+                        .font(.caption2.monospaced())
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(
+                    Capsule().fill(SwiftUI.Color.secondary.opacity(0.10))
+                )
+                .help("Current branch")
+            }
+            if stats.ahead > 0 {
+                Text("↑\(stats.ahead)")
+                    .font(.caption2.monospaced().weight(.medium))
+                    .foregroundStyle(.green)
+                    .help("Commits ahead of \(stats.upstream ?? "upstream")")
+            }
+            if stats.behind > 0 {
+                Text("↓\(stats.behind)")
+                    .font(.caption2.monospaced().weight(.medium))
+                    .foregroundStyle(.orange)
+                    .help("Commits behind \(stats.upstream ?? "upstream")")
+            }
+            if stats.hasUncommitted {
+                Image(systemName: "pencil.tip")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.yellow)
+                    .help("Uncommitted changes")
+            }
+        }
+    }
+
+    private var bottomLine: some View {
+        HStack(spacing: 6) {
+            // Indent to align under the chevron + folder glyph.
+            Spacer().frame(width: 22)
+            if dirSuffix != worktree.name {
+                Text(dirSuffix)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+            }
+            Spacer()
+            actionButton(systemImage: "terminal", help: "New shell here", action: onNewShell)
+            actionButton(systemImage: "sparkles", help: "New Claude task", action: onNewClaude)
+            if let diffJobId {
+                actionButton(
+                    systemImage: "arrow.left.arrow.right",
+                    help: "Diff workspace",
+                    tint: selectedJobId == diffJobId ? .accentColor : .secondary,
+                    action: onSelectDiff
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func actionButton(
+        systemImage: String,
+        help: String,
+        tint: SwiftUI.Color = .secondary,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(tint)
+                .frame(width: 22, height: 18)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(SwiftUI.Color.secondary.opacity(0.10))
+                )
+        }
+        .buttonStyle(.plain)
+        .help(help)
     }
 
     private var worktreeIcon: String {
@@ -178,6 +273,9 @@ struct JobRow: View {
     let selected: Bool
     let onTap: () -> Void
     let onContextMenu: () -> AnyView
+
+    @ObservedObject private var statsCache = JobStatsCache.shared
+    @ObservedObject private var externalInfo = ExternalSessionInfoCache.shared
 
     var body: some View {
         HStack(spacing: 0) {
@@ -228,14 +326,22 @@ struct JobRow: View {
         .contextMenu { onContextMenu() }
     }
 
-    // Subtitle: claude session id (last 6 chars) for linked claude jobs;
-    // nothing for shell. Helps disambiguate multiple claude tasks in the
-    // same worktree.
+    // Subtitle: for claude jobs, "N msgs · 1.2 MB" (data from the
+    // JobStatsCache / ExternalSessionInfoCache pollers). For shell
+    // jobs there's no subtitle.
     private var subtitle: String? {
-        if case let .claude(sid) = job.kind, let sid {
+        guard case let .claude(sid) = job.kind, let sid else { return nil }
+        var parts: [String] = []
+        if let msg = externalInfo.entries[sid]?.messageCount {
+            parts.append("\(msg) msg\(msg == 1 ? "" : "s")")
+        }
+        if let bytes = statsCache.stats[job.id]?.transcriptBytes, bytes > 0 {
+            parts.append(JobStatsFormatter.size(bytes: bytes))
+        }
+        if parts.isEmpty {
             return "session " + String(sid.prefix(8))
         }
-        return nil
+        return parts.joined(separator: " · ")
     }
 }
 

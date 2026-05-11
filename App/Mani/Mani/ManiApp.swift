@@ -8,6 +8,11 @@ struct ManiApp: App {
     @StateObject private var watcher: ClaudeWatcher
     @StateObject private var hookListener: HookListenerService
 
+    // Held so the pollers' Tasks aren't reaped. Started in the WindowGroup
+    // .task once the store + initial state are ready.
+    private let worktreeStatsPoller: WorktreeStatsPoller
+    private let jobStatsPoller: JobStatsPoller
+
     init() {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -28,6 +33,9 @@ struct ManiApp: App {
 
         let socketPath = storeRoot.appendingPathComponent("hook.sock").path
         _hookListener = StateObject(wrappedValue: HookListenerService(socketPath: socketPath))
+
+        worktreeStatsPoller = WorktreeStatsPoller(store: store)
+        jobStatsPoller = JobStatsPoller(store: store)
 
         // Cmd-Q / quit menu: SIGTERM every live PTY before the app exits.
         // macOS gives ~1s before force-quit, so we don't block waiting for
@@ -88,6 +96,8 @@ struct ManiApp: App {
                     await Self.ensureDiffJobsForGitWorktrees(store: store)
                     await Self.migrateRenamedFlags(store: store)
                     await Self.discoverHistoricalClaudeSessions(store: store)
+                    worktreeStatsPoller.start()
+                    jobStatsPoller.start()
                     Self.startSnapshotTimer(store: store)
                     Self.startStaleClaudePruneTimer(store: store)
                 }
