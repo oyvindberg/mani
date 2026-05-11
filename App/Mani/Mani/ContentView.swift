@@ -125,7 +125,10 @@ struct ContentView: View {
         .sheet(isPresented: $showingSearch) {
             ScrollbackSearchSheet(
                 sources: allScrollbackSources(),
-                isPresented: $showingSearch
+                isPresented: $showingSearch,
+                onSelectMatch: { jobPath in
+                    selectedJobId = jobPath.job
+                }
             )
         }
         .sheet(isPresented: $showingNewWorktree) {
@@ -176,6 +179,11 @@ struct ContentView: View {
                     let label = "\(project.name) › \(worktree.name) › \(job.name)"
                     let src = ScrollbackSearchSheet.Source(
                         label: label,
+                        jobPath: JobPath(
+                            project: project.id,
+                            worktree: worktree.id,
+                            job: job.id
+                        ),
                         scrollbackPath: scrollbackPath(for: job.id)
                     )
                     if job.id == selectedId {

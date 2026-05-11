@@ -8,16 +8,18 @@ import ManiCore
 // Click → copy the line to the pasteboard. Useful for "find the thing I
 // remember was 3000 lines back" without rolling a wheel.
 struct ScrollbackSearchSheet: View {
-    // One source per Mani job — its display label (project › worktree › name)
-    // plus the on-disk scrollback file. Multiple sources mean the search is
-    // cross-task; the result row shows which source the match belongs to.
+    // One source per Mani job — its display label (project › worktree › name),
+    // the on-disk scrollback file path, and the JobPath that identifies it
+    // in Store state (so clicking a match can navigate to that task).
     struct Source {
         let label: String
+        let jobPath: JobPath
         let scrollbackPath: String
     }
 
     let sources: [Source]
     @Binding var isPresented: Bool
+    var onSelectMatch: (JobPath) -> Void
 
     @State private var query: String = ""
     @State private var results: [Match] = []
@@ -28,6 +30,7 @@ struct ScrollbackSearchSheet: View {
     struct Match: Identifiable, Equatable {
         let id = UUID()
         let sourceLabel: String        // which task this came from
+        let sourceJobPath: JobPath     // navigate target when clicked
         let lineNumber: Int
         let fullLine: String           // ANSI-stripped, full
 
@@ -146,6 +149,15 @@ struct ScrollbackSearchSheet: View {
             RoundedRectangle(cornerRadius: 6)
                 .strokeBorder(SwiftUI.Color.secondary.opacity(0.18), lineWidth: 0.5)
         )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // No libghostty primitive to jump-scroll to a specific line, so
+            // a click only navigates to the source task and dismisses the
+            // sheet. The user finds the match in the renderer's own
+            // scrollback from there.
+            onSelectMatch(match.sourceJobPath)
+            isPresented = false
+        }
     }
 
     private func contextAttributed(_ match: Match) -> AttributedString {
@@ -268,6 +280,7 @@ struct ScrollbackSearchSheet: View {
                         )
                         matches.append(Match(
                             sourceLabel: src.label,
+                            sourceJobPath: src.jobPath,
                             lineNumber: lineNo,
                             fullLine: lineStr,
                             context: ctx,
