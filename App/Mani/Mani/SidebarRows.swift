@@ -56,6 +56,8 @@ struct ProjectHeaderRow: View {
     let onToggle: () -> Void
     let onContextMenu: () -> AnyView
 
+    @State private var hovered = false
+
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "chevron.right")
@@ -87,7 +89,11 @@ struct ProjectHeaderRow: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
+        .background(
+            hovered ? SwiftUI.Color.secondary.opacity(0.10) : .clear
+        )
         .contentShape(Rectangle())
+        .onHover { hovered = $0 }
         .onTapGesture(perform: onToggle)
         .contextMenu { onContextMenu() }
     }
@@ -108,6 +114,7 @@ struct WorktreeHeaderRow: View {
     let onContextMenu: () -> AnyView
 
     @ObservedObject private var statsCache = WorktreeStatsCache.shared
+    @State private var headerHovered = false
 
     private var dirSuffix: String {
         // The path's last component. If the user's worktree.name already
@@ -135,7 +142,11 @@ struct WorktreeHeaderRow: View {
             .padding(.trailing, 10)
             .padding(.vertical, 6)
         }
+        .background(
+            headerHovered ? SwiftUI.Color.secondary.opacity(0.08) : .clear
+        )
         .contentShape(Rectangle())
+        .onHover { headerHovered = $0 }
         .onTapGesture(perform: onToggle)
         .contextMenu { onContextMenu() }
     }
@@ -236,25 +247,15 @@ struct WorktreeHeaderRow: View {
         }
     }
 
-    @ViewBuilder
     private func actionButton(
         systemImage: String,
         help: String,
         tint: SwiftUI.Color = .secondary,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(tint)
-                .frame(width: 22, height: 18)
-                .background(
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(SwiftUI.Color.secondary.opacity(0.10))
-                )
-        }
-        .buttonStyle(.plain)
-        .help(help)
+        SidebarActionButton(
+            systemImage: systemImage, help: help, tint: tint, action: action
+        )
     }
 
     private var worktreeIcon: String {
@@ -276,6 +277,7 @@ struct JobRow: View {
 
     @ObservedObject private var statsCache = JobStatsCache.shared
     @ObservedObject private var externalInfo = ExternalSessionInfoCache.shared
+    @State private var hovered = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -319,9 +321,10 @@ struct JobRow: View {
         .background(
             selected
                 ? SwiftUI.Color.accentColor.opacity(0.18)
-                : SwiftUI.Color.clear
+                : (hovered ? SwiftUI.Color.secondary.opacity(0.10) : .clear)
         )
         .contentShape(Rectangle())
+        .onHover { hovered = $0 }
         .onTapGesture(perform: onTap)
         .contextMenu { onContextMenu() }
     }
@@ -345,6 +348,43 @@ struct JobRow: View {
     }
 }
 
+// MARK: - Reusable action button
+
+// Small icon button used in the worktree header's bottom row. Designed
+// to be visibly different from informational badges: stronger hover
+// state, accentColor pulse on press, and a hand-pointer cursor while
+// hovered so the affordance is obvious.
+struct SidebarActionButton: View {
+    let systemImage: String
+    let help: String
+    let tint: SwiftUI.Color
+    let action: () -> Void
+
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(hovered ? .white : tint)
+                .frame(width: 24, height: 20)
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(hovered
+                            ? SwiftUI.Color.accentColor.opacity(0.85)
+                            : SwiftUI.Color.secondary.opacity(0.14))
+                )
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .onHover { isOver in
+            hovered = isOver
+            if isOver { NSCursor.pointingHand.push() }
+            else { NSCursor.pop() }
+        }
+    }
+}
+
 // MARK: - Past session row
 
 // Compact row for an EXTERNAL claude session (a transcript Mani didn't
@@ -359,6 +399,7 @@ struct PastSessionRow: View {
     let onContextMenu: () -> AnyView
 
     @ObservedObject private var infoCache = ExternalSessionInfoCache.shared
+    @State private var hovered = false
 
     private var sessionId: String? {
         if case let .claude(sid) = job.kind { return sid }
@@ -423,9 +464,10 @@ struct PastSessionRow: View {
         .background(
             selected
                 ? SwiftUI.Color.accentColor.opacity(0.18)
-                : SwiftUI.Color.clear
+                : (hovered ? SwiftUI.Color.secondary.opacity(0.10) : .clear)
         )
         .contentShape(Rectangle())
+        .onHover { hovered = $0 }
         .onTapGesture(perform: onTap)
         .contextMenu { onContextMenu() }
     }
