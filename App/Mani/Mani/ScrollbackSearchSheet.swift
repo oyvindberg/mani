@@ -63,41 +63,14 @@ struct ScrollbackSearchSheet: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(results) { match in
-                    HStack(alignment: .top, spacing: 8) {
-                        Text("\(match.lineNumber)")
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .frame(minWidth: 50, alignment: .trailing)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(match.sourceLabel)
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                            Text(snippetAttributed(match))
-                                .font(.system(.caption, design: .monospaced))
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            if let next = match.nextLine, !next.isEmpty {
-                                Text(next)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                            }
+                ScrollView {
+                    LazyVStack(spacing: 6) {
+                        ForEach(results) { match in
+                            resultCard(match)
                         }
-                        Spacer()
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(match.fullLine, forType: .string)
-                        } label: {
-                            Image(systemName: "doc.on.doc")
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Copy full line")
                     }
-                    .padding(.vertical, 2)
+                    .padding(8)
                 }
-                .listStyle(.bordered)
             }
         }
         .frame(width: 720, height: 480)
@@ -120,14 +93,67 @@ struct ScrollbackSearchSheet: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // Highlight just the match window inside the snippet. The snippet
-    // is already sized + centered on the match by buildSnippet, so we
-    // only need to colorize the known range.
+    // Each match is a three-line card:
+    //   1. project › worktree › task (with line number prefix)
+    //   2. matched line, starting at column 0, highlight if visible
+    //   3. next line, if there is one
+    // Card has a subtle background + border so a list of matches reads
+    // as discrete blocks instead of squashed rows.
+    private func resultCard(_ match: Match) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text("\(match.lineNumber)")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Text(match.sourceLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(match.fullLine, forType: .string)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless)
+                .help("Copy full line")
+            }
+            Text(snippetAttributed(match))
+                .font(.system(.body, design: .monospaced))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let next = match.nextLine, !next.isEmpty {
+                Text(next)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(SwiftUI.Color.secondary.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(SwiftUI.Color.secondary.opacity(0.18), lineWidth: 0.5)
+        )
+    }
+
+    // Highlight the match window inside the snippet. If start == -1 the
+    // match is past the snippet's truncation point — return the plain
+    // snippet so the user still sees the line identity without a fake
+    // highlight on the wrong characters.
     private func snippetAttributed(_ match: Match) -> AttributedString {
         var attr = AttributedString(match.snippet)
+        guard match.snippetMatchStart >= 0 else { return attr }
         let start = attr.characters.index(
             attr.startIndex,
-            offsetBy: max(0, match.snippetMatchStart),
+            offsetBy: match.snippetMatchStart,
             limitedBy: attr.endIndex
         ) ?? attr.endIndex
         let end = attr.characters.index(
@@ -142,47 +168,33 @@ struct ScrollbackSearchSheet: View {
         return attr
     }
 
-    // Build a snippet that starts at the BEGINNING of the line (no
-    // leading ellipsis), goes up to `window` characters. If the match
-    // ends after the window, we extend just enough to keep the match
-    // visible plus a small trailing context, separated from the prefix
-    // by " … ". Highlight offset is updated to match.
+    // Snippet starts at column 0 of the line, truncates to `window`
+    // characters with a trailing ellipsis. The match offset/length are
+    // returned only when the match fits inside the snippet — otherwise
+    // start = -1 and the caller renders the snippet without highlight.
+    // Rationale: the user wants the line's identity (left-anchored,
+    // unmolested), not the matched fragment. If the match is past the
+    // visible window, copying the full line still gets it.
     private static func buildSnippet(
         line: String,
         matchStart: String.Index,
         matchEnd: String.Index
     ) -> (snippet: String, start: Int, length: Int) {
-        let window = 240
-        let trailContext = 30
+        let window = 280
         let lineCount = line.count
         let matchStartOffset = line.distance(from: line.startIndex, to: matchStart)
         let matchLen = line.distance(from: matchStart, to: matchEnd)
         let matchEndOffset = matchStartOffset + matchLen
-
-        if matchEndOffset <= window {
-            // Match fits in the prefix window.
-            let endOffset = min(window, lineCount)
-            let endIdx = line.index(line.startIndex, offsetBy: endOffset)
-            var snippet = String(line[..<endIdx])
-            if endOffset < lineCount { snippet += "…" }
-            return (snippet, matchStartOffset, matchLen)
-        } else {
-            // Match is past the prefix window: show first ~80 chars, then
-            // " … ", then the match plus a little trailing context.
-            let prefixLen = min(80, lineCount)
-            let prefixEnd = line.index(line.startIndex, offsetBy: prefixLen)
-            let prefix = String(line[..<prefixEnd])
-            let contextStart = max(prefixLen, matchStartOffset - 10)
-            let contextEnd = min(lineCount, matchEndOffset + trailContext)
-            let cs = line.index(line.startIndex, offsetBy: contextStart)
-            let ce = line.index(line.startIndex, offsetBy: contextEnd)
-            let bridge = " … "
-            var snippet = prefix + bridge + String(line[cs..<ce])
-            if contextEnd < lineCount { snippet += "…" }
-            let snippetMatchOffset = prefix.count + bridge.count
-                                   + (matchStartOffset - contextStart)
-            return (snippet, snippetMatchOffset, matchLen)
-        }
+        let endOffset = min(window, lineCount)
+        let endIdx = line.index(line.startIndex, offsetBy: endOffset)
+        var snippet = String(line[..<endIdx])
+        if endOffset < lineCount { snippet += "…" }
+        let highlightVisible = matchEndOffset <= endOffset
+        return (
+            snippet,
+            highlightVisible ? matchStartOffset : -1,
+            highlightVisible ? matchLen : 0
+        )
     }
 
     private func stripANSI(_ s: String) -> String {
