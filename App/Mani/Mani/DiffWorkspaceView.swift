@@ -19,7 +19,7 @@ struct DiffWorkspaceView: View {
     @EnvironmentObject var store: Store
 
     @State private var sourceRef: String = "HEAD"
-    @State private var refsExpanded: Bool = true
+    @State private var refsExpanded: Bool = false
     @State private var trackedExpanded: Bool = true
     @State private var untrackedExpanded: Bool = true
     @State private var trackedTree: [PathTreeNode] = []
@@ -48,13 +48,28 @@ struct DiffWorkspaceView: View {
         .task {
             // Run the initial refresh and the one-shot shell setup off the
             // main actor; both can take 50–200 ms.
+            loadPersistedState()
             checkDelta()
             refreshFileList()
             initialiseShellIfNeeded()
             startFSWatching()
         }
-        .onChange(of: sourceRef) { _, _ in refreshFileList() }
+        .onChange(of: sourceRef) { _, new in
+            UserDefaults.standard.set(new, forKey: sourceRefKey)
+            refreshFileList()
+        }
         .onDisappear { fsWatcher?.stop() }
+    }
+
+    private var sourceRefKey: String {
+        "diff.\(jobPath.job.uuidString).sourceRef"
+    }
+
+    private func loadPersistedState() {
+        if let saved = UserDefaults.standard.string(forKey: sourceRefKey),
+           !saved.isEmpty {
+            sourceRef = saved
+        }
     }
 
     @ViewBuilder
