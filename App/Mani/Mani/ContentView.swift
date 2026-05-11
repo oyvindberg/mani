@@ -809,46 +809,195 @@ private struct ExternalClaudeView: View {
     @EnvironmentObject var store: Store
     @EnvironmentObject var watcher: ClaudeWatcher
 
+    @State private var loading = true
+    @State private var detail: ClaudeHistoryScanner.Session?
+    @State private var recent: [ClaudeHistoryScanner.RecentMessage] = []
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        return f
+    }()
+
     var body: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "arrow.up.right.square")
-                .font(.system(size: 36))
-                .foregroundStyle(.secondary)
-            Text("External Claude session")
-                .font(.headline)
-            VStack(alignment: .leading, spacing: 4) {
-                if case let .claude(sid) = job.kind, let sid {
-                    labelled("Session", sid)
-                    if let detected = watcher.sessions[sid] {
-                        if let cwd = detected.cwd { labelled("cwd", cwd) }
-                        labelled("messages", "\(detected.messageCount)")
-                        labelled("transcript", detected.path)
-                    }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                Divider()
+                summary
+                if !recent.isEmpty {
+                    Divider()
+                    recentMessagesSection
+                }
+                if appearsActive {
+                    Text("⚠︎ This session looks active (a message arrived in the last minute). Close the external claude first — two processes resuming the same session id will conflict.")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(SwiftUI.Color.orange.opacity(0.12))
+                        )
+                }
+                HStack {
+                    Spacer()
+                    Button("Adopt into Mani") { adopt() }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
                 }
             }
-            .font(.system(.caption, design: .monospaced))
-            .frame(maxWidth: 540, alignment: .leading)
-            Text("This claude was started outside Mani. Mani is watching its\ntranscript on disk; it can't restart or attach a renderer.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            if appearsActive {
-                Text("⚠︎ This session looks active (a message arrived in the last minute). Close the external claude first — two processes resuming the same session id will conflict.")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 540)
-            }
-            Button("Adopt into Mani") { adopt() }
-                .keyboardShortcut(.defaultAction)
+            .padding(20)
+            .frame(maxWidth: 760)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .task { await load() }
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 28))
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("External Claude session")
+                    .font(.title3.weight(.semibold))
+                Text("Discovered on disk — Mani isn't running this one. You can adopt it to take over (Mani spawns claude --resume <sid>).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private var summary: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let sid = sessionId { labelled("Session", sid) }
+            if let cwd = detail?.cwd ?? watcher.sessions[sessionId ?? ""]?.cwd {
+                labelled("cwd", cwd)
+            }
+            if let count = detail?.messageCount ?? watcher.sessions[sessionId ?? ""]?.messageCount {
+                labelled("Messages", "\(count)")
+            }
+            if let last = detail?.lastMessageAt ?? watcher.sessions[sessionId ?? ""]?.lastMessageAt {
+                labelled("Last activity", Self.relativeFormatter.localizedString(
+                    for: last, relativeTo: Date()
+                ))
+            }
+            if let first = detail?.firstUserMessage {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("First user message")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    Text(first)
+                        .font(.system(.body, design: .monospaced))
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(SwiftUI.Color.secondary.opacity(0.08))
+                        )
+                }
+                .padding(.top, 6)
+            }
+            if loading {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Reading transcript…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 4)
+            }
+        }
+        .font(.system(.caption, design: .monospaced))
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var recentMessagesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Recent messages")
+                .font(.headline)
+            ForEach(recent) { msg in
+                HStack(alignment: .top, spacing: 8) {
+                    Text(roleBadge(msg.role))
+                        .font(.caption2.weight(.bold).monospaced())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(roleColor(msg.role))
+                        )
+                    Text(msg.text)
+                        .font(.system(.body, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .multilineTextAlignment(.leading)
+                        .textSelection(.enabled)
+                }
+                .padding(.vertical, 4)
+                .padding(.horizontal, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(SwiftUI.Color.secondary.opacity(0.06))
+                )
+            }
+        }
+    }
+
+    private func roleBadge(_ role: String) -> String {
+        switch role {
+        case "user": return "YOU"
+        case "assistant": return "CLAUDE"
+        default: return role.uppercased()
+        }
+    }
+
+    private func roleColor(_ role: String) -> SwiftUI.Color {
+        switch role {
+        case "user": return .blue
+        case "assistant": return .orange
+        default: return .gray
+        }
+    }
+
+    private var sessionId: String? {
+        if case let .claude(s) = job.kind { return s }
+        return nil
+    }
+
+    private var transcriptURL: URL? {
+        guard let sid = sessionId else { return nil }
+        // Match ClaudeHistoryScanner's slug convention.
+        let cwd = job.primary.cwd.path
+        let trimmed = cwd.hasSuffix("/") ? String(cwd.dropLast()) : cwd
+        let slug = "-" + trimmed
+            .split(separator: "/", omittingEmptySubsequences: true)
+            .joined(separator: "-")
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects")
+            .appendingPathComponent(slug)
+            .appendingPathComponent("\(sid).jsonl")
+    }
+
+    private func load() async {
+        guard let url = transcriptURL else { loading = false; return }
+        await Task.detached(priority: .userInitiated) { [url] in
+            let result = ClaudeHistoryScanner.detail(jsonl: url, recentLimit: 5)
+            await MainActor.run {
+                if let result {
+                    detail = result.0
+                    recent = result.1
+                }
+                loading = false
+            }
+        }.value
     }
 
     private var appearsActive: Bool {
-        guard case let .claude(sid) = job.kind, let sid,
-              let detected = watcher.sessions[sid],
-              let last = detected.lastMessageAt
+        guard let last = detail?.lastMessageAt
+                ?? watcher.sessions[sessionId ?? ""]?.lastMessageAt
         else { return false }
         return Date().timeIntervalSince(last) < 60
     }
