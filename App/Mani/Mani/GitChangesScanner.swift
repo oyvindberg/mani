@@ -49,9 +49,31 @@ struct GitChange: Equatable, Hashable {
 
 enum GitChangesScanner {
 
+    // Working tree vs HEAD: matches the old "tracked" semantics. Used when
+    // the user picks a non-HEAD ref to compare against; combines staged
+    // and unstaged. The IDE-style flow prefers the staged/unstaged
+    // breakdown below.
     static func tracked(worktree: URL, sourceRef: String) -> [GitChange] {
         let out = runGit(args: ["diff", "--name-status", sourceRef], cwd: worktree)
-        return out.split(separator: "\n").compactMap { line -> GitChange? in
+        return parseNameStatus(out)
+    }
+
+    // Staged changes: index vs HEAD. What `git commit -m` would commit
+    // (without -a). `R` lines carry old + new paths.
+    static func staged(worktree: URL) -> [GitChange] {
+        let out = runGit(args: ["diff", "--cached", "--name-status"], cwd: worktree)
+        return parseNameStatus(out)
+    }
+
+    // Unstaged tracked changes: worktree vs index. What `git add` would
+    // stage. Excludes already-staged content.
+    static func unstaged(worktree: URL) -> [GitChange] {
+        let out = runGit(args: ["diff", "--name-status"], cwd: worktree)
+        return parseNameStatus(out)
+    }
+
+    private static func parseNameStatus(_ out: String) -> [GitChange] {
+        out.split(separator: "\n").compactMap { line -> GitChange? in
             // Tab-separated. Plain changes have 2 columns: `M\tpath`.
             // Rename/copy have 3 columns: `R100\told\tnew` — we record
             // the new path as `path` and keep the old path in
@@ -79,33 +101,37 @@ enum GitChangesScanner {
         return out.split(separator: "\n").map(String.init)
     }
 
-    // Stage the given paths. Returns true on success.
+    // Stage the given paths (`git add -- <paths>`).
     @discardableResult
     static func add(paths: [String], worktree: URL) -> Bool {
         guard !paths.isEmpty else { return true }
         return runGitOp(args: ["add", "--"] + paths, cwd: worktree)
     }
 
+    // Unstage the given paths (`git restore --staged -- <paths>`). Index
+    // returns to HEAD for those paths; working tree unaffected.
+    @discardableResult
+    static func unstage(paths: [String], worktree: URL) -> Bool {
+        guard !paths.isEmpty else { return true }
+        return runGitOp(args: ["restore", "--staged", "--"] + paths, cwd: worktree)
+    }
+
     // Discard working-tree changes for the given paths (`git restore -- <p>`).
-    // Returns true on success. Destructive — caller is responsible for the
-    // confirm prompt.
+    // Destructive; caller is responsible for the confirm prompt.
     @discardableResult
     static func discard(paths: [String], worktree: URL) -> Bool {
         guard !paths.isEmpty else { return true }
         return runGitOp(args: ["restore", "--"] + paths, cwd: worktree)
     }
 
-    // Commit currently-staged content plus all modified-tracked files
-    // (`git commit -am`). Untracked files are NOT included unless they
-    // were previously staged via `add`. Returns true on success.
+    // Commit currently-staged content only (`git commit -m`). Unstaged
+    // tracked changes and untracked files are NOT included; the user is
+    // expected to stage explicitly first.
     @discardableResult
-    static func commitAllTracked(message: String, worktree: URL) -> Bool {
+    static func commitStaged(message: String, worktree: URL) -> Bool {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        return runGitOp(
-            args: ["commit", "-am", trimmed],
-            cwd: worktree
-        )
+        return runGitOp(args: ["commit", "-m", trimmed], cwd: worktree)
     }
 
     private static func runGitOp(args: [String], cwd: URL) -> Bool {

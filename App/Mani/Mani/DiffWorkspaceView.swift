@@ -18,20 +18,31 @@ struct DiffWorkspaceView: View {
 
     @EnvironmentObject var store: Store
 
-    @State private var sourceRef: String = "HEAD"
-    @State private var refsExpanded: Bool = false
-    @State private var trackedExpanded: Bool = true
+    @State private var stagedExpanded: Bool = true
+    @State private var unstagedExpanded: Bool = true
     @State private var untrackedExpanded: Bool = true
-    @State private var trackedTree: [PathTreeNode] = []
+    @State private var stagedTree: [PathTreeNode] = []
+    @State private var unstagedTree: [PathTreeNode] = []
     @State private var untrackedTree: [PathTreeNode] = []
-    @State private var trackedPaths: [String] = []
+    @State private var stagedPaths: [String] = []
+    @State private var unstagedPaths: [String] = []
+    @State private var untrackedPaths: [String] = []
     @State private var untrackedSelection: Set<String> = []
-    @State private var selectedFile: String?
+    @State private var selectedFile: SelectedFile?
     @State private var commitMessage: String = ""
     @State private var commitInFlight: Bool = false
     @State private var renameMap: [String: String] = [:] // current → previous
     @FocusState private var fileListFocused: Bool
     @State private var fsWatcher: WorktreeFSWatcher?
+
+    // Tracks which section the selected file lives in so the right pane
+    // renders the right diff: staged shows index-vs-HEAD, unstaged shows
+    // worktree-vs-index, untracked shows the full file as added.
+    enum Section: Equatable { case staged, unstaged, untracked }
+    struct SelectedFile: Equatable {
+        let path: String
+        let section: Section
+    }
     // Token written once after the shell prompt settles so the Mani-typed
     // commands aren't echoed back into the pane. The library runs `stty
     // -echo` to suppress keystroke echo plus a clear-screen reset.
@@ -46,30 +57,12 @@ struct DiffWorkspaceView: View {
             rightPane
         }
         .task {
-            // Run the initial refresh and the one-shot shell setup off the
-            // main actor; both can take 50–200 ms.
-            loadPersistedState()
             checkDelta()
             refreshFileList()
             initialiseShellIfNeeded()
             startFSWatching()
         }
-        .onChange(of: sourceRef) { _, new in
-            UserDefaults.standard.set(new, forKey: sourceRefKey)
-            refreshFileList()
-        }
         .onDisappear { fsWatcher?.stop() }
-    }
-
-    private var sourceRefKey: String {
-        "diff.\(jobPath.job.uuidString).sourceRef"
-    }
-
-    private func loadPersistedState() {
-        if let saved = UserDefaults.standard.string(forKey: sourceRefKey),
-           !saved.isEmpty {
-            sourceRef = saved
-        }
     }
 
     @ViewBuilder
@@ -116,9 +109,9 @@ struct DiffWorkspaceView: View {
         VStack(spacing: 0) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
-                    refsSection
+                    stagedSection
                     Divider().padding(.vertical, 4)
-                    trackedSection
+                    unstagedSection
                     Divider().padding(.vertical, 4)
                     untrackedSection
                 }
@@ -136,7 +129,7 @@ struct DiffWorkspaceView: View {
                 return .handled
             }
             .onKeyPress(.return) {
-                if let f = selectedFile { showDiff(for: f) }
+                if let f = selectedFile { renderDiff(for: f) }
                 return .handled
             }
             Divider()
@@ -151,14 +144,23 @@ struct DiffWorkspaceView: View {
                 .textFieldStyle(.roundedBorder)
                 .disabled(commitInFlight)
             HStack {
+                if stagedPaths.isEmpty {
+                    Text("Nothing staged")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("Will commit \(stagedPaths.count) staged file\(stagedPaths.count == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
-                Button(commitInFlight ? "Committing…" : "Commit -am") {
+                Button(commitInFlight ? "Committing…" : "Commit") {
                     performCommit()
                 }
                 .disabled(
                     commitInFlight
                         || commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || trackedPaths.isEmpty
+                        || stagedPaths.isEmpty
                 )
                 .keyboardShortcut(.return, modifiers: [.command])
             }
@@ -167,60 +169,68 @@ struct DiffWorkspaceView: View {
         .background(SwiftUI.Color.secondary.opacity(0.06))
     }
 
-    private var refsSection: some View {
-        DisclosureGroup(isExpanded: $refsExpanded) {
-            HStack {
-                Text("Compare against:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextField("HEAD", text: $sourceRef)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { refreshFileList() }
-            }
-            .padding(.top, 4)
-        } label: {
-            Text("Refs").font(.headline)
-        }
-    }
-
-    private var trackedSection: some View {
-        DisclosureGroup(isExpanded: $trackedExpanded) {
-            if trackedTree.isEmpty {
-                Text("No tracked changes.")
+    private var stagedSection: some View {
+        DisclosureGroup(isExpanded: $stagedExpanded) {
+            if stagedTree.isEmpty {
+                Text("Nothing staged.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.leading, 12)
             } else {
-                ForEach(trackedTree) { node in
-                    trackedNode(node, depth: 0)
+                ForEach(stagedTree) { node in
+                    fileNode(node, depth: 0, section: .staged)
                 }
             }
         } label: {
             HStack {
-                Text("Tracked changes").font(.headline)
-                Text("(\(countLeaves(trackedTree)))")
+                Text("Staged").font(.headline)
+                Text("(\(stagedPaths.count))")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                if !trackedPaths.isEmpty {
+                if !stagedPaths.isEmpty {
                     Menu {
-                        Button("Stage all") { stage(paths: trackedPaths) }
-                        Button("Discard all…", role: .destructive) {
-                            discardWithConfirm(paths: trackedPaths)
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
+                        Button("Unstage all") { unstage(paths: stagedPaths) }
+                    } label: { Image(systemName: "ellipsis.circle") }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .help("Bulk actions")
                 }
-                Button {
-                    refreshFileList()
-                } label: {
+                Button { refreshFileList() } label: {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
                 .help("Refresh")
+            }
+        }
+    }
+
+    private var unstagedSection: some View {
+        DisclosureGroup(isExpanded: $unstagedExpanded) {
+            if unstagedTree.isEmpty {
+                Text("No unstaged changes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 12)
+            } else {
+                ForEach(unstagedTree) { node in
+                    fileNode(node, depth: 0, section: .unstaged)
+                }
+            }
+        } label: {
+            HStack {
+                Text("Unstaged").font(.headline)
+                Text("(\(unstagedPaths.count))")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                if !unstagedPaths.isEmpty {
+                    Menu {
+                        Button("Stage all") { stage(paths: unstagedPaths) }
+                        Button("Discard all…", role: .destructive) {
+                            discardWithConfirm(paths: unstagedPaths)
+                        }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
             }
         }
     }
@@ -234,13 +244,13 @@ struct DiffWorkspaceView: View {
                     .padding(.leading, 12)
             } else {
                 ForEach(untrackedTree) { node in
-                    untrackedNode(node, depth: 0)
+                    fileNode(node, depth: 0, section: .untracked)
                 }
             }
         } label: {
             HStack {
                 Text("Untracked").font(.headline)
-                Text("(\(countLeaves(untrackedTree)))")
+                Text("(\(untrackedPaths.count))")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 if !untrackedSelection.isEmpty {
@@ -257,10 +267,12 @@ struct DiffWorkspaceView: View {
     // MARK: Tree row rendering
 
     @ViewBuilder
-    private func trackedNode(_ node: PathTreeNode, depth: Int) -> some View {
+    private func fileNode(
+        _ node: PathTreeNode,
+        depth: Int,
+        section: Section
+    ) -> some View {
         if node.isDirectory {
-            // Directory: always expanded (single-level disclosure would
-            // double-nest; nested DisclosureGroups create UI clutter).
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
                     Image(systemName: "folder")
@@ -272,15 +284,29 @@ struct DiffWorkspaceView: View {
                 }
                 .padding(.leading, CGFloat(depth) * 12)
                 ForEach(node.children) { child in
-                    trackedNode(child, depth: depth + 1)
+                    fileNode(child, depth: depth + 1, section: section)
                 }
             }
         } else if let fullPath = node.fullPath {
+            let selected = (selectedFile?.path == fullPath
+                            && selectedFile?.section == section)
             HStack(spacing: 4) {
-                Text(node.status?.glyph ?? " ")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(statusColor(node.status))
-                    .frame(width: 12)
+                if section == .untracked {
+                    Toggle("", isOn: Binding(
+                        get: { untrackedSelection.contains(fullPath) },
+                        set: { isOn in
+                            if isOn { untrackedSelection.insert(fullPath) }
+                            else { untrackedSelection.remove(fullPath) }
+                        }
+                    ))
+                    .labelsHidden()
+                    .toggleStyle(.checkbox)
+                } else {
+                    Text(node.status?.glyph ?? " ")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(statusColor(node.status))
+                        .frame(width: 12)
+                }
                 Image(systemName: "doc")
                     .foregroundStyle(.secondary)
                     .font(.system(size: 10))
@@ -290,8 +316,7 @@ struct DiffWorkspaceView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 } else {
-                    Text(node.name)
-                        .font(.caption)
+                    Text(node.name).font(.caption)
                 }
                 Spacer()
             }
@@ -299,73 +324,33 @@ struct DiffWorkspaceView: View {
             .padding(.vertical, 1)
             .padding(.horizontal, 4)
             .background(
-                selectedFile == fullPath
+                selected
                     ? SwiftUI.Color.accentColor.opacity(0.18)
                     : SwiftUI.Color.clear
             )
             .contentShape(Rectangle())
             .onTapGesture {
-                selectedFile = fullPath
-                showDiff(for: fullPath)
+                let sel = SelectedFile(path: fullPath, section: section)
+                selectedFile = sel
+                renderDiff(for: sel)
                 fileListFocused = true
             }
-            .contextMenu {
-                Button("Stage") { stage(paths: [fullPath]) }
-                Button("Discard changes…", role: .destructive) {
-                    discardWithConfirm(paths: [fullPath])
-                }
-            }
+            .contextMenu { menu(for: section, path: fullPath) }
         }
     }
 
     @ViewBuilder
-    private func untrackedNode(_ node: PathTreeNode, depth: Int) -> some View {
-        if node.isDirectory {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Image(systemName: "folder")
-                        .foregroundStyle(.secondary)
-                        .font(.system(size: 11))
-                    Text(node.name)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.leading, CGFloat(depth) * 12)
-                ForEach(node.children) { child in
-                    untrackedNode(child, depth: depth + 1)
-                }
+    private func menu(for section: Section, path: String) -> some View {
+        switch section {
+        case .staged:
+            Button("Unstage") { unstage(paths: [path]) }
+        case .unstaged:
+            Button("Stage") { stage(paths: [path]) }
+            Button("Discard changes…", role: .destructive) {
+                discardWithConfirm(paths: [path])
             }
-        } else if let fullPath = node.fullPath {
-            HStack(spacing: 4) {
-                Toggle("", isOn: Binding(
-                    get: { untrackedSelection.contains(fullPath) },
-                    set: { isOn in
-                        if isOn { untrackedSelection.insert(fullPath) }
-                        else { untrackedSelection.remove(fullPath) }
-                    }
-                ))
-                .labelsHidden()
-                .toggleStyle(.checkbox)
-                Image(systemName: "doc")
-                    .foregroundStyle(.secondary)
-                    .font(.system(size: 10))
-                Text(node.name)
-                    .font(.caption)
-                Spacer()
-            }
-            .padding(.leading, CGFloat(depth) * 12)
-            .padding(.vertical, 1)
-            .padding(.horizontal, 4)
-            .background(
-                selectedFile == fullPath
-                    ? SwiftUI.Color.accentColor.opacity(0.18)
-                    : SwiftUI.Color.clear
-            )
-            .contentShape(Rectangle())
-            .onTapGesture {
-                selectedFile = fullPath
-                showUntrackedFile(for: fullPath)
-            }
+        case .untracked:
+            Button("Add to git") { stage(paths: [path]) }
         }
     }
 
@@ -388,35 +373,47 @@ struct DiffWorkspaceView: View {
     // MARK: Refresh
 
     private func refreshFileList() {
-        let ref = sourceRef.trimmingCharacters(in: .whitespacesAndNewlines)
         let wt = worktreePath
-        let useRef = ref.isEmpty ? "HEAD" : ref
         Task.detached(priority: .userInitiated) {
-            let tracked = GitChangesScanner.tracked(worktree: wt, sourceRef: useRef)
+            let staged = GitChangesScanner.staged(worktree: wt)
+            let unstaged = GitChangesScanner.unstaged(worktree: wt)
             let untracked = GitChangesScanner.untracked(worktree: wt)
-            let trackedTree = PathTreeNode.tree(
-                from: tracked.map { ($0.path, .some($0.status)) }
+            let stagedTree = PathTreeNode.tree(
+                from: staged.map { ($0.path, .some($0.status)) }
+            )
+            let unstagedTree = PathTreeNode.tree(
+                from: unstaged.map { ($0.path, .some($0.status)) }
             )
             let untrackedTree = PathTreeNode.tree(
-                from: untracked.map { ($0, .added) } // untracked = "would be added"
+                from: untracked.map { ($0, .added) }
             )
-            let trackedPaths = tracked.map { $0.path }
+            let stagedPaths = staged.map { $0.path }
+            let unstagedPaths = unstaged.map { $0.path }
             var renames: [String: String] = [:]
-            for ch in tracked where ch.previousPath != nil {
+            for ch in staged + unstaged where ch.previousPath != nil {
                 renames[ch.path] = ch.previousPath
             }
             await MainActor.run {
-                self.trackedTree = trackedTree
+                self.stagedTree = stagedTree
+                self.unstagedTree = unstagedTree
                 self.untrackedTree = untrackedTree
-                self.trackedPaths = trackedPaths
+                self.stagedPaths = stagedPaths
+                self.unstagedPaths = unstagedPaths
+                self.untrackedPaths = untracked
                 self.renameMap = renames
-                // Drop any selected untracked paths that vanished.
                 self.untrackedSelection.formIntersection(Set(untracked))
-                // Drop selectedFile if it disappeared (e.g. discarded).
-                if let sel = self.selectedFile,
-                   !trackedPaths.contains(sel),
-                   !untracked.contains(sel) {
-                    self.selectedFile = nil
+                // Drop selectedFile if it disappeared (e.g. discarded /
+                // moved between sections after stage / unstage).
+                if let sel = self.selectedFile {
+                    switch sel.section {
+                    case .staged where !stagedPaths.contains(sel.path):
+                        self.selectedFile = nil
+                    case .unstaged where !unstagedPaths.contains(sel.path):
+                        self.selectedFile = nil
+                    case .untracked where !untracked.contains(sel.path):
+                        self.selectedFile = nil
+                    default: break
+                    }
                 }
             }
         }
@@ -424,8 +421,13 @@ struct DiffWorkspaceView: View {
 
     // MARK: Keyboard nav
 
+    // Walk staged → unstaged → untracked in order. Arrow up/down moves
+    // across section boundaries; section context follows.
     private func stepSelection(by delta: Int) {
-        let all = trackedPaths + Array(untrackedTree.flatMap { collectLeafPaths($0) })
+        let all: [SelectedFile] =
+            stagedPaths.map    { SelectedFile(path: $0, section: .staged) }
+          + unstagedPaths.map  { SelectedFile(path: $0, section: .unstaged) }
+          + untrackedPaths.map { SelectedFile(path: $0, section: .untracked) }
         guard !all.isEmpty else { return }
         if let current = selectedFile, let idx = all.firstIndex(of: current) {
             let next = (idx + delta + all.count) % all.count
@@ -433,15 +435,7 @@ struct DiffWorkspaceView: View {
         } else {
             selectedFile = delta >= 0 ? all.first : all.last
         }
-        if let sel = selectedFile {
-            if trackedPaths.contains(sel) { showDiff(for: sel) }
-            else { showUntrackedFile(for: sel) }
-        }
-    }
-
-    private func collectLeafPaths(_ node: PathTreeNode) -> [String] {
-        if let p = node.fullPath { return [p] }
-        return node.children.flatMap { collectLeafPaths($0) }
+        if let sel = selectedFile { renderDiff(for: sel) }
     }
 
     // MARK: Git ops
@@ -470,12 +464,20 @@ struct DiffWorkspaceView: View {
         }
     }
 
+    private func unstage(paths: [String]) {
+        let wt = worktreePath
+        Task.detached(priority: .userInitiated) {
+            _ = GitChangesScanner.unstage(paths: paths, worktree: wt)
+            await MainActor.run { refreshFileList() }
+        }
+    }
+
     private func performCommit() {
         let msg = commitMessage
         let wt = worktreePath
         commitInFlight = true
         Task.detached(priority: .userInitiated) {
-            let ok = GitChangesScanner.commitAllTracked(message: msg, worktree: wt)
+            let ok = GitChangesScanner.commitStaged(message: msg, worktree: wt)
             await MainActor.run {
                 commitInFlight = false
                 if ok {
@@ -516,22 +518,21 @@ struct DiffWorkspaceView: View {
         hasInitialisedShell = true
     }
 
-    private func showDiff(for path: String) {
-        let ref = sourceRef.trimmingCharacters(in: .whitespacesAndNewlines)
-        let useRef = ref.isEmpty ? "HEAD" : ref
-        let escaped = shellEscape(path)
-        sendCommand(
-            "git diff \(useRef) -- \(escaped) | delta --paging=never | less -RF\n"
-        )
-    }
-
-    private func showUntrackedFile(for path: String) {
-        let escaped = shellEscape(path)
-        // Untracked = nothing committed yet. Show as if comparing /dev/null
-        // to the working copy — delta renders the whole file as added.
-        sendCommand(
-            "diff -u /dev/null \(escaped) | delta --paging=never | less -RF\n"
-        )
+    private func renderDiff(for sel: SelectedFile) {
+        let escaped = shellEscape(sel.path)
+        let pipeline: String
+        switch sel.section {
+        case .staged:
+            // Index vs HEAD: what's been added with `git add` since last commit.
+            pipeline = "git diff --cached -- \(escaped) | delta --paging=never | less -RF\n"
+        case .unstaged:
+            // Worktree vs index: what would be staged next.
+            pipeline = "git diff -- \(escaped) | delta --paging=never | less -RF\n"
+        case .untracked:
+            // Untracked = nothing committed yet; render as all-added.
+            pipeline = "diff -u /dev/null \(escaped) | delta --paging=never | less -RF\n"
+        }
+        sendCommand(pipeline)
     }
 
     // Send a shell command into the warm PTY, first making sure we're not
