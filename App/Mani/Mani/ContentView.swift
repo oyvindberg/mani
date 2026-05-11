@@ -281,6 +281,7 @@ struct SidebarView: View {
     @State private var renameContext: RenameContext?
     @State private var collapsedProjects: Set<UUID> = []
     @State private var collapsedWorktrees: Set<UUID> = []
+    @State private var themePickerProjectId: UUID?
 
     struct ResumeContext: Identifiable {
         let id = UUID()
@@ -355,10 +356,29 @@ struct SidebarView: View {
                 )
             )
         }
+        .sheet(item: Binding(
+            get: { themePickerProjectId.flatMap { id in
+                store.state.projects.first(where: { $0.id == id })
+            } },
+            set: { if $0 == nil { themePickerProjectId = nil } }
+        )) { project in
+            ProjectThemeSheet(
+                store: store,
+                project: project,
+                isPresented: Binding(
+                    get: { themePickerProjectId != nil },
+                    set: { if !$0 { themePickerProjectId = nil } }
+                )
+            )
+        }
     }
 
     @ViewBuilder
     private func projectMenu(project: Project) -> some View {
+        Button(project.terminalTheme == nil ? "Theme…" : "Theme (\(project.terminalTheme!))…") {
+            themePickerProjectId = project.id
+        }
+        Divider()
         Button(project.enabled ? "Disable project (stop all tasks)" : "Enable project") {
             Task {
                 await store.dispatch(.setProjectEnabled(id: project.id, enabled: !project.enabled))
@@ -813,10 +833,16 @@ struct TerminalPane: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         // libghostty-backed renderer (per ADR-002 v0.2 swap). Cached per
         // JobPath so tab-switching back doesn't tear down the surface and
-        // replay scrollback. See TerminalRendererCache.
+        // replay scrollback. Per-project theme overrides the global default
+        // when set (cache key includes theme so an override change rebuilds
+        // the renderer next time it mounts).
+        let projectTheme = store.state.projects
+            .first(where: { $0.id == jobPath.project })?
+            .terminalTheme
+        let themeName = projectTheme ?? store.state.settings.terminalTheme
         let renderer = TerminalRendererCache.shared.renderer(
             for: jobPath,
-            themeName: store.state.settings.terminalTheme,
+            themeName: themeName,
             fontFamily: store.state.settings.terminalFontFamily,
             fontSize: store.state.settings.terminalFontSize
         )

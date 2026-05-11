@@ -295,7 +295,8 @@ final class ClaudeSessionStartTests: XCTestCase {
                             jobs: jobs, createdAt: Date()
                         )
                     ],
-                    createdAt: Date()
+                    createdAt: Date(),
+                    terminalTheme: nil
                 )
             ],
             settings: Settings(

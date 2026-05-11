@@ -171,7 +171,8 @@ final class ClaudeTaskSpecTests: XCTestCase {
                     createdAt: Date()
                 )
             ],
-            createdAt: Date()
+            createdAt: Date(),
+            terminalTheme: nil
         )
     }
 

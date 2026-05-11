@@ -34,7 +34,8 @@ final class PersistenceStoreTests: XCTestCase {
             rootDir: URL(fileURLWithPath: "/tmp"),
             enabled: true,
             worktrees: [],
-            createdAt: Date()
+            createdAt: Date(),
+            terminalTheme: nil
         ))
         return s
     }

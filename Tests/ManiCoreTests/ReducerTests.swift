@@ -849,7 +849,8 @@ private func makeProject(id: UUID, worktrees: [Worktree]) -> Project {
         rootDir: URL(fileURLWithPath: "/p/atlas"),
         enabled: true,
         worktrees: worktrees,
-        createdAt: Date()
+        createdAt: Date(),
+        terminalTheme: nil
     )
 }
 
