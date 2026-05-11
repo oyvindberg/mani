@@ -344,7 +344,7 @@ struct DiffWorkspaceView: View {
         let useRef = ref.isEmpty ? "HEAD" : ref
         let escaped = shellEscape(path)
         sendCommand(
-            "printf '\\033c'; git diff \(useRef) -- \(escaped) | delta --paging=never\n"
+            "git diff \(useRef) -- \(escaped) | delta --paging=never | less -RF\n"
         )
     }
 
@@ -353,15 +353,26 @@ struct DiffWorkspaceView: View {
         // Untracked = nothing committed yet. Show as if comparing /dev/null
         // to the working copy — delta renders the whole file as added.
         sendCommand(
-            "printf '\\033c'; diff -u /dev/null \(escaped) | delta --paging=never\n"
+            "diff -u /dev/null \(escaped) | delta --paging=never | less -RF\n"
         )
     }
 
+    // Send a shell command into the warm PTY, first making sure we're not
+    // inside a previously-spawned pager (less). The prefix is:
+    //   Ctrl-U  → at the shell, kill the current input line (no-op if empty)
+    //   q       → if less is active, this is its quit key
+    //   Ctrl-U  → if less consumed q and we're back at the shell, clear any
+    //             accidental 'q' that got typed
+    // 40 ms lets less relinquish the alt screen before the new pipeline
+    // arrives. The whole dance keeps subsequent file clicks fast: no
+    // shell respawn, no rendering hiccup beyond the brief screen restore.
     private func sendCommand(_ command: String) {
         let runner = store.runner
         let path = jobPath
         Task.detached {
             guard let pty = await runner.pty(for: path) else { return }
+            pty.write(Data("\u{15}q\u{15}".utf8))
+            try? await Task.sleep(nanoseconds: 40_000_000)
             pty.write(Data(command.utf8))
         }
     }
