@@ -31,18 +31,14 @@ struct ScrollbackSearchSheet: View {
         let lineNumber: Int
         let fullLine: String           // ANSI-stripped, full
 
-        // Line 2 in the card: matched line from column 0, truncated.
-        let snippet: String
-        let snippetMatchStart: Int     // -1 if match is past the truncation
-        let snippetMatchLength: Int
-
-        // Line 3 in the card. Either the "… <match context> …" window if
-        // the match was off-screen on line 2, OR the next file line if
-        // the match was visible. nil if neither applies (match visible
-        // AND no next line in the file).
-        let thirdLine: String?
-        let thirdMatchStart: Int       // -1 if line 3 is the next-line context (no highlight)
-        let thirdMatchLength: Int
+        // Bias-left context window centered on the match. This is the
+        // single body line of the card (the previous "line from column
+        // 0" was redundant: zsh re-renders its prompt into the same
+        // byte-stream line, so the line's column-0 prefix is almost
+        // always the prompt rather than anything useful).
+        let context: String
+        let contextMatchStart: Int     // offset within `context`
+        let contextMatchLength: Int
     }
 
     var body: some View {
@@ -109,7 +105,7 @@ struct ScrollbackSearchSheet: View {
     // Card has a subtle background + border so a list of matches reads
     // as discrete blocks instead of squashed rows.
     private func resultCard(_ match: Match) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 3) {
             // Header: line# + task path + copy button
             HStack(spacing: 6) {
                 Text("\(match.lineNumber)")
@@ -128,21 +124,17 @@ struct ScrollbackSearchSheet: View {
                 .buttonStyle(.borderless)
                 .help("Copy full line")
             }
-            // Line 2: matched line from start
-            Text(snippetAttributed(match))
+            // Match context: always the bias-left window so the highlight
+            // is visible. The previous "line from column 0" attempt was
+            // useless when the line began with a long re-rendered prompt
+            // prefix (zsh writes the prompt into the same byte-stream
+            // line via cursor positioning, so the file line starts with
+            // the prompt instead of the actual content).
+            Text(contextAttributed(match))
                 .font(.system(.body, design: .monospaced))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            // Line 3: either match context (off-screen match) or next file line
-            if let third = match.thirdLine, !third.isEmpty {
-                Text(thirdAttributed(match))
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -156,42 +148,16 @@ struct ScrollbackSearchSheet: View {
         )
     }
 
-    private func thirdAttributed(_ match: Match) -> AttributedString {
-        guard let third = match.thirdLine else { return AttributedString("") }
-        var attr = AttributedString(third)
-        guard match.thirdMatchStart >= 0 else { return attr }
+    private func contextAttributed(_ match: Match) -> AttributedString {
+        var attr = AttributedString(match.context)
         let start = attr.characters.index(
             attr.startIndex,
-            offsetBy: match.thirdMatchStart,
+            offsetBy: match.contextMatchStart,
             limitedBy: attr.endIndex
         ) ?? attr.endIndex
         let end = attr.characters.index(
             start,
-            offsetBy: match.thirdMatchLength,
-            limitedBy: attr.endIndex
-        ) ?? attr.endIndex
-        if start < end {
-            attr[start..<end].backgroundColor = .yellow.opacity(0.45)
-            attr[start..<end].foregroundColor = .black
-        }
-        return attr
-    }
-
-    // Highlight the match window inside the snippet. If start == -1 the
-    // match is past the snippet's truncation point — return the plain
-    // snippet so the user still sees the line identity without a fake
-    // highlight on the wrong characters.
-    private func snippetAttributed(_ match: Match) -> AttributedString {
-        var attr = AttributedString(match.snippet)
-        guard match.snippetMatchStart >= 0 else { return attr }
-        let start = attr.characters.index(
-            attr.startIndex,
-            offsetBy: match.snippetMatchStart,
-            limitedBy: attr.endIndex
-        ) ?? attr.endIndex
-        let end = attr.characters.index(
-            start,
-            offsetBy: match.snippetMatchLength,
+            offsetBy: match.contextMatchLength,
             limitedBy: attr.endIndex
         ) ?? attr.endIndex
         if start < end {
@@ -231,32 +197,6 @@ struct ScrollbackSearchSheet: View {
         }
         if trailingEllipsis { snippet += "…" }
         return (snippet, matchOffsetInSnippet, matchLen)
-    }
-
-    // Snippet starts at column 0 of the line, truncates to `window`
-    // characters with a trailing ellipsis. The match offset/length are
-    // returned only when the match fits inside the snippet — otherwise
-    // start = -1 and the caller renders the snippet without highlight.
-    private static func buildSnippet(
-        line: String,
-        matchStart: String.Index,
-        matchEnd: String.Index
-    ) -> (snippet: String, start: Int, length: Int) {
-        let window = 280
-        let lineCount = line.count
-        let matchStartOffset = line.distance(from: line.startIndex, to: matchStart)
-        let matchLen = line.distance(from: matchStart, to: matchEnd)
-        let matchEndOffset = matchStartOffset + matchLen
-        let endOffset = min(window, lineCount)
-        let endIdx = line.index(line.startIndex, offsetBy: endOffset)
-        var snippet = String(line[..<endIdx])
-        if endOffset < lineCount { snippet += "…" }
-        let highlightVisible = matchEndOffset <= endOffset
-        return (
-            snippet,
-            highlightVisible ? matchStartOffset : -1,
-            highlightVisible ? matchLen : 0
-        )
     }
 
     private func stripANSI(_ s: String) -> String {
@@ -321,46 +261,18 @@ struct ScrollbackSearchSheet: View {
                             offsetBy: lineLower.distance(from: range.lowerBound, to: range.upperBound),
                             limitedBy: lineStr.endIndex
                         ) else { continue }
-                        let (snippet, off, len) = Self.buildSnippet(
+                        let (ctx, ctxOff, ctxLen) = Self.buildContextWindow(
                             line: lineStr,
                             matchStart: mappedStart,
                             matchEnd: mappedEnd
                         )
-                        // Third line: prefer match context if the match
-                        // didn't fit in line 2, otherwise fall back to
-                        // the next line of the file (truncated).
-                        let third: String?
-                        let thirdOff: Int
-                        let thirdLen: Int
-                        if off < 0 {
-                            let (ctx, ctxOff, ctxLen) = Self.buildContextWindow(
-                                line: lineStr,
-                                matchStart: mappedStart,
-                                matchEnd: mappedEnd
-                            )
-                            third = ctx
-                            thirdOff = ctxOff
-                            thirdLen = ctxLen
-                        } else if idx + 1 < lines.count {
-                            let raw = String(lines[idx + 1])
-                            third = String(raw.prefix(280))
-                            thirdOff = -1
-                            thirdLen = 0
-                        } else {
-                            third = nil
-                            thirdOff = -1
-                            thirdLen = 0
-                        }
                         matches.append(Match(
                             sourceLabel: src.label,
                             lineNumber: lineNo,
                             fullLine: lineStr,
-                            snippet: snippet,
-                            snippetMatchStart: off,
-                            snippetMatchLength: len,
-                            thirdLine: third,
-                            thirdMatchStart: thirdOff,
-                            thirdMatchLength: thirdLen
+                            context: ctx,
+                            contextMatchStart: ctxOff,
+                            contextMatchLength: ctxLen
                         ))
                         if matches.count >= cap {
                             truncatedFlag = true
