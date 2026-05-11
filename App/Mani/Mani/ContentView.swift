@@ -123,12 +123,10 @@ struct ContentView: View {
             NewProjectSheet(store: store, isPresented: $showingNewProject)
         }
         .sheet(isPresented: $showingSearch) {
-            if let path = selectedJobPath {
-                ScrollbackSearchSheet(
-                    scrollbackPath: scrollbackPath(for: path),
-                    isPresented: $showingSearch
-                )
-            }
+            ScrollbackSearchSheet(
+                sources: allScrollbackSources(),
+                isPresented: $showingSearch
+            )
         }
         .sheet(isPresented: $showingNewWorktree) {
             if let project = currentProject() {
@@ -151,7 +149,7 @@ struct ContentView: View {
         }
     }
 
-    private func scrollbackPath(for path: JobPath) -> String {
+    private func scrollbackPath(for jobId: UUID) -> String {
         // Matches EffectRunner's scrollback layout:
         //   ~/Library/Application Support/Mani/tasks/<job-uuid>/scrollback.log
         let root = FileManager.default
@@ -159,8 +157,37 @@ struct ContentView: View {
             .first!
         return root
             .appendingPathComponent("Mani/tasks")
-            .appendingPathComponent(path.job.uuidString)
+            .appendingPathComponent(jobId.uuidString)
             .appendingPathComponent("scrollback.log").path
+    }
+
+    // Every job in state becomes a search source, labeled with its
+    // project › worktree › name breadcrumb. The currently-selected job
+    // is sorted to the top so its scrollback is the first thing
+    // ScrollbackSearchSheet scans (results stay roughly in order of
+    // relevance for "I just saw this thing scroll past").
+    private func allScrollbackSources() -> [ScrollbackSearchSheet.Source] {
+        var sources: [ScrollbackSearchSheet.Source] = []
+        let selectedId = selectedJobId
+        var selectedSource: ScrollbackSearchSheet.Source?
+        for project in store.state.projects {
+            for worktree in project.worktrees {
+                for job in worktree.jobs {
+                    let label = "\(project.name) › \(worktree.name) › \(job.name)"
+                    let src = ScrollbackSearchSheet.Source(
+                        label: label,
+                        scrollbackPath: scrollbackPath(for: job.id)
+                    )
+                    if job.id == selectedId {
+                        selectedSource = src
+                    } else {
+                        sources.append(src)
+                    }
+                }
+            }
+        }
+        if let selectedSource { sources.insert(selectedSource, at: 0) }
+        return sources
     }
 
     private func currentProject() -> Project? {

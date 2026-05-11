@@ -8,7 +8,15 @@ import ManiCore
 // Click → copy the line to the pasteboard. Useful for "find the thing I
 // remember was 3000 lines back" without rolling a wheel.
 struct ScrollbackSearchSheet: View {
-    let scrollbackPath: String
+    // One source per Mani job — its display label (project › worktree › name)
+    // plus the on-disk scrollback file. Multiple sources mean the search is
+    // cross-task; the result row shows which source the match belongs to.
+    struct Source {
+        let label: String
+        let scrollbackPath: String
+    }
+
+    let sources: [Source]
     @Binding var isPresented: Bool
 
     @State private var query: String = ""
@@ -19,11 +27,13 @@ struct ScrollbackSearchSheet: View {
 
     struct Match: Identifiable, Equatable {
         let id = UUID()
+        let sourceLabel: String        // which task this came from
         let lineNumber: Int
         let fullLine: String           // ANSI-stripped, full
-        let snippet: String            // ~120-char window centered on the match
+        let snippet: String            // line starting at column 0, truncated
         let snippetMatchStart: Int     // offset of the match within `snippet`
         let snippetMatchLength: Int    // length (in characters) of the match
+        let nextLine: String?          // ANSI-stripped, up to 160 chars
     }
 
     var body: some View {
@@ -54,15 +64,27 @@ struct ScrollbackSearchSheet: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(results) { match in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    HStack(alignment: .top, spacing: 8) {
                         Text("\(match.lineNumber)")
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .frame(minWidth: 50, alignment: .trailing)
-                        Text(snippetAttributed(match))
-                            .font(.system(.caption, design: .monospaced))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(match.sourceLabel)
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            Text(snippetAttributed(match))
+                                .font(.system(.caption, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            if let next = match.nextLine, !next.isEmpty {
+                                Text(next)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                            }
+                        }
                         Spacer()
                         Button {
                             NSPasteboard.general.clearContents()
@@ -73,6 +95,7 @@ struct ScrollbackSearchSheet: View {
                         .buttonStyle(.borderless)
                         .help("Copy full line")
                     }
+                    .padding(.vertical, 2)
                 }
                 .listStyle(.bordered)
             }
@@ -119,36 +142,47 @@ struct ScrollbackSearchSheet: View {
         return attr
     }
 
-    // Build a snippet of up to ~120 characters centered on the match
-    // location within an already-stripped line. Adds leading/trailing
-    // ellipses when truncated. Returns the snippet + the match's offset
-    // and length inside it so the caller can highlight without re-scanning.
+    // Build a snippet that starts at the BEGINNING of the line (no
+    // leading ellipsis), goes up to `window` characters. If the match
+    // ends after the window, we extend just enough to keep the match
+    // visible plus a small trailing context, separated from the prefix
+    // by " … ". Highlight offset is updated to match.
     private static func buildSnippet(
         line: String,
         matchStart: String.Index,
         matchEnd: String.Index
     ) -> (snippet: String, start: Int, length: Int) {
-        let window = 120
+        let window = 240
+        let trailContext = 30
         let lineCount = line.count
         let matchStartOffset = line.distance(from: line.startIndex, to: matchStart)
         let matchLen = line.distance(from: matchStart, to: matchEnd)
-        // Compute window so the match sits roughly in the middle, then
-        // clamp to the line's bounds.
-        var lo = max(0, matchStartOffset - (window - matchLen) / 2)
-        var hi = min(lineCount, lo + window)
-        if hi - lo < window { lo = max(0, hi - window) }
-        let leadingEllipsis = lo > 0
-        let trailingEllipsis = hi < lineCount
-        let startIdx = line.index(line.startIndex, offsetBy: lo)
-        let endIdx = line.index(line.startIndex, offsetBy: hi)
-        var snippet = String(line[startIdx..<endIdx])
-        var matchOffsetInSnippet = matchStartOffset - lo
-        if leadingEllipsis {
-            snippet = "…" + snippet
-            matchOffsetInSnippet += 1
+        let matchEndOffset = matchStartOffset + matchLen
+
+        if matchEndOffset <= window {
+            // Match fits in the prefix window.
+            let endOffset = min(window, lineCount)
+            let endIdx = line.index(line.startIndex, offsetBy: endOffset)
+            var snippet = String(line[..<endIdx])
+            if endOffset < lineCount { snippet += "…" }
+            return (snippet, matchStartOffset, matchLen)
+        } else {
+            // Match is past the prefix window: show first ~80 chars, then
+            // " … ", then the match plus a little trailing context.
+            let prefixLen = min(80, lineCount)
+            let prefixEnd = line.index(line.startIndex, offsetBy: prefixLen)
+            let prefix = String(line[..<prefixEnd])
+            let contextStart = max(prefixLen, matchStartOffset - 10)
+            let contextEnd = min(lineCount, matchEndOffset + trailContext)
+            let cs = line.index(line.startIndex, offsetBy: contextStart)
+            let ce = line.index(line.startIndex, offsetBy: contextEnd)
+            let bridge = " … "
+            var snippet = prefix + bridge + String(line[cs..<ce])
+            if contextEnd < lineCount { snippet += "…" }
+            let snippetMatchOffset = prefix.count + bridge.count
+                                   + (matchStartOffset - contextStart)
+            return (snippet, snippetMatchOffset, matchLen)
         }
-        if trailingEllipsis { snippet += "…" }
-        return (snippet, matchOffsetInSnippet, matchLen)
     }
 
     private func stripANSI(_ s: String) -> String {
@@ -166,13 +200,17 @@ struct ScrollbackSearchSheet: View {
     }
 
     private func runSearch(query: String) {
-        let path = scrollbackPath
-        let cap = 200
         let needle = query
+        let cap = 200
+        let allSources = sources
         Task.detached(priority: .userInitiated) {
-            let files = Self.rotationChain(forCurrent: path)
             guard !needle.isEmpty else {
-                let total = files.reduce(0) { $0 + Self.lineCount(at: $1) }
+                var total = 0
+                for src in allSources {
+                    for f in Self.rotationChain(forCurrent: src.scrollbackPath) {
+                        total += Self.lineCount(at: f)
+                    }
+                }
                 await MainActor.run {
                     self.results = []
                     self.totalLines = total
@@ -182,23 +220,22 @@ struct ScrollbackSearchSheet: View {
             }
             let lowerNeedle = needle.lowercased()
             var matches: [Match] = []
-            var lineNo = 0
             var truncatedFlag = false
-            outer: for file in files {
-                guard let data = try? Data(contentsOf: URL(fileURLWithPath: file)),
-                      let text = String(data: data, encoding: .utf8)
-                else { continue }
-                // Strip ANSI for the whole file once (cheaper than per-line)
-                // and split. The split returns Substring views without
-                // additional allocation.
-                let stripped = Self.stripANSIstatic(text)
-                for line in stripped.split(separator: "\n", omittingEmptySubsequences: false) {
-                    lineNo += 1
-                    let lineLower = line.lowercased()
-                    if let range = lineLower.range(of: lowerNeedle) {
-                        // Map the lowercase-string range back to the original
-                        // (same Unicode scalar count since lowercase doesn't
-                        // change index distances for ASCII / most BMP).
+            sourceLoop: for src in allSources {
+                let files = Self.rotationChain(forCurrent: src.scrollbackPath)
+                var lineNo = 0
+                for file in files {
+                    guard let data = try? Data(contentsOf: URL(fileURLWithPath: file)),
+                          let text = String(data: data, encoding: .utf8)
+                    else { continue }
+                    let stripped = Self.stripANSIstatic(text)
+                    let lines = Array(
+                        stripped.split(separator: "\n", omittingEmptySubsequences: false)
+                    )
+                    for (idx, line) in lines.enumerated() {
+                        lineNo += 1
+                        let lineLower = line.lowercased()
+                        guard let range = lineLower.range(of: lowerNeedle) else { continue }
                         let lineStr = String(line)
                         guard let mappedStart = lineStr.index(
                             lineStr.startIndex,
@@ -215,16 +252,27 @@ struct ScrollbackSearchSheet: View {
                             matchStart: mappedStart,
                             matchEnd: mappedEnd
                         )
+                        // Trim the next line to 160 chars so the search row
+                        // doesn't blow up vertically with a long context line.
+                        let next: String?
+                        if idx + 1 < lines.count {
+                            let raw = String(lines[idx + 1])
+                            next = String(raw.prefix(160))
+                        } else {
+                            next = nil
+                        }
                         matches.append(Match(
+                            sourceLabel: src.label,
                             lineNumber: lineNo,
                             fullLine: lineStr,
                             snippet: snippet,
                             snippetMatchStart: off,
-                            snippetMatchLength: len
+                            snippetMatchLength: len,
+                            nextLine: next
                         ))
                         if matches.count >= cap {
                             truncatedFlag = true
-                            break outer
+                            break sourceLoop
                         }
                     }
                 }
