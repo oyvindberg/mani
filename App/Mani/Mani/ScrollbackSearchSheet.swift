@@ -114,36 +114,8 @@ struct ScrollbackSearchSheet: View {
         return attr
     }
 
-    // PTY scrollback files are full of ANSI escape codes; show plaintext.
     private func stripANSI(_ s: String) -> String {
-        // Regex: ESC [ ... letter   OR   ESC ] ... BEL/ST
-        var out = ""
-        var iter = s.unicodeScalars.makeIterator()
-        while let c = iter.next() {
-            if c.value == 0x1B {
-                // Skip until terminator
-                let next = iter.next()
-                if next?.value == 0x5B { // CSI
-                    while let n = iter.next() {
-                        if (0x40...0x7E).contains(n.value) { break }
-                    }
-                } else if next?.value == 0x5D { // OSC
-                    while let n = iter.next() {
-                        if n.value == 0x07 { break }
-                        if n.value == 0x1B {
-                            // Possible ST: ESC \
-                            _ = iter.next()
-                            break
-                        }
-                    }
-                }
-                continue
-            }
-            if c.value >= 0x20 || c.value == 0x09 {
-                out.unicodeScalars.append(c)
-            }
-        }
-        return out
+        Self.stripANSIstatic(s)
     }
 
     private func runSearch(query: String) {
@@ -151,8 +123,12 @@ struct ScrollbackSearchSheet: View {
         let cap = 500
         let needle = query
         Task.detached(priority: .userInitiated) {
+            // Search across the current scrollback.log plus every rotated
+            // scrollback-<unix>.log sibling, in chronological order. Line
+            // numbers are global across the concatenated stream.
+            let files = Self.rotationChain(forCurrent: path)
             guard !needle.isEmpty else {
-                let total = lineCount(at: path)
+                let total = files.reduce(0) { $0 + Self.lineCount(at: $1) }
                 await MainActor.run {
                     self.results = []
                     self.totalLines = total
@@ -161,25 +137,26 @@ struct ScrollbackSearchSheet: View {
                 return
             }
             let n = needle.lowercased()
-            guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
-                  let text = String(data: data, encoding: .utf8)
-            else {
-                await MainActor.run {
-                    self.results = []
-                    self.truncated = false
-                }
-                return
-            }
             var matches: [Match] = []
             var lineNo = 0
             var truncatedFlag = false
-            for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-                lineNo += 1
-                if line.lowercased().contains(n) {
-                    matches.append(Match(lineNumber: lineNo, line: String(line)))
-                    if matches.count >= cap {
-                        truncatedFlag = true
-                        break
+            outer: for file in files {
+                guard let data = try? Data(contentsOf: URL(fileURLWithPath: file)),
+                      let text = String(data: data, encoding: .utf8)
+                else { continue }
+                for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+                    lineNo += 1
+                    // Strip ANSI BEFORE matching so cursor-positioning /
+                    // color escapes don't break up the user's literal query.
+                    // The displayed + copied line is also the stripped one
+                    // (the raw line would be a mess of escape codes).
+                    let stripped = Self.stripANSIstatic(String(line))
+                    if stripped.lowercased().contains(n) {
+                        matches.append(Match(lineNumber: lineNo, line: stripped))
+                        if matches.count >= cap {
+                            truncatedFlag = true
+                            break outer
+                        }
                     }
                 }
             }
@@ -192,8 +169,47 @@ struct ScrollbackSearchSheet: View {
         }
     }
 
-    private func lineCount(at path: String) -> Int {
+    // Sibling rotation chain: every scrollback-<unix>.log in the same dir
+    // as `current`, sorted oldest-to-newest by filename suffix, with the
+    // current scrollback.log appended at the end. Missing files are
+    // tolerated — the user might never have hit rotation.
+    private static func rotationChain(forCurrent current: String) -> [String] {
+        let url = URL(fileURLWithPath: current)
+        let dir = url.deletingLastPathComponent()
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        let rotated = contents
+            .filter { $0.hasPrefix("scrollback-") && $0.hasSuffix(".log") }
+            .sorted()
+        return rotated.map { dir.appendingPathComponent($0).path } + [current]
+    }
+
+    private static func lineCount(at path: String) -> Int {
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)) else { return 0 }
         return data.reduce(0) { $0 + ($1 == 0x0A ? 1 : 0) }
+    }
+
+    private static func stripANSIstatic(_ s: String) -> String {
+        var out = ""
+        var iter = s.unicodeScalars.makeIterator()
+        while let c = iter.next() {
+            if c.value == 0x1B {
+                let next = iter.next()
+                if next?.value == 0x5B {
+                    while let n = iter.next() {
+                        if (0x40...0x7E).contains(n.value) { break }
+                    }
+                } else if next?.value == 0x5D {
+                    while let n = iter.next() {
+                        if n.value == 0x07 { break }
+                        if n.value == 0x1B { _ = iter.next(); break }
+                    }
+                }
+                continue
+            }
+            if c.value >= 0x20 || c.value == 0x09 {
+                out.unicodeScalars.append(c)
+            }
+        }
+        return out
     }
 }
