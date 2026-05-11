@@ -257,17 +257,48 @@ struct ScrollbackSearchSheet: View {
         return data.reduce(0) { $0 + ($1 == 0x0A ? 1 : 0) }
     }
 
+    // Convert raw PTY bytes to plain text suitable for display + substring
+    // search. TUIs like Ink and powerline prompts lay out content using
+    // cursor-positioning escapes (`\033[<col>H`, `\033[NC`) rather than
+    // literal spaces, so naively dropping CSI sequences makes words
+    // collide (e.g. "Nopre-commitenforcement" instead of "No pre-commit
+    // enforcement"). Heuristic:
+    //   - CSI ending in 'm' (SGR / color): drop silently, no padding.
+    //   - CSI ending in 'C' (cursor forward N): emit N spaces.
+    //   - Any other CSI (H/f/J/K/A/B/D/G/...): emit one space.
+    //   - OSC sequences: drop entirely (titles, hyperlinks etc.).
+    // Not a real terminal emulator — multi-line cursor moves are not
+    // tracked — but for line-scoped scrollback search it's a big upgrade.
     private static func stripANSIstatic(_ s: String) -> String {
         var out = ""
         var iter = s.unicodeScalars.makeIterator()
         while let c = iter.next() {
             if c.value == 0x1B {
                 let next = iter.next()
-                if next?.value == 0x5B {
+                if next?.value == 0x5B { // CSI
+                    var params = ""
+                    var finalLetter: UInt32 = 0
                     while let n = iter.next() {
-                        if (0x40...0x7E).contains(n.value) { break }
+                        if (0x40...0x7E).contains(n.value) {
+                            finalLetter = n.value
+                            break
+                        }
+                        params.unicodeScalars.append(n)
                     }
-                } else if next?.value == 0x5D {
+                    switch finalLetter {
+                    case 0x6D: // 'm' SGR
+                        break
+                    case 0x43: // 'C' cursor forward
+                        // Take the first parameter (semicolon-separated),
+                        // default 1. Clamp to a sane max so a hostile
+                        // payload can't blow up the output buffer.
+                        let n = params.split(separator: ";").first
+                            .flatMap { Int($0) } ?? 1
+                        out.append(String(repeating: " ", count: max(0, min(n, 200))))
+                    default:
+                        out.append(" ")
+                    }
+                } else if next?.value == 0x5D { // OSC
                     while let n = iter.next() {
                         if n.value == 0x07 { break }
                         if n.value == 0x1B { _ = iter.next(); break }
@@ -275,6 +306,8 @@ struct ScrollbackSearchSheet: View {
                 }
                 continue
             }
+            // Drop control chars except tab; \r (0x0D) becomes a no-op
+            // so re-render-via-CR doesn't smush content together.
             if c.value >= 0x20 || c.value == 0x09 {
                 out.unicodeScalars.append(c)
             }
