@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var showingNewProject = false
     @State private var showingNewWorktree = false
     @State private var showingNewTask = false
+    @State private var showingSearch = false
 
     var body: some View {
         NavigationSplitView {
@@ -46,6 +47,19 @@ struct ContentView: View {
                         Text(context.job.name).bold()
                             .foregroundStyle(SwiftUI.Color(hex: context.project.color))
                         Spacer()
+                        // Search scrollback. Only meaningful for jobs whose
+                        // PTY writes a scrollback log — the diff workspace
+                        // does too, and search there is occasionally handy
+                        // (find a previous diff command), so we don't gate
+                        // on kind.
+                        Button {
+                            showingSearch = true
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
+                        .buttonStyle(.borderless)
+                        .keyboardShortcut("f", modifiers: [.command])
+                        .help("Search scrollback (⌘F)")
                     }
                     .font(.system(size: 12))
                     .padding(.horizontal, 12)
@@ -108,6 +122,14 @@ struct ContentView: View {
         .sheet(isPresented: $showingNewProject) {
             NewProjectSheet(store: store, isPresented: $showingNewProject)
         }
+        .sheet(isPresented: $showingSearch) {
+            if let path = selectedJobPath {
+                ScrollbackSearchSheet(
+                    scrollbackPath: scrollbackPath(for: path),
+                    isPresented: $showingSearch
+                )
+            }
+        }
         .sheet(isPresented: $showingNewWorktree) {
             if let project = currentProject() {
                 NewWorktreeSheet(
@@ -127,6 +149,18 @@ struct ContentView: View {
                 )
             }
         }
+    }
+
+    private func scrollbackPath(for path: JobPath) -> String {
+        // Matches EffectRunner's scrollback layout:
+        //   ~/Library/Application Support/Mani/tasks/<job-uuid>/scrollback.log
+        let root = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first!
+        return root
+            .appendingPathComponent("Mani/tasks")
+            .appendingPathComponent(path.job.uuidString)
+            .appendingPathComponent("scrollback.log").path
     }
 
     private func currentProject() -> Project? {
