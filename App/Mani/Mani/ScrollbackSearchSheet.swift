@@ -30,10 +30,19 @@ struct ScrollbackSearchSheet: View {
         let sourceLabel: String        // which task this came from
         let lineNumber: Int
         let fullLine: String           // ANSI-stripped, full
-        let snippet: String            // line starting at column 0, truncated
-        let snippetMatchStart: Int     // offset of the match within `snippet`
-        let snippetMatchLength: Int    // length (in characters) of the match
-        let nextLine: String?          // ANSI-stripped, up to 160 chars
+
+        // Line 2 in the card: matched line from column 0, truncated.
+        let snippet: String
+        let snippetMatchStart: Int     // -1 if match is past the truncation
+        let snippetMatchLength: Int
+
+        // Line 3 in the card. Either the "… <match context> …" window if
+        // the match was off-screen on line 2, OR the next file line if
+        // the match was visible. nil if neither applies (match visible
+        // AND no next line in the file).
+        let thirdLine: String?
+        let thirdMatchStart: Int       // -1 if line 3 is the next-line context (no highlight)
+        let thirdMatchLength: Int
     }
 
     var body: some View {
@@ -100,7 +109,8 @@ struct ScrollbackSearchSheet: View {
     // Card has a subtle background + border so a list of matches reads
     // as discrete blocks instead of squashed rows.
     private func resultCard(_ match: Match) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 2) {
+            // Header: line# + task path + copy button
             HStack(spacing: 6) {
                 Text("\(match.lineNumber)")
                     .font(.system(.caption, design: .monospaced))
@@ -118,13 +128,15 @@ struct ScrollbackSearchSheet: View {
                 .buttonStyle(.borderless)
                 .help("Copy full line")
             }
+            // Line 2: matched line from start
             Text(snippetAttributed(match))
                 .font(.system(.body, design: .monospaced))
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            if let next = match.nextLine, !next.isEmpty {
-                Text(next)
+            // Line 3: either match context (off-screen match) or next file line
+            if let third = match.thirdLine, !third.isEmpty {
+                Text(thirdAttributed(match))
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -133,7 +145,7 @@ struct ScrollbackSearchSheet: View {
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(SwiftUI.Color.secondary.opacity(0.08))
@@ -142,6 +154,27 @@ struct ScrollbackSearchSheet: View {
             RoundedRectangle(cornerRadius: 6)
                 .strokeBorder(SwiftUI.Color.secondary.opacity(0.18), lineWidth: 0.5)
         )
+    }
+
+    private func thirdAttributed(_ match: Match) -> AttributedString {
+        guard let third = match.thirdLine else { return AttributedString("") }
+        var attr = AttributedString(third)
+        guard match.thirdMatchStart >= 0 else { return attr }
+        let start = attr.characters.index(
+            attr.startIndex,
+            offsetBy: match.thirdMatchStart,
+            limitedBy: attr.endIndex
+        ) ?? attr.endIndex
+        let end = attr.characters.index(
+            start,
+            offsetBy: match.thirdMatchLength,
+            limitedBy: attr.endIndex
+        ) ?? attr.endIndex
+        if start < end {
+            attr[start..<end].backgroundColor = .yellow.opacity(0.45)
+            attr[start..<end].foregroundColor = .black
+        }
+        return attr
     }
 
     // Highlight the match window inside the snippet. If start == -1 the
@@ -168,13 +201,39 @@ struct ScrollbackSearchSheet: View {
         return attr
     }
 
+    // A "… <match> …" window of ~280 characters centered on the match.
+    // Used as the third line of a card when the matched line itself was
+    // too long for the match to be visible in the start-anchored snippet.
+    private static func buildContextWindow(
+        line: String,
+        matchStart: String.Index,
+        matchEnd: String.Index
+    ) -> (snippet: String, start: Int, length: Int) {
+        let window = 280
+        let lineCount = line.count
+        let matchStartOffset = line.distance(from: line.startIndex, to: matchStart)
+        let matchLen = line.distance(from: matchStart, to: matchEnd)
+        var lo = max(0, matchStartOffset - (window - matchLen) / 2)
+        var hi = min(lineCount, lo + window)
+        if hi - lo < window { lo = max(0, hi - window) }
+        let leadingEllipsis = lo > 0
+        let trailingEllipsis = hi < lineCount
+        let startIdx = line.index(line.startIndex, offsetBy: lo)
+        let endIdx = line.index(line.startIndex, offsetBy: hi)
+        var snippet = String(line[startIdx..<endIdx])
+        var matchOffsetInSnippet = matchStartOffset - lo
+        if leadingEllipsis {
+            snippet = "…" + snippet
+            matchOffsetInSnippet += 1
+        }
+        if trailingEllipsis { snippet += "…" }
+        return (snippet, matchOffsetInSnippet, matchLen)
+    }
+
     // Snippet starts at column 0 of the line, truncates to `window`
     // characters with a trailing ellipsis. The match offset/length are
     // returned only when the match fits inside the snippet — otherwise
     // start = -1 and the caller renders the snippet without highlight.
-    // Rationale: the user wants the line's identity (left-anchored,
-    // unmolested), not the matched fragment. If the match is past the
-    // visible window, copying the full line still gets it.
     private static func buildSnippet(
         line: String,
         matchStart: String.Index,
@@ -264,14 +323,30 @@ struct ScrollbackSearchSheet: View {
                             matchStart: mappedStart,
                             matchEnd: mappedEnd
                         )
-                        // Trim the next line to 160 chars so the search row
-                        // doesn't blow up vertically with a long context line.
-                        let next: String?
-                        if idx + 1 < lines.count {
+                        // Third line: prefer match context if the match
+                        // didn't fit in line 2, otherwise fall back to
+                        // the next line of the file (truncated).
+                        let third: String?
+                        let thirdOff: Int
+                        let thirdLen: Int
+                        if off < 0 {
+                            let (ctx, ctxOff, ctxLen) = Self.buildContextWindow(
+                                line: lineStr,
+                                matchStart: mappedStart,
+                                matchEnd: mappedEnd
+                            )
+                            third = ctx
+                            thirdOff = ctxOff
+                            thirdLen = ctxLen
+                        } else if idx + 1 < lines.count {
                             let raw = String(lines[idx + 1])
-                            next = String(raw.prefix(160))
+                            third = String(raw.prefix(280))
+                            thirdOff = -1
+                            thirdLen = 0
                         } else {
-                            next = nil
+                            third = nil
+                            thirdOff = -1
+                            thirdLen = 0
                         }
                         matches.append(Match(
                             sourceLabel: src.label,
@@ -280,7 +355,9 @@ struct ScrollbackSearchSheet: View {
                             snippet: snippet,
                             snippetMatchStart: off,
                             snippetMatchLength: len,
-                            nextLine: next
+                            thirdLine: third,
+                            thirdMatchStart: thirdOff,
+                            thirdMatchLength: thirdLen
                         ))
                         if matches.count >= cap {
                             truncatedFlag = true
