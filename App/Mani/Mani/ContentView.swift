@@ -279,6 +279,8 @@ struct SidebarView: View {
     @Binding var selectedJobId: UUID?
     @State private var resumeContext: ResumeContext?
     @State private var renameContext: RenameContext?
+    @State private var collapsedProjects: Set<UUID> = []
+    @State private var collapsedWorktrees: Set<UUID> = []
 
     struct ResumeContext: Identifiable {
         let id = UUID()
@@ -295,31 +297,6 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
-                List(selection: $selectedJobId) {
-                    ForEach(store.state.projects) { project in
-                        Section {
-                            ForEach(project.worktrees) { worktree in
-                                worktreeHeader(project: project, worktree: worktree)
-                                // .diff jobs are surfaced via a button on
-                                // the worktree header, not as their own row.
-                                ForEach(worktree.jobs.filter { job in
-                                    if case .diff = job.kind { return false }
-                                    return true
-                                }) { job in
-                                    jobRow(project: project, worktree: worktree, job: job)
-                                        .tag(job.id)
-                                }
-                            }
-                        } header: {
-                            Text(project.name)
-                                .opacity(project.enabled ? 1 : 0.5)
-                                .contextMenu {
-                                    projectMenu(project: project)
-                                }
-                        }
-                    }
-                }
-                .listStyle(.sidebar)
                 if store.state.projects.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "tray")
@@ -333,7 +310,19 @@ struct SidebarView: View {
                             .multilineTextAlignment(.center)
                     }
                     .padding()
-                    .allowsHitTesting(false)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(store.state.projects.enumerated()), id: \.element.id) { idx, project in
+                                projectGroup(project: project)
+                                if idx < store.state.projects.count - 1 {
+                                    Divider()
+                                        .padding(.vertical, 4)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 6)
+                    }
                 }
             }
             Divider()
@@ -563,72 +552,72 @@ struct SidebarView: View {
         }
     }
 
-    private func worktreeHeader(project: Project, worktree: Worktree) -> some View {
-        let diffJob = worktree.jobs.first(where: {
-            if case .diff = $0.kind { return true }
-            return false
-        })
-        return HStack(spacing: 4) {
-            Rectangle()
-                .fill(SwiftUI.Color(hex: project.color))
-                .frame(width: 3)
-            Text(worktree.name)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-                .padding(.leading, 6)
-                .padding(.top, 4)
-                .opacity(worktree.enabled ? 1 : 0.5)
-            Spacer()
-            if let diffJob {
-                Button {
-                    selectedJobId = diffJob.id
-                } label: {
-                    Image(systemName: "doc.text.below.ecg")
-                        .font(.system(size: 11))
-                        .foregroundStyle(
-                            selectedJobId == diffJob.id
-                                ? SwiftUI.Color.accentColor
-                                : .secondary
-                        )
-                }
-                .buttonStyle(.borderless)
-                .padding(.trailing, 6)
-                .padding(.top, 4)
-                .help("Diff workspace")
+    @ViewBuilder
+    private func projectGroup(project: Project) -> some View {
+        let visibleJobs = project.worktrees.flatMap { $0.jobs }.filter { job in
+            if case .diff = job.kind { return false }
+            return true
+        }
+        let projectExpanded = !collapsedProjects.contains(project.id)
+        ProjectHeaderRow(
+            project: project,
+            isExpanded: projectExpanded,
+            jobCount: visibleJobs.count
+        ) {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                if projectExpanded { collapsedProjects.insert(project.id) }
+                else { collapsedProjects.remove(project.id) }
+            }
+        } onContextMenu: {
+            AnyView(projectMenu(project: project))
+        }
+        if projectExpanded {
+            ForEach(project.worktrees) { worktree in
+                worktreeGroup(project: project, worktree: worktree)
             }
         }
-        .contextMenu { worktreeMenu(project: project, worktree: worktree) }
     }
 
-    private func jobRow(project: Project, worktree: Worktree, job: Job) -> some View {
-        HStack(spacing: 0) {
-            Rectangle()
-                .fill(SwiftUI.Color(hex: project.color))
-                .frame(width: 3)
-            HStack(spacing: 6) {
-                Image(systemName: job.statusSymbol)
-                    .foregroundStyle(job.statusColor)
-                    .font(.system(size: 9))
-                Image(systemName: job.kindSymbol)
-                    .foregroundStyle(.secondary)
-                    .font(.system(size: 11))
-                Text(job.name)
-                    .strikethrough(!job.enabled)
-                Spacer()
-                if job.unread > 0 {
-                    Text("\(job.unread)")
-                        .font(.caption2)
-                        .padding(.horizontal, 5)
-                        .background(Capsule().fill(.tint))
-                        .foregroundStyle(.white)
+    @ViewBuilder
+    private func worktreeGroup(project: Project, worktree: Worktree) -> some View {
+        let diffJobId = worktree.jobs.first(where: {
+            if case .diff = $0.kind { return true }
+            return false
+        })?.id
+        let worktreeExpanded = !collapsedWorktrees.contains(worktree.id)
+        let visibleJobs = worktree.jobs.filter { job in
+            if case .diff = job.kind { return false }
+            return true
+        }
+        WorktreeHeaderRow(
+            project: project,
+            worktree: worktree,
+            isExpanded: worktreeExpanded,
+            diffJobId: diffJobId,
+            selectedJobId: selectedJobId
+        ) {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                if worktreeExpanded { collapsedWorktrees.insert(worktree.id) }
+                else { collapsedWorktrees.remove(worktree.id) }
+            }
+        } onSelectDiff: {
+            if let diffJobId { selectedJobId = diffJobId }
+        } onContextMenu: {
+            AnyView(worktreeMenu(project: project, worktree: worktree))
+        }
+        if worktreeExpanded {
+            ForEach(visibleJobs) { job in
+                JobRow(
+                    project: project,
+                    job: job,
+                    selected: selectedJobId == job.id
+                ) {
+                    selectedJobId = job.id
+                } onContextMenu: {
+                    AnyView(jobMenu(project: project, worktree: worktree, job: job))
                 }
             }
-            .padding(.leading, 8)
-            .opacity(job.enabled ? 1 : 0.5)
         }
-        .contentShape(Rectangle())
-        .contextMenu { jobMenu(project: project, worktree: worktree, job: job) }
     }
 }
 
@@ -641,7 +630,7 @@ private extension WorktreeKind {
     }
 }
 
-private extension Job {
+extension Job {
     var statusColor: SwiftUI.Color {
         switch status {
         case .running: return .green
