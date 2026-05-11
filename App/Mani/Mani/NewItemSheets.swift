@@ -106,7 +106,6 @@ struct NewWorktreeSheet: View {
                     let pathURL = URL(fileURLWithPath: path)
                     let wantShell = addShellTask
                     let projectId = projectId
-                    let isGitWorktree = (kind == .git)
                     Task {
                         await store.dispatch(.createWorktree(
                             projectId: projectId,
@@ -135,7 +134,11 @@ struct NewWorktreeSheet: View {
                                 primary: spec, auxiliary: []
                             ))
                         }
-                        if isGitWorktree {
+                        // .git kind worktrees are by definition git checkouts.
+                        // For .folder kind, check the filesystem — many
+                        // `.folder` worktrees ARE git repos the user just
+                        // chose to register as plain folders.
+                        if ManiApp.isGitCheckout(at: pathURL) {
                             await SidebarView.spawnDiff(
                                 at: wtPath, cwd: pathURL, store: store
                             )

@@ -127,17 +127,18 @@ struct ManiApp: App {
     // the WindowGroup task is torn down (app quit) is automatic via
     // structured concurrency. Interval is read from settings on each tick so
     // changing it in the Settings pane takes effect on the next snapshot.
-    // Every .git worktree gets a permanent .diff Job (the Diff Workspace
-    // is a fixture of the worktree, not something the user spawns). On
-    // launch we backfill any missing ones — a single Job per worktree,
-    // identified by `kind: .diff`. If the user deletes one, the next
-    // launch will recreate it. .folder worktrees are skipped (no git
-    // history to diff).
+    // Every git-checkout worktree gets a permanent .diff Job (the Diff
+    // Workspace is a fixture of the worktree, not something the user
+    // spawns). The check is filesystem-based — Mani's WorktreeKind .folder
+    // vs .git only tracks whether Mani created the directory via `git
+    // worktree add`; a .folder worktree may still be a git repo that the
+    // user is working in. We test by stat'ing <path>/.git (a directory for
+    // a normal clone, a file for a `git worktree`-style linked checkout).
     @MainActor
     private static func ensureDiffJobsForGitWorktrees(store: Store) async {
         for project in store.state.projects {
             for worktree in project.worktrees {
-                guard case .git = worktree.kind else { continue }
+                guard isGitCheckout(at: worktree.path) else { continue }
                 let hasDiff = worktree.jobs.contains { job in
                     if case .diff = job.kind { return true }
                     return false
@@ -148,6 +149,14 @@ struct ManiApp: App {
                 }
             }
         }
+    }
+
+    // True iff `path` contains a `.git` entry (directory for a normal clone,
+    // file pointing at a gitdir for a linked worktree). Used to gate the
+    // Diff Workspace fixture regardless of the Mani WorktreeKind label.
+    static func isGitCheckout(at path: URL) -> Bool {
+        let gitMarker = path.appendingPathComponent(".git").path
+        return FileManager.default.fileExists(atPath: gitMarker)
     }
 
     // Periodically re-run pruneStaleClaudeJobs so an adopted/resumed
