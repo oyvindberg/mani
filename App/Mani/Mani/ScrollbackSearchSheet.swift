@@ -19,7 +19,10 @@ struct ScrollbackSearchSheet: View {
 
     let sources: [Source]
     @Binding var isPresented: Bool
-    var onSelectMatch: (JobPath) -> Void
+    // (jobPath, lineNumber) — the line number is the 1-indexed line in the
+    // job's scrollback rotation chain (oldest → newest). Receiver should
+    // navigate to the job AND scroll the renderer so the match is visible.
+    var onSelectMatch: (JobPath, Int) -> Void
 
     @State private var query: String = ""
     @State private var results: [Match] = []
@@ -151,11 +154,7 @@ struct ScrollbackSearchSheet: View {
         )
         .contentShape(Rectangle())
         .onTapGesture {
-            // No libghostty primitive to jump-scroll to a specific line, so
-            // a click only navigates to the source task and dismisses the
-            // sheet. The user finds the match in the renderer's own
-            // scrollback from there.
-            onSelectMatch(match.sourceJobPath)
+            onSelectMatch(match.sourceJobPath, match.lineNumber)
             isPresented = false
         }
     }

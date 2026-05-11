@@ -59,4 +59,11 @@ final class TerminalRendererCache {
     func discard(_ path: JobPath) {
         entries.removeValue(forKey: path)
     }
+
+    // Non-creating lookup. Used when a feature (e.g. search scroll-to-line)
+    // needs to address the renderer if it exists but should NOT build a
+    // new one as a side effect.
+    func rendererIfPresent(for path: JobPath) -> LibGhosttyRenderer? {
+        entries[path]?.renderer
+    }
 }

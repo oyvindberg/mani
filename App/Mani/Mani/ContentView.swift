@@ -126,8 +126,15 @@ struct ContentView: View {
             ScrollbackSearchSheet(
                 sources: allScrollbackSources(),
                 isPresented: $showingSearch,
-                onSelectMatch: { jobPath in
+                onSelectMatch: { jobPath, lineNumber in
                     selectedJobId = jobPath.job
+                    // The renderer rebuilds on selection change; let it
+                    // mount before scrolling. 200 ms is conservative.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        TerminalRendererCache.shared
+                            .rendererIfPresent(for: jobPath)?
+                            .scrollToLine(fromTop: lineNumber)
+                    }
                 }
             )
         }

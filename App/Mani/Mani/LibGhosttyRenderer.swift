@@ -98,6 +98,31 @@ final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewD
         hasEverAttached = true
     }
 
+    // Invoke a named libghostty binding action on the surface. Action names
+    // follow Ghostty's keybind config syntax — e.g. "scroll_to_top",
+    // "scroll_to_bottom", "scroll_page_lines:N", "copy_to_clipboard".
+    // Returns true when the action dispatched.
+    @discardableResult
+    func performBindingAction(_ name: String) -> Bool {
+        terminalView.performBindingAction(name)
+    }
+
+    // Convenience: scroll the viewport so the line at `lineFromTop`
+    // (1-indexed, counted from the OLDEST line in the scrollback) lands
+    // near the top of the visible grid. Implemented as scroll_to_top +
+    // scroll_page_lines:N. We can't query libghostty for the total
+    // scrollback length so this assumes the file-line count is a good
+    // proxy — it isn't always (PTY output uses cursor positioning that
+    // doesn't translate 1:1 to grid lines), but it gets within a screen
+    // for most plain-text scrollbacks.
+    func scrollToLine(fromTop lineFromTop: Int) {
+        performBindingAction("scroll_to_top")
+        let offset = max(0, lineFromTop - 1)
+        if offset > 0 {
+            performBindingAction("scroll_page_lines:\(offset)")
+        }
+    }
+
     func resize(rows: UInt16, cols: UInt16) {
         // Ghostty derives the grid from the view's pixel size. We don't push
         // (rows, cols) — the view's sizeChanged fires through the session's
