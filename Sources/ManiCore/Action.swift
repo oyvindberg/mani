@@ -4,7 +4,7 @@ public enum Action {
     case createProject(name: String, color: String, rootDir: URL)
     case renameProject(id: UUID, name: String)
     case setProjectEnabled(id: UUID, enabled: Bool)
-    case setProjectTheme(id: UUID, theme: String?)
+    case setProjectColor(id: UUID, color: String)
     case deleteProject(id: UUID)
 
     case createWorktree(projectId: UUID, name: String, kind: WorktreeKind, path: URL)

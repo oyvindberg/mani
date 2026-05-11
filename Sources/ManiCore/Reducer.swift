@@ -11,8 +11,7 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             rootDir: rootDir,
             enabled: true,
             worktrees: [],
-            createdAt: Date(),
-            terminalTheme: nil
+            createdAt: Date()
         )
         let event = Event.projectCreated(project)
         return ([event], [.persistEvents([event])])
@@ -33,9 +32,9 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         }
         return ([event], effects)
 
-    case let .setProjectTheme(id, theme):
+    case let .setProjectColor(id, color):
         guard state.projects.contains(where: { $0.id == id }) else { return ([], []) }
-        let event = Event.projectThemeChanged(id: id, theme: theme)
+        let event = Event.projectColorChanged(id: id, color: color)
         return ([event], [.persistEvents([event])])
 
     case let .deleteProject(id):
@@ -256,9 +255,9 @@ public func apply(_ state: inout AppState, _ event: Event) {
             state.projects[i].name = name
         }
 
-    case let .projectThemeChanged(id, theme):
+    case let .projectColorChanged(id, color):
         if let i = state.projects.firstIndex(where: { $0.id == id }) {
-            state.projects[i].terminalTheme = theme
+            state.projects[i].color = color
         }
 
     case let .projectEnabledChanged(id, enabled):

@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import GhosttyTerminal
 import ManiCore
 
 // Per-JobPath cache of LibGhosttyRenderer instances. Without it, every
@@ -24,32 +25,37 @@ final class TerminalRendererCache {
 
     private struct Entry {
         let renderer: LibGhosttyRenderer
-        let themeName: String
+        let themeKey: String
         let fontFamily: String
         let fontSize: Int
     }
     private var entries: [JobPath: Entry] = [:]
 
+    // `themeKey` is an opaque string the caller picks (e.g. a serialised
+    // representation of the project color the theme was generated from).
+    // When it changes the cached entry is invalidated and a fresh renderer
+    // is built with the supplied `theme`.
     func renderer(
         for path: JobPath,
-        themeName: String,
+        themeKey: String,
+        theme: TerminalTheme,
         fontFamily: String,
         fontSize: Int
     ) -> LibGhosttyRenderer {
         if let existing = entries[path],
-           existing.themeName == themeName,
+           existing.themeKey == themeKey,
            existing.fontFamily == fontFamily,
            existing.fontSize == fontSize {
             return existing.renderer
         }
         let renderer = LibGhosttyRenderer(
-            themeName: themeName,
+            theme: theme,
             fontFamily: fontFamily,
             fontSize: fontSize
         )
         entries[path] = Entry(
             renderer: renderer,
-            themeName: themeName,
+            themeKey: themeKey,
             fontFamily: fontFamily,
             fontSize: fontSize
         )

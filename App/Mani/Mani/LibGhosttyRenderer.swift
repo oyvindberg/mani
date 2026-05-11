@@ -43,7 +43,7 @@ final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewD
     // skip the replay so the visible scrollback isn't duplicated.
     private var hasEverAttached: Bool = false
 
-    init(themeName: String, fontFamily: String, fontSize: Int) {
+    init(theme: TerminalTheme, fontFamily: String, fontSize: Int) {
         let bridge = CallbackBridge()
         let session = InMemoryTerminalSession(
             write: { data in
@@ -58,8 +58,6 @@ final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewD
             }
         )
         let terminalView = GhosttyTerminal.TerminalView(frame: .zero)
-        let theme = GhosttyThemeCatalog.theme(named: themeName)?.toTerminalTheme()
-            ?? .default
         var config = TerminalConfiguration()
         if !fontFamily.isEmpty {
             config = config.fontFamily(fontFamily)

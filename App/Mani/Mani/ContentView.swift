@@ -281,7 +281,7 @@ struct SidebarView: View {
     @State private var renameContext: RenameContext?
     @State private var collapsedProjects: Set<UUID> = []
     @State private var collapsedWorktrees: Set<UUID> = []
-    @State private var themePickerProjectId: UUID?
+    @State private var colorPickerProjectId: UUID?
 
     struct ResumeContext: Identifiable {
         let id = UUID()
@@ -357,17 +357,17 @@ struct SidebarView: View {
             )
         }
         .sheet(item: Binding(
-            get: { themePickerProjectId.flatMap { id in
+            get: { colorPickerProjectId.flatMap { id in
                 store.state.projects.first(where: { $0.id == id })
             } },
-            set: { if $0 == nil { themePickerProjectId = nil } }
+            set: { if $0 == nil { colorPickerProjectId = nil } }
         )) { project in
-            ProjectThemeSheet(
+            ProjectColorSheet(
                 store: store,
                 project: project,
                 isPresented: Binding(
-                    get: { themePickerProjectId != nil },
-                    set: { if !$0 { themePickerProjectId = nil } }
+                    get: { colorPickerProjectId != nil },
+                    set: { if !$0 { colorPickerProjectId = nil } }
                 )
             )
         }
@@ -375,8 +375,8 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func projectMenu(project: Project) -> some View {
-        Button(project.terminalTheme == nil ? "Theme…" : "Theme (\(project.terminalTheme!))…") {
-            themePickerProjectId = project.id
+        Button("Change color…") {
+            colorPickerProjectId = project.id
         }
         Divider()
         Button(project.enabled ? "Disable project (stop all tasks)" : "Enable project") {
@@ -833,16 +833,19 @@ struct TerminalPane: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         // libghostty-backed renderer (per ADR-002 v0.2 swap). Cached per
         // JobPath so tab-switching back doesn't tear down the surface and
-        // replay scrollback. Per-project theme overrides the global default
-        // when set (cache key includes theme so an override change rebuilds
-        // the renderer next time it mounts).
-        let projectTheme = store.state.projects
-            .first(where: { $0.id == jobPath.project })?
-            .terminalTheme
-        let themeName = projectTheme ?? store.state.settings.terminalTheme
+        // replay scrollback. The TerminalTheme is generated from the
+        // project's color (both a light and a dark variant; libghostty
+        // swaps automatically with the system appearance). Cache key
+        // includes the color hex so a project re-coloring rebuilds the
+        // renderer next time it mounts.
+        let projectColor = store.state.projects
+            .first(where: { $0.id == jobPath.project })?.color
+            ?? "#808080"
+        let theme = ProjectThemeGenerator.theme(forProjectColor: projectColor)
         let renderer = TerminalRendererCache.shared.renderer(
             for: jobPath,
-            themeName: themeName,
+            themeKey: ProjectThemeGenerator.cacheKey(forProjectColor: projectColor),
+            theme: theme,
             fontFamily: store.state.settings.terminalFontFamily,
             fontSize: store.state.settings.terminalFontSize
         )
