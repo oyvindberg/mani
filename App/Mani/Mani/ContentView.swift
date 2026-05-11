@@ -224,7 +224,12 @@ struct SidebarView: View {
                         Section {
                             ForEach(project.worktrees) { worktree in
                                 worktreeHeader(project: project, worktree: worktree)
-                                ForEach(worktree.jobs) { job in
+                                // .diff jobs are surfaced via a button on
+                                // the worktree header, not as their own row.
+                                ForEach(worktree.jobs.filter { job in
+                                    if case .diff = job.kind { return false }
+                                    return true
+                                }) { job in
                                     jobRow(project: project, worktree: worktree, job: job)
                                         .tag(job.id)
                                 }
@@ -483,7 +488,11 @@ struct SidebarView: View {
     }
 
     private func worktreeHeader(project: Project, worktree: Worktree) -> some View {
-        HStack(spacing: 0) {
+        let diffJob = worktree.jobs.first(where: {
+            if case .diff = $0.kind { return true }
+            return false
+        })
+        return HStack(spacing: 4) {
             Rectangle()
                 .fill(SwiftUI.Color(hex: project.color))
                 .frame(width: 3)
@@ -494,6 +503,24 @@ struct SidebarView: View {
                 .padding(.leading, 6)
                 .padding(.top, 4)
                 .opacity(worktree.enabled ? 1 : 0.5)
+            Spacer()
+            if let diffJob {
+                Button {
+                    selectedJobId = diffJob.id
+                } label: {
+                    Image(systemName: "doc.text.below.ecg")
+                        .font(.system(size: 11))
+                        .foregroundStyle(
+                            selectedJobId == diffJob.id
+                                ? SwiftUI.Color.accentColor
+                                : .secondary
+                        )
+                }
+                .buttonStyle(.borderless)
+                .padding(.trailing, 6)
+                .padding(.top, 4)
+                .help("Diff workspace")
+            }
         }
         .contextMenu { worktreeMenu(project: project, worktree: worktree) }
     }
