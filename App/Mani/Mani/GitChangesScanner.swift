@@ -41,6 +41,9 @@ struct GitChange: Equatable, Hashable {
     }
 
     let path: String
+    // For renames: the previous path (the one git is tracking) before
+    // the rename. nil for non-rename changes. The current path is `path`.
+    let previousPath: String?
     let status: Status
 }
 
@@ -49,14 +52,22 @@ enum GitChangesScanner {
     static func tracked(worktree: URL, sourceRef: String) -> [GitChange] {
         let out = runGit(args: ["diff", "--name-status", sourceRef], cwd: worktree)
         return out.split(separator: "\n").compactMap { line -> GitChange? in
-            // Tab-separated. R/C lines have similarity + old + new paths;
-            // we report the new (last) path.
+            // Tab-separated. Plain changes have 2 columns: `M\tpath`.
+            // Rename/copy have 3 columns: `R100\told\tnew` — we record
+            // the new path as `path` and keep the old path in
+            // `previousPath` so the UI can show "old → new".
             let parts = line.split(separator: "\t", omittingEmptySubsequences: false)
             guard parts.count >= 2,
                   let statusLetter = parts[0].first
             else { return nil }
-            let path = String(parts.last!)
-            return GitChange(path: path, status: GitChange.Status(letter: statusLetter))
+            let status = GitChange.Status(letter: statusLetter)
+            let currentPath = String(parts.last!)
+            let previousPath: String? = (parts.count >= 3) ? String(parts[1]) : nil
+            return GitChange(
+                path: currentPath,
+                previousPath: previousPath,
+                status: status
+            )
         }
     }
 
@@ -72,10 +83,38 @@ enum GitChangesScanner {
     @discardableResult
     static func add(paths: [String], worktree: URL) -> Bool {
         guard !paths.isEmpty else { return true }
+        return runGitOp(args: ["add", "--"] + paths, cwd: worktree)
+    }
+
+    // Discard working-tree changes for the given paths (`git restore -- <p>`).
+    // Returns true on success. Destructive — caller is responsible for the
+    // confirm prompt.
+    @discardableResult
+    static func discard(paths: [String], worktree: URL) -> Bool {
+        guard !paths.isEmpty else { return true }
+        return runGitOp(args: ["restore", "--"] + paths, cwd: worktree)
+    }
+
+    // Commit currently-staged content plus all modified-tracked files
+    // (`git commit -am`). Untracked files are NOT included unless they
+    // were previously staged via `add`. Returns true on success.
+    @discardableResult
+    static func commitAllTracked(message: String, worktree: URL) -> Bool {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        return runGitOp(
+            args: ["commit", "-am", trimmed],
+            cwd: worktree
+        )
+    }
+
+    private static func runGitOp(args: [String], cwd: URL) -> Bool {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-        task.currentDirectoryURL = worktree
-        task.arguments = ["add", "--"] + paths
+        task.currentDirectoryURL = cwd
+        task.arguments = args
+        task.standardOutput = Pipe()
+        task.standardError = Pipe()
         do {
             try task.run()
             task.waitUntilExit()

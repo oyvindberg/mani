@@ -24,8 +24,14 @@ struct DiffWorkspaceView: View {
     @State private var untrackedExpanded: Bool = true
     @State private var trackedTree: [PathTreeNode] = []
     @State private var untrackedTree: [PathTreeNode] = []
+    @State private var trackedPaths: [String] = []
     @State private var untrackedSelection: Set<String> = []
     @State private var selectedFile: String?
+    @State private var commitMessage: String = ""
+    @State private var commitInFlight: Bool = false
+    @State private var renameMap: [String: String] = [:] // current → previous
+    @FocusState private var fileListFocused: Bool
+    @State private var fsWatcher: WorktreeFSWatcher?
     // Token written once after the shell prompt settles so the Mani-typed
     // commands aren't echoed back into the pane. The library runs `stty
     // -echo` to suppress keystroke echo plus a clear-screen reset.
@@ -45,8 +51,10 @@ struct DiffWorkspaceView: View {
             checkDelta()
             refreshFileList()
             initialiseShellIfNeeded()
+            startFSWatching()
         }
         .onChange(of: sourceRef) { _, _ in refreshFileList() }
+        .onDisappear { fsWatcher?.stop() }
     }
 
     @ViewBuilder
@@ -102,7 +110,46 @@ struct DiffWorkspaceView: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
             }
+            .focusable()
+            .focused($fileListFocused)
+            .onKeyPress(.upArrow) {
+                stepSelection(by: -1)
+                return .handled
+            }
+            .onKeyPress(.downArrow) {
+                stepSelection(by: +1)
+                return .handled
+            }
+            .onKeyPress(.return) {
+                if let f = selectedFile { showDiff(for: f) }
+                return .handled
+            }
+            Divider()
+            commitBar
         }
+    }
+
+    private var commitBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("Commit message…", text: $commitMessage, axis: .vertical)
+                .lineLimit(1...3)
+                .textFieldStyle(.roundedBorder)
+                .disabled(commitInFlight)
+            HStack {
+                Spacer()
+                Button(commitInFlight ? "Committing…" : "Commit -am") {
+                    performCommit()
+                }
+                .disabled(
+                    commitInFlight
+                        || commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || trackedPaths.isEmpty
+                )
+                .keyboardShortcut(.return, modifiers: [.command])
+            }
+        }
+        .padding(8)
+        .background(SwiftUI.Color.secondary.opacity(0.06))
     }
 
     private var refsSection: some View {
@@ -209,8 +256,15 @@ struct DiffWorkspaceView: View {
                 Image(systemName: "doc")
                     .foregroundStyle(.secondary)
                     .font(.system(size: 10))
-                Text(node.name)
-                    .font(.caption)
+                if let prev = renameMap[fullPath], prev != fullPath {
+                    Text("\(URL(fileURLWithPath: prev).lastPathComponent) → \(node.name)")
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } else {
+                    Text(node.name)
+                        .font(.caption)
+                }
                 Spacer()
             }
             .padding(.leading, CGFloat(depth) * 12)
@@ -225,6 +279,13 @@ struct DiffWorkspaceView: View {
             .onTapGesture {
                 selectedFile = fullPath
                 showDiff(for: fullPath)
+                fileListFocused = true
+            }
+            .contextMenu {
+                Button("Stage") { stage(paths: [fullPath]) }
+                Button("Discard changes…", role: .destructive) {
+                    discardWithConfirm(paths: [fullPath])
+                }
             }
         }
     }
@@ -311,13 +372,101 @@ struct DiffWorkspaceView: View {
             let untrackedTree = PathTreeNode.tree(
                 from: untracked.map { ($0, .added) } // untracked = "would be added"
             )
+            let trackedPaths = tracked.map { $0.path }
+            var renames: [String: String] = [:]
+            for ch in tracked where ch.previousPath != nil {
+                renames[ch.path] = ch.previousPath
+            }
             await MainActor.run {
                 self.trackedTree = trackedTree
                 self.untrackedTree = untrackedTree
+                self.trackedPaths = trackedPaths
+                self.renameMap = renames
                 // Drop any selected untracked paths that vanished.
                 self.untrackedSelection.formIntersection(Set(untracked))
+                // Drop selectedFile if it disappeared (e.g. discarded).
+                if let sel = self.selectedFile,
+                   !trackedPaths.contains(sel),
+                   !untracked.contains(sel) {
+                    self.selectedFile = nil
+                }
             }
         }
+    }
+
+    // MARK: Keyboard nav
+
+    private func stepSelection(by delta: Int) {
+        let all = trackedPaths + Array(untrackedTree.flatMap { collectLeafPaths($0) })
+        guard !all.isEmpty else { return }
+        if let current = selectedFile, let idx = all.firstIndex(of: current) {
+            let next = (idx + delta + all.count) % all.count
+            selectedFile = all[next]
+        } else {
+            selectedFile = delta >= 0 ? all.first : all.last
+        }
+        if let sel = selectedFile {
+            if trackedPaths.contains(sel) { showDiff(for: sel) }
+            else { showUntrackedFile(for: sel) }
+        }
+    }
+
+    private func collectLeafPaths(_ node: PathTreeNode) -> [String] {
+        if let p = node.fullPath { return [p] }
+        return node.children.flatMap { collectLeafPaths($0) }
+    }
+
+    // MARK: Git ops
+
+    private func stage(paths: [String]) {
+        let wt = worktreePath
+        Task.detached(priority: .userInitiated) {
+            _ = GitChangesScanner.add(paths: paths, worktree: wt)
+            await MainActor.run { refreshFileList() }
+        }
+    }
+
+    private func discardWithConfirm(paths: [String]) {
+        let alert = NSAlert()
+        alert.messageText = "Discard changes to \(paths.count) file\(paths.count == 1 ? "" : "s")?"
+        alert.informativeText = paths.prefix(5).joined(separator: "\n")
+            + (paths.count > 5 ? "\n…and \(paths.count - 5) more" : "")
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Discard")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let wt = worktreePath
+        Task.detached(priority: .userInitiated) {
+            _ = GitChangesScanner.discard(paths: paths, worktree: wt)
+            await MainActor.run { refreshFileList() }
+        }
+    }
+
+    private func performCommit() {
+        let msg = commitMessage
+        let wt = worktreePath
+        commitInFlight = true
+        Task.detached(priority: .userInitiated) {
+            let ok = GitChangesScanner.commitAllTracked(message: msg, worktree: wt)
+            await MainActor.run {
+                commitInFlight = false
+                if ok {
+                    commitMessage = ""
+                    refreshFileList()
+                }
+            }
+        }
+    }
+
+    // MARK: FS auto-refresh
+
+    private func startFSWatching() {
+        let watcher = WorktreeFSWatcher(root: worktreePath) {
+            // Coalesce bursts of writes.
+            Task { @MainActor in refreshFileList() }
+        }
+        watcher.start()
+        fsWatcher = watcher
     }
 
     // MARK: Shell command pipelines
