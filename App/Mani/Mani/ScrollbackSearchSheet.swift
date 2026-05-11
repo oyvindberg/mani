@@ -201,21 +201,24 @@ struct ScrollbackSearchSheet: View {
         return attr
     }
 
-    // A "… <match> …" window of ~280 characters centered on the match.
-    // Used as the third line of a card when the matched line itself was
-    // too long for the match to be visible in the start-anchored snippet.
+    // A "… <match><trailing context> …" window for the third line of a
+    // card when the matched line is too long for the match to fit in the
+    // line-from-start snippet. The match is biased LEFT (10 chars of
+    // leading context, the rest trailing) so SwiftUI's tail truncation
+    // never hides it — a center-aligned window would push the match
+    // outside the visible monospace width on a 700 px card.
     private static func buildContextWindow(
         line: String,
         matchStart: String.Index,
         matchEnd: String.Index
     ) -> (snippet: String, start: Int, length: Int) {
-        let window = 280
+        let lead = 10
+        let window = 220
         let lineCount = line.count
         let matchStartOffset = line.distance(from: line.startIndex, to: matchStart)
         let matchLen = line.distance(from: matchStart, to: matchEnd)
-        var lo = max(0, matchStartOffset - (window - matchLen) / 2)
-        var hi = min(lineCount, lo + window)
-        if hi - lo < window { lo = max(0, hi - window) }
+        let lo = max(0, matchStartOffset - lead)
+        let hi = min(lineCount, lo + window)
         let leadingEllipsis = lo > 0
         let trailingEllipsis = hi < lineCount
         let startIdx = line.index(line.startIndex, offsetBy: lo)
