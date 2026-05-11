@@ -87,6 +87,7 @@ struct ManiApp: App {
                     await Self.pruneStaleClaudeJobs(store: store)
                     await Self.ensureDiffJobsForGitWorktrees(store: store)
                     await Self.migrateRenamedFlags(store: store)
+                    await Self.discoverHistoricalClaudeSessions(store: store)
                     Self.startSnapshotTimer(store: store)
                     Self.startStaleClaudePruneTimer(store: store)
                 }
@@ -128,6 +129,36 @@ struct ManiApp: App {
     // the WindowGroup task is torn down (app quit) is automatic via
     // structured concurrency. Interval is read from settings on each tick so
     // changing it in the Settings pane takes effect on the next snapshot.
+    // Backfill: walk every worktree, scan ~/.claude/projects/<slug>/ for
+    // existing session JSONLs, and dispatch discoverClaudeSession for any
+    // sid we don't already track. Catches historical conversations the
+    // user had in a worktree before Mani started watching it. The
+    // FSEvents watcher only fires for NEW files; without this sweep,
+    // pre-existing transcripts would never appear in the sidebar even
+    // though they're resumable. discoverClaudeSession is globally
+    // idempotent so re-running this is safe.
+    @MainActor
+    private static func discoverHistoricalClaudeSessions(store: Store) async {
+        for project in store.state.projects {
+            for worktree in project.worktrees {
+                let sessions = ClaudeHistoryScanner.sessions(forCwd: worktree.path.path)
+                for session in sessions {
+                    if store.state.jobOwningClaudeSession(session.id) != nil {
+                        continue
+                    }
+                    let wtPath = WorktreePath(
+                        project: project.id, worktree: worktree.id
+                    )
+                    await store.dispatch(.discoverClaudeSession(
+                        at: wtPath,
+                        sessionId: session.id,
+                        cwd: worktree.path
+                    ))
+                }
+            }
+        }
+    }
+
     // One-time migration: state.json files written before the `renamed`
     // flag existed default it to false. A name that diverges from the
     // auto-generated default pattern for its kind is almost certainly a
