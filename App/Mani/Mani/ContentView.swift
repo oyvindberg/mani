@@ -282,6 +282,7 @@ struct SidebarView: View {
     @State private var collapsedProjects: Set<UUID> = []
     @State private var collapsedWorktrees: Set<UUID> = []
     @State private var colorPickerProjectId: UUID?
+    @State private var newWorktreeForProject: Project?
 
     struct ResumeContext: Identifiable {
         let id = UUID()
@@ -371,10 +372,23 @@ struct SidebarView: View {
                 )
             )
         }
+        .sheet(item: $newWorktreeForProject) { project in
+            NewWorktreeSheet(
+                store: store,
+                projectId: project.id,
+                isPresented: Binding(
+                    get: { newWorktreeForProject != nil },
+                    set: { if !$0 { newWorktreeForProject = nil } }
+                )
+            )
+        }
     }
 
     @ViewBuilder
     private func projectMenu(project: Project) -> some View {
+        Button("Add worktree…") {
+            newWorktreeForProject = project
+        }
         Button("Change color…") {
             colorPickerProjectId = project.id
         }
