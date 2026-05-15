@@ -43,7 +43,7 @@ struct ProjectColorSheet: View {
                 Button("Cancel") { isPresented = false }
                     .keyboardShortcut(.cancelAction)
                 Button("Apply") {
-                    Task {
+                    _Concurrency.Task {
                         await store.dispatch(.setProjectColor(
                             id: project.id, color: color
                         ))

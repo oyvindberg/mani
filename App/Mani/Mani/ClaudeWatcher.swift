@@ -23,11 +23,26 @@ final class ClaudeWatcher: ObservableObject {
         let messageCount: Int
     }
 
-    @Published private(set) var sessions: [String: DetectedSession] = [:]
+    // Plain dict (not @Published): byte-arrivals from any active
+    // claude session would otherwise fire objectWillChange on every
+    // single line written, forcing a full SwiftUI rerender of
+    // everything observing the watcher (sidebar, ready-claude bar,
+    // detail panes). That pegged a core. The count is published
+    // separately and only changes on add/remove.
+    private(set) var sessions: [String: DetectedSession] = [:]
+    @Published private(set) var sessionCount: Int = 0
     var onNewSession: ((DetectedSession) -> Void)?
     // Fires when an existing session's message count goes up. The Int is the
-    // delta (always > 0). Used to bump per-job unread badges.
+    // delta (always > 0). Used to bump per-task unread badges.
     var onMessages: ((DetectedSession, Int) -> Void)?
+    // Fires whenever ANY new bytes are observed on a known session's
+    // JSONL, including non-message records (compaction summaries,
+    // file-history-snapshots, attachments, tool-use intermediate
+    // writes). Drives the per-task "thinking" pulse — the UI signal
+    // for "claude is doing something right now" needs the broader
+    // surface, because messageCount only ticks for user/assistant
+    // records.
+    var onActivity: ((String) -> Void)?
 
     private struct FileTail {
         var size: UInt64
@@ -163,15 +178,21 @@ final class ClaudeWatcher: ObservableObject {
                 lastMessageAt: snapshot.state.lastMessageAt,
                 messageCount: snapshot.state.messageCount
             )
+            let sawBytes = bytesRead > 0
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 let prev = self.sessions[sid]
                 self.sessions[sid] = detected
                 if prev == nil {
+                    self.sessionCount = self.sessions.count
                     self.onNewSession?(detected)
                 } else if let prev, detected.messageCount > prev.messageCount {
                     self.onMessages?(detected, detected.messageCount - prev.messageCount)
                 }
+                // Activity signal fires regardless of whether the new
+                // bytes contained a user/assistant message — covers
+                // compaction, tool-use streaming, etc.
+                if sawBytes { self.onActivity?(sid) }
             }
         }
     }

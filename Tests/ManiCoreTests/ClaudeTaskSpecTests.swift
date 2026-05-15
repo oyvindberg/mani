@@ -5,18 +5,17 @@ final class ClaudeTaskSpecTests: XCTestCase {
 
     // MARK: - .make
 
-    func test_make_freshSession_injectsClaudeNewline() {
+    func test_make_freshSession_typesClaude() {
         let cwd = URL(fileURLWithPath: "/Users/me/wt")
         let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: nil, invocation: "claude")
 
         XCTAssertEqual(spec.command, "/bin/zsh")
         XCTAssertEqual(spec.args, ["-l"])
         XCTAssertEqual(spec.cwd, cwd)
-        XCTAssertNil(spec.pid)
         XCTAssertEqual(spec.initialInput, "claude\r")
     }
 
-    func test_make_resumeSession_injectsResumeWithSessionId() {
+    func test_make_resumeSession_typesResume() {
         let spec = ClaudeTaskSpec.make(
             cwd: URL(fileURLWithPath: "/Users/me/wt"),
             sessionId: "abc-123",
@@ -26,7 +25,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
         XCTAssertEqual(spec.initialInput, "claude --resume abc-123\r")
     }
 
-    func test_make_customInvocation_usesProvidedPrefix() {
+    func test_make_customInvocation_preserved() {
         let spec = ClaudeTaskSpec.make(
             cwd: URL(fileURLWithPath: "/cwd"),
             sessionId: nil,
@@ -36,7 +35,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
         XCTAssertEqual(spec.initialInput, "claude --dangerously-skip-permissions\r")
     }
 
-    func test_make_customInvocation_resumePrependsToFlagPrefix() {
+    func test_make_customInvocation_resumeAppended() {
         let spec = ClaudeTaskSpec.make(
             cwd: URL(fileURLWithPath: "/cwd"),
             sessionId: "s1",
@@ -66,7 +65,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
     }
 
     func test_resolveInvocation_projectOverride_takesPrecedence() {
-        var project = makeProject(jobs: [])
+        var project = makeProject(tasks: [])
         project.claudeInvocation = "claude --my-flag"
         var s = anySettings()
         s.claudeInvocation = "claude"
@@ -75,7 +74,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
     }
 
     func test_resolveInvocation_projectEmpty_fallsBackToClaude() {
-        var project = makeProject(jobs: [])
+        var project = makeProject(tasks: [])
         project.claudeInvocation = "   "
         let resolved = ClaudeTaskSpec.resolveInvocation(project: project, settings: anySettings())
         XCTAssertEqual(resolved, "claude")
@@ -83,20 +82,17 @@ final class ClaudeTaskSpecTests: XCTestCase {
 
     // MARK: - .restartSpec
 
-    func test_restartSpec_claudeJob_rebuildsFromFactory() {
-        // Persisted as a stale pre-zsh-injection spec — what would have been
-        // written by an older Mani build. restartSpec must IGNORE this and
-        // produce the current factory shape.
+    func test_restartSpec_claudeTask_rebuildsFromFactory() {
         let stale = ProcessSpec(
-            command: "/usr/bin/env",
-            args: ["claude", "--resume", "old-session"],
+            command: "/bin/zsh",
+            args: ["-l"],
             env: [:],
             cwd: URL(fileURLWithPath: "/old/cwd"),
-            pid: nil,
-            initialInput: nil, restartPolicy: .never)
-        let job = makeJob(kind: .claude(sessionId: "old-session"), spec: stale)
+            initialInput: "claude --resume old-session\r"
+        )
+        let task = makeTask(kind: .claude(sessionId: "old-session"), spec: stale)
 
-        let restart = ClaudeTaskSpec.restartSpec(for: job, invocation: "claude")
+        let restart = ClaudeTaskSpec.restartSpec(for: task, invocation: "claude")
 
         XCTAssertEqual(restart.command, "/bin/zsh")
         XCTAssertEqual(restart.args, ["-l"])
@@ -104,89 +100,53 @@ final class ClaudeTaskSpecTests: XCTestCase {
         XCTAssertEqual(restart.initialInput, "claude --resume old-session\r")
     }
 
-    func test_restartSpec_freshClaudeJob_omitsResumeFlag() {
+    func test_restartSpec_freshClaudeTask_omitsResumeFlag() {
         let stale = ProcessSpec(
             command: "/usr/bin/env",
             args: ["claude"],
             env: [:],
             cwd: URL(fileURLWithPath: "/cwd"),
-            pid: nil,
-            initialInput: nil, restartPolicy: .never)
-        let job = makeJob(kind: .claude(sessionId: nil), spec: stale)
+            initialInput: nil
+        )
+        let task = makeTask(kind: .claude(sessionId: nil), spec: stale)
 
-        let restart = ClaudeTaskSpec.restartSpec(for: job, invocation: "claude")
+        let restart = ClaudeTaskSpec.restartSpec(for: task, invocation: "claude")
 
         XCTAssertEqual(restart.initialInput, "claude\r")
     }
 
-    func test_restartSpec_shellJob_returnsSpecVerbatim() {
+    func test_restartSpec_shellTask_returnsSpecVerbatim() {
         let original = ProcessSpec(
             command: "/usr/local/bin/dev",
             args: ["server", "--port", "8080"],
             env: ["FOO": "bar"],
             cwd: URL(fileURLWithPath: "/cwd"),
-            pid: 42,
-            initialInput: nil, restartPolicy: .never)
-        let job = makeJob(kind: .shell, spec: original)
+            initialInput: nil
+        )
+        let task = makeTask(kind: .shell, spec: original)
 
-        let restart = ClaudeTaskSpec.restartSpec(for: job, invocation: "claude")
+        let restart = ClaudeTaskSpec.restartSpec(for: task, invocation: "claude")
 
         XCTAssertEqual(restart, original)
     }
 
-    // MARK: - AppState.withoutClaudeJobs / .claudeJobs
+    // MARK: - AppState.claudeTasks
 
-    func test_withoutClaudeJobs_removesClaude_keepsShell() {
-        let claudeJob = makeJob(kind: .claude(sessionId: "s1"), spec: anySpec())
-        let shellJob = makeJob(kind: .shell, spec: anySpec())
+    func test_claudeTasks_returnsAllClaudePathsAcrossProjects() {
+        let c1 = makeTask(kind: .claude(sessionId: "s1"), spec: anySpec())
+        let c2 = makeTask(kind: .claude(sessionId: "s2"), spec: anySpec())
+        let shell = makeTask(kind: .shell, spec: anySpec())
         let state = AppState(
-            schemaVersion: 1,
-            projects: [makeProject(jobs: [claudeJob, shellJob])],
-            settings: anySettings()
-        )
-
-        let cleaned = state.withoutClaudeJobs()
-
-        let remaining = cleaned.projects[0].worktrees[0].jobs
-        XCTAssertEqual(remaining.count, 1)
-        XCTAssertEqual(remaining[0].id, shellJob.id)
-        XCTAssertEqual(remaining[0].kind, .shell)
-    }
-
-    func test_withoutClaudeJobs_emptyState_isUnchanged() {
-        let state = AppState.empty
-        XCTAssertEqual(state.withoutClaudeJobs(), state)
-    }
-
-    func test_withoutClaudeJobs_preservesProjectsAndWorktrees() {
-        let claudeJob = makeJob(kind: .claude(sessionId: nil), spec: anySpec())
-        let state = AppState(
-            schemaVersion: 1,
-            projects: [makeProject(jobs: [claudeJob])],
-            settings: anySettings()
-        )
-
-        let cleaned = state.withoutClaudeJobs()
-
-        XCTAssertEqual(cleaned.projects.count, 1)
-        XCTAssertEqual(cleaned.projects[0].worktrees.count, 1)
-        XCTAssertEqual(cleaned.projects[0].worktrees[0].jobs.count, 0)
-    }
-
-    func test_claudeJobs_returnsAllClaudePathsAcrossProjects() {
-        let c1 = makeJob(kind: .claude(sessionId: "s1"), spec: anySpec())
-        let c2 = makeJob(kind: .claude(sessionId: "s2"), spec: anySpec())
-        let shell = makeJob(kind: .shell, spec: anySpec())
-        let state = AppState(
-            schemaVersion: 1,
+            schemaVersion: 2,
             projects: [
-                makeProject(jobs: [c1, shell]),
-                makeProject(jobs: [c2]),
+                makeProject(tasks: [c1, shell]),
+                makeProject(tasks: [c2]),
             ],
-            settings: anySettings()
+            settings: anySettings(),
+            selectedTaskPath: nil
         )
 
-        let pairs = state.claudeJobs()
+        let pairs = state.claudeTasks()
 
         let ids = pairs.map { $0.1.id }
         XCTAssertEqual(Set(ids), Set([c1.id, c2.id]))
@@ -194,37 +154,36 @@ final class ClaudeTaskSpecTests: XCTestCase {
 
     // MARK: - Test helpers
 
-    private func makeJob(kind: JobKind, spec: ProcessSpec) -> Job {
-        Job(
+    private func makeTask(kind: TaskKind, spec: ProcessSpec) -> Task {
+        Task(
             id: UUID(),
             name: "test",
             kind: kind,
             enabled: true,
-            status: .running,
-            primary: spec,
-            auxiliary: [],
+            spec: spec,
+            runtime: .running(spawnedAt: Date()),
             unread: 0,
             createdAt: Date(),
-            completedAt: nil, renamed: false        )
+            renamed: false
+        )
     }
 
-    private func makeProject(jobs: [Job]) -> Project {
+    private func makeProject(tasks: [Task]) -> Project {
         Project(
             id: UUID(),
             name: "p",
             color: "#000",
             enabled: true,
+            rootDir: URL(fileURLWithPath: "/p/main"),
             worktrees: [
                 Worktree(
                     id: UUID(),
-                    name: "main",
                     path: URL(fileURLWithPath: "/p/main"),
                     kind: .folder,
                     enabled: true,
                     missing: false,
-                    jobs: jobs,
-                    createdAt: Date(),
-                    primary: false
+                    tasks: tasks,
+                    createdAt: Date()
                 )
             ],
             createdAt: Date(),
@@ -237,8 +196,8 @@ final class ClaudeTaskSpecTests: XCTestCase {
             command: "/bin/zsh", args: ["-l"],
             env: [:],
             cwd: URL(fileURLWithPath: "/cwd"),
-            pid: nil,
-            initialInput: nil, restartPolicy: .never)
+            initialInput: nil
+        )
     }
 
     private func anySettings() -> Settings {

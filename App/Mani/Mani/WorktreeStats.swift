@@ -32,7 +32,7 @@ final class WorktreeStatsPoller {
     private let localTickSeconds: UInt64 = 5
     private let fetchTickSeconds: UInt64 = 5 * 60
     private weak var store: Store?
-    private var task: Task<Void, Never>?
+    private var task: _Concurrency.Task<Void, Never>?
     private var lastFetchAt: Date = .distantPast
 
     init(store: Store) {
@@ -41,7 +41,7 @@ final class WorktreeStatsPoller {
 
     func start() {
         task?.cancel()
-        task = Task.detached(priority: .utility) { [weak self] in
+        task = _Concurrency.Task.detached(priority: .utility) { [weak self] in
             await self?.loop()
         }
     }
@@ -52,14 +52,14 @@ final class WorktreeStatsPoller {
     }
 
     private func loop() async {
-        while !Task.isCancelled {
+        while !_Concurrency.Task.isCancelled {
             let worktrees = await collectWorktrees()
             let now = Date()
             let shouldFetch = now.timeIntervalSince(lastFetchAt) > Double(fetchTickSeconds)
             if shouldFetch { lastFetchAt = now }
 
             for (id, path) in worktrees {
-                guard !Task.isCancelled else { return }
+                guard !_Concurrency.Task.isCancelled else { return }
                 if shouldFetch {
                     _ = Self.runGit(["fetch", "--quiet", "--no-tags"], in: path)
                 }
@@ -69,7 +69,7 @@ final class WorktreeStatsPoller {
                 }
             }
 
-            try? await Task.sleep(nanoseconds: localTickSeconds * 1_000_000_000)
+            try? await _Concurrency.Task.sleep(nanoseconds: localTickSeconds * 1_000_000_000)
         }
     }
 

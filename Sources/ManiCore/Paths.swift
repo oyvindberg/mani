@@ -10,15 +10,15 @@ public struct WorktreePath: Codable, Equatable, Hashable {
     }
 }
 
-public struct JobPath: Codable, Equatable, Hashable {
+public struct TaskPath: Codable, Equatable, Hashable {
     public let project: UUID
     public let worktree: UUID
-    public let job: UUID
+    public let task: UUID
 
-    public init(project: UUID, worktree: UUID, job: UUID) {
+    public init(project: UUID, worktree: UUID, task: UUID) {
         self.project = project
         self.worktree = worktree
-        self.job = job
+        self.task = task
     }
 
     public var worktreePath: WorktreePath {

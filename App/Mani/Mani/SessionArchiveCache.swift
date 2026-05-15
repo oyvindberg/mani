@@ -8,7 +8,7 @@ import ManiCore
 //   1. ManiApp calls loadFromDisk(for:) for every project — populates
 //      the cache from sessions-index.json instantly.
 //   2. ExternalSessionInfoCache is mirrored from these entries so
-//      every existing PastSessionRow / JobStats display keeps working
+//      every existing PastSessionRow / TaskStats display keeps working
 //      without modification.
 //
 // Live:

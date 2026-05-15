@@ -21,7 +21,7 @@ import ManiCore
 //                         narrowed by the window resizing.
 struct ReadyClaudesBar: View {
     @EnvironmentObject var store: Store
-    @EnvironmentObject var activityTracker: JobActivityTracker
+    @EnvironmentObject var activityTracker: TaskActivityTracker
     let onSelect: (UUID) -> Void
 
     var body: some View {
@@ -35,20 +35,20 @@ struct ReadyClaudesBar: View {
     }
 
     // Aggregate signals across the whole AppState. Recomputed on
-    // every body invocation; cheap (O(projects × worktrees × jobs))
+    // every body invocation; cheap (O(projects × worktrees × tasks))
     // and SwiftUI only invokes body when its observed sources change.
     private var readyEntries: [ReadyEntry] {
         var out: [ReadyEntry] = []
         for project in store.state.projects {
             for worktree in project.worktrees {
-                for job in worktree.jobs {
-                    guard case let .claude(sid) = job.kind, let sid else { continue }
+                for task in worktree.tasks {
+                    guard case let .claude(sid) = task.kind, let sid else { continue }
                     if activityTracker.isThinking(sid: sid) { continue }
-                    guard job.unread > 0 else { continue }
+                    guard task.unread > 0 else { continue }
                     out.append(ReadyEntry(
                         project: project,
                         worktree: worktree,
-                        job: job,
+                        task: task,
                         sessionId: sid,
                         settledAt: activityTracker.settledAt[sid],
                         isJustReady: activityTracker.justBecameReady(sid: sid)
@@ -56,11 +56,11 @@ struct ReadyClaudesBar: View {
                 }
             }
         }
-        // Newest "settled" first; falls back to job createdAt so
+        // Newest "settled" first; falls back to task createdAt so
         // stable ordering before any tracking-recorded transition.
         out.sort { lhs, rhs in
-            (lhs.settledAt ?? lhs.job.createdAt)
-                > (rhs.settledAt ?? rhs.job.createdAt)
+            (lhs.settledAt ?? lhs.task.createdAt)
+                > (rhs.settledAt ?? rhs.task.createdAt)
         }
         return out
     }
@@ -69,8 +69,8 @@ struct ReadyClaudesBar: View {
         var n = 0
         for project in store.state.projects {
             for worktree in project.worktrees {
-                for job in worktree.jobs {
-                    guard case let .claude(sid) = job.kind, let sid else { continue }
+                for task in worktree.tasks {
+                    guard case let .claude(sid) = task.kind, let sid else { continue }
                     if activityTracker.isThinking(sid: sid) { n += 1 }
                 }
             }
@@ -96,7 +96,7 @@ struct ReadyClaudesBar: View {
         let entries = readyEntries
         if !entries.isEmpty {
             HStack(spacing: 4) {
-                ForEach(Array(entries.prefix(9).enumerated()), id: \.element.job.id) { _, entry in
+                ForEach(Array(entries.prefix(9).enumerated()), id: \.element.task.id) { _, entry in
                     ReadyPill(entry: entry, onSelect: onSelect)
                 }
                 if entries.count > 9 {
@@ -114,7 +114,7 @@ struct ReadyClaudesBar: View {
         let entries = readyEntries
         if !entries.isEmpty {
             let tip = entries
-                .map { "\($0.project.name) › \($0.worktree.name) › \($0.job.name)" }
+                .map { "\($0.project.name) › \($0.worktree.displayName) › \($0.task.name)" }
                 .joined(separator: "\n")
             HStack(spacing: 3) {
                 Image(systemName: "bell.badge.fill")
@@ -134,7 +134,7 @@ struct ReadyClaudesBar: View {
 struct ReadyEntry {
     let project: Project
     let worktree: Worktree
-    let job: Job
+    let task: Task
     let sessionId: String
     let settledAt: Date?
     let isJustReady: Bool
@@ -153,7 +153,7 @@ private struct ReadyPill: View {
 
     var body: some View {
         let baseColor = SwiftUI.Color(hex: entry.project.color)
-        Button(action: { onSelect(entry.job.id) }) {
+        Button(action: { onSelect(entry.task.id) }) {
             Capsule()
                 .fill(baseColor)
                 .overlay(
@@ -182,7 +182,7 @@ private struct ReadyPill: View {
         .onChange(of: entry.isJustReady) { _, newValue in
             animatePulse = newValue
         }
-        .help("\(entry.project.name) › \(entry.worktree.name) › \(entry.job.name)")
+        .help("\(entry.project.name) › \(entry.worktree.displayName) › \(entry.task.name)")
     }
 }
 

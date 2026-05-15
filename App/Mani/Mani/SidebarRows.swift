@@ -2,27 +2,27 @@ import SwiftUI
 import ManiCore
 
 // Visual components shared by the new sidebar hierarchy. Three levels:
-//   ProjectHeaderRow → WorktreeHeaderRow → JobRow
+//   ProjectHeaderRow → WorktreeHeaderRow → TaskRow
 // Each is collapsible at its parent level (the parent owns the
 // expansion state). A continuous project-color stripe runs along the
 // left edge of every row inside a project so the hierarchy reads as
 // "this all belongs to atlas" even when worktrees are collapsed away.
 
-// MARK: - Job kind icon
+// MARK: - Task kind icon
 
 // Rounded-rect badge with the per-kind glyph + tint. Sized to read as
 // an icon in a sidebar row (24x24). Mirrors the sizing conventions of
 // Xcode and VS Code's source-control sidebars.
-struct JobKindIcon: View {
-    let kind: JobKind
+struct TaskKindIcon: View {
+    let kind: TaskKind
     let size: CGFloat
 
-    init(kind: JobKind) {
+    init(kind: TaskKind) {
         self.kind = kind
         self.size = 22
     }
 
-    init(kind: JobKind, size: CGFloat) {
+    init(kind: TaskKind, size: CGFloat) {
         self.kind = kind
         self.size = size
     }
@@ -62,7 +62,10 @@ struct JobKindIcon: View {
 struct ProjectHeaderRow: View {
     let project: Project
     let isExpanded: Bool
-    let jobCount: Int
+    let taskCount: Int
+    let anyChildThinking: Bool
+    let anyChildReady: Bool
+    let anyChildJustReady: Bool
     let onToggle: () -> Void
     let onContextMenu: () -> AnyView
 
@@ -81,8 +84,8 @@ struct ProjectHeaderRow: View {
                 .foregroundStyle(project.enabled ? color : color.opacity(0.55))
                 .strikethrough(!project.enabled)
             Spacer()
-            if jobCount > 0 {
-                Text("\(jobCount)")
+            if taskCount > 0 {
+                Text("\(taskCount)")
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(color)
                     .padding(.horizontal, 5)
@@ -95,7 +98,21 @@ struct ProjectHeaderRow: View {
         .padding(.leading, 6)
         .padding(.trailing, 10)
         .padding(.vertical, 5)
-        .background(hovered ? color.opacity(0.10) : .clear)
+        .background(
+            ZStack {
+                if hovered { color.opacity(0.10) }
+                // .subtle so the per-task pulse remains the strongest
+                // signal — the project row is more of an aggregate
+                // breathing.
+                ActivityOverlay(
+                    projectColor: color,
+                    isThinking: anyChildThinking,
+                    isReady: anyChildReady,
+                    isJustReady: anyChildJustReady,
+                    intensity: .subtle
+                )
+            }
+        )
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
         .onTapGesture(perform: onToggle)
@@ -123,10 +140,8 @@ struct WorktreeHeaderRow: View {
     @ObservedObject private var statsCache = WorktreeStatsCache.shared
     @State private var headerHovered = false
 
-    private var dirSuffix: String {
-        // The path's last component. If the user's worktree.name already
-        // matches it we don't show it again on the second line.
-        URL(fileURLWithPath: worktree.path.path).lastPathComponent
+    private var displayName: String {
+        worktree.displayName
     }
 
     private var gitStats: WorktreeGitStats? {
@@ -134,19 +149,16 @@ struct WorktreeHeaderRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            topLine
-            bottomLine
-        }
+        singleLine
         .padding(.leading, 8)
         .padding(.trailing, 10)
-        .padding(.vertical, 4)
+        .padding(.vertical, 3)
         .background(
             ZStack {
                 if headerHovered {
                     SwiftUI.Color.secondary.opacity(0.08)
                 }
-                // Dimmer overlay than per-job: this is the aggregate
+                // Dimmer overlay than per-task: this is the aggregate
                 // signal across all child claudes in the worktree, so
                 // we don't want it to overpower the per-task pulses
                 // nested inside.
@@ -165,7 +177,7 @@ struct WorktreeHeaderRow: View {
         .contextMenu { onContextMenu() }
     }
 
-    private var topLine: some View {
+    private var singleLine: some View {
         HStack(spacing: 6) {
             Image(systemName: "chevron.right")
                 .font(.system(size: 9, weight: .semibold))
@@ -175,14 +187,16 @@ struct WorktreeHeaderRow: View {
             Image(systemName: worktreeIcon)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text(worktree.name)
+            Text(displayName)
                 .font(.system(.subheadline, design: .default).weight(.semibold))
                 .opacity(worktree.enabled ? 1 : 0.5)
-            if worktree.primary {
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if worktree.path == project.rootDir {
                 Image(systemName: "star.fill")
                     .font(.system(size: 8))
                     .foregroundStyle(.yellow)
-                    .help("Primary worktree — `git worktree add` runs from here")
+                    .help("Project root — `git worktree add` anchors here")
             }
             if worktree.missing {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -190,8 +204,18 @@ struct WorktreeHeaderRow: View {
                     .foregroundStyle(.orange)
                     .help("Path no longer exists")
             }
-            Spacer()
             gitBadges
+            Spacer(minLength: 4)
+            actionButton(systemImage: "terminal", help: "New shell here", action: onNewShell)
+            actionButton(systemImage: "sparkles", help: "New Claude task", action: onNewClaude)
+            if let diffJobId {
+                actionButton(
+                    systemImage: "arrow.left.arrow.right",
+                    help: "Diff workspace",
+                    tint: selectedJobId == diffJobId ? .accentColor : .secondary,
+                    action: onSelectDiff
+                )
+            }
         }
     }
 
@@ -236,31 +260,6 @@ struct WorktreeHeaderRow: View {
         }
     }
 
-    private var bottomLine: some View {
-        HStack(spacing: 6) {
-            // Indent to align under the chevron + folder glyph.
-            Spacer().frame(width: 22)
-            if dirSuffix != worktree.name {
-                Text(dirSuffix)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-            }
-            Spacer()
-            actionButton(systemImage: "terminal", help: "New shell here", action: onNewShell)
-            actionButton(systemImage: "sparkles", help: "New Claude task", action: onNewClaude)
-            if let diffJobId {
-                actionButton(
-                    systemImage: "arrow.left.arrow.right",
-                    help: "Diff workspace",
-                    tint: selectedJobId == diffJobId ? .accentColor : .secondary,
-                    action: onSelectDiff
-                )
-            }
-        }
-    }
-
     private func actionButton(
         systemImage: String,
         help: String,
@@ -280,29 +279,29 @@ struct WorktreeHeaderRow: View {
     }
 }
 
-// MARK: - Job row
+// MARK: - Task row
 
-struct JobRow: View {
+struct TaskRow: View {
     let project: Project
-    let job: Job
+    let task: Task
     let selected: Bool
     let onTap: () -> Void
     let onContextMenu: () -> AnyView
 
-    @ObservedObject private var statsCache = JobStatsCache.shared
+    @ObservedObject private var statsCache = TaskStatsCache.shared
     @ObservedObject private var externalInfo = ExternalSessionInfoCache.shared
-    @EnvironmentObject private var activity: JobActivityTracker
+    @EnvironmentObject private var activity: TaskActivityTracker
     @State private var hovered = false
 
     private var sessionId: String? {
-        if case let .claude(sid) = job.kind { return sid }
+        if case let .claude(sid) = task.kind { return sid }
         return nil
     }
 
     private var isThinking: Bool { activity.isThinking(sid: sessionId) }
     private var isReady: Bool {
         guard !isThinking else { return false }
-        return job.unread > 0
+        return task.unread > 0
     }
     private var isJustReady: Bool {
         guard isReady else { return false }
@@ -311,11 +310,11 @@ struct JobRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            JobKindIcon(kind: job.kind, size: 18)
+            TaskKindIcon(kind: task.kind, size: 18)
             VStack(alignment: .leading, spacing: 0) {
-                Text(job.name)
+                Text(task.name)
                     .font(.system(.callout, design: .default))
-                    .strikethrough(!job.enabled)
+                    .strikethrough(!task.enabled)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 if let subtitle = subtitle {
@@ -327,11 +326,11 @@ struct JobRow: View {
                 }
             }
             Spacer()
-            Image(systemName: job.statusSymbol)
+            Image(systemName: task.statusSymbol)
                 .font(.system(size: 7))
-                .foregroundStyle(job.statusColor)
-            if job.unread > 0 {
-                Text("\(job.unread)")
+                .foregroundStyle(task.statusColor)
+            if task.unread > 0 {
+                Text("\(task.unread)")
                     .font(.caption2.weight(.semibold))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 0)
@@ -341,7 +340,7 @@ struct JobRow: View {
         }
         .padding(.leading, 24)
         .padding(.trailing, 10)
-        .opacity(job.enabled ? 1 : 0.55)
+        .opacity(task.enabled ? 1 : 0.55)
         .padding(.vertical, 2)
         .background(
             ZStack {
@@ -364,17 +363,17 @@ struct JobRow: View {
         .contextMenu { onContextMenu() }
     }
 
-    // Subtitle: for claude jobs, "N msgs · 1.2 MB" (data from the
-    // JobStatsCache / ExternalSessionInfoCache pollers). For shell
-    // jobs there's no subtitle.
+    // Subtitle: for claude tasks, "N msgs · 1.2 MB" (data from the
+    // TaskStatsCache / ExternalSessionInfoCache pollers). For shell
+    // tasks there's no subtitle.
     private var subtitle: String? {
-        guard case let .claude(sid) = job.kind, let sid else { return nil }
+        guard case let .claude(sid) = task.kind, let sid else { return nil }
         var parts: [String] = []
         if let msg = externalInfo.entries[sid]?.messageCount {
             parts.append("\(msg) msg\(msg == 1 ? "" : "s")")
         }
-        if let bytes = statsCache.stats[job.id]?.transcriptBytes, bytes > 0 {
-            parts.append(JobStatsFormatter.size(bytes: bytes))
+        if let bytes = statsCache.stats[task.id]?.transcriptBytes, bytes > 0 {
+            parts.append(TaskStatsFormatter.size(bytes: bytes))
         }
         if parts.isEmpty {
             return "session " + String(sid.prefix(8))
@@ -425,10 +424,10 @@ struct SidebarActionButton: View {
 // Compact row for an EXTERNAL claude session (a transcript Mani didn't
 // spawn). Renders relative date + msg count on a top line and a
 // truncated first-user-message preview underneath. Tap selects the
-// underlying Job so the user can adopt / delete from the right pane.
+// underlying Task so the user can adopt / delete from the right pane.
 struct PastSessionRow: View {
     let project: Project
-    let job: Job
+    let task: Task
     let selected: Bool
     let onTap: () -> Void
     let onContextMenu: () -> AnyView
@@ -437,7 +436,7 @@ struct PastSessionRow: View {
     @State private var hovered = false
 
     private var sessionId: String? {
-        if case let .claude(sid) = job.kind { return sid }
+        if case let .claude(sid) = task.kind { return sid }
         return nil
     }
 
@@ -489,7 +488,7 @@ struct PastSessionRow: View {
         }
         .padding(.leading, 32)
         .padding(.trailing, 10)
-        .opacity(job.enabled ? 1 : 0.55)
+        .opacity(task.enabled ? 1 : 0.55)
         .padding(.vertical, 2)
         .background(
             selected
@@ -509,7 +508,7 @@ struct PastSessionRow: View {
 
 // MARK: - Pulse / ready overlay
 
-// Project-color overlay reused by both JobRow and WorktreeHeaderRow.
+// Project-color overlay reused by both TaskRow and WorktreeHeaderRow.
 // Three render modes:
 //   - thinking: opacity oscillates with a slow easeInOut, drawing the
 //     eye to "claude is working" — the row "breathes".
@@ -547,7 +546,7 @@ struct ActivityOverlay: View {
         self.intensity = intensity
     }
 
-    // Two-arg convenience used by JobRow (which doesn't need to
+    // Two-arg convenience used by TaskRow (which doesn't need to
     // override intensity). The "no default parameters" rule still
     // holds — this is a separate initializer, not a defaulted arg.
     init(
@@ -613,7 +612,7 @@ struct ActivityOverlay: View {
 }
 
 // Row for a safekept session whose originating worktree is no longer
-// in the project's live worktrees. Doesn't render off a Job because
+// in the project's live worktrees. Doesn't render off a Task because
 // these don't have one — they live only in the SessionArchiveCache.
 // Click does nothing yet (a future "Adopt as worktree" / "Resume in
 // new worktree" action would dispatch through Store).

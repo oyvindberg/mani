@@ -2,18 +2,18 @@ import SwiftUI
 import AppKit
 import ManiCore
 
-// Detail pane for a Job whose kind is .diff. Left: file pane (refs section,
+// Detail pane for a Task whose kind is .diff. Left: file pane (refs section,
 // tracked changes tree, untracked files tree). Right: libghostty terminal
 // connected to the kept-warm shell that delta runs in. Clicking a tracked
 // file writes a `git diff <ref> -- <path> | delta` pipeline to the shell's
 // master FD — no per-click spawn, just a stdin write.
 //
-// The shell PTY is the Job's primary process; it lives in EffectRunner for
-// the Job's lifetime and survives view re-mounts (switching to a different
+// The shell PTY is the Task's primary process; it lives in EffectRunner for
+// the Task's lifetime and survives view re-mounts (switching to a different
 // sidebar item and back).
 struct DiffWorkspaceView: View {
-    let job: Job
-    let jobPath: JobPath
+    let task: Task
+    let taskPath: TaskPath
     let worktreePath: URL
 
     @EnvironmentObject var store: Store
@@ -34,6 +34,8 @@ struct DiffWorkspaceView: View {
     @State private var renameMap: [String: String] = [:] // current → previous
     @FocusState private var fileListFocused: Bool
     @State private var fsWatcher: WorktreeFSWatcher?
+    @State private var refreshInFlight: Bool = false
+    @State private var refreshAgainPending: Bool = false
 
     // Tracks which section the selected file lives in so the right pane
     // renders the right diff: staged shows index-vs-HEAD, unstaged shows
@@ -70,13 +72,13 @@ struct DiffWorkspaceView: View {
         if deltaPath == "" {
             DeltaMissingCard()
         } else {
-            TerminalPane(jobPath: jobPath)
-                .id(jobPath)
+            TerminalPane(taskPath: taskPath)
+                .id(taskPath)
         }
     }
 
     private func checkDelta() {
-        Task.detached(priority: .userInitiated) {
+        _Concurrency.Task.detached(priority: .userInitiated) {
             let resolved = Self.findExecutable("delta") ?? ""
             await MainActor.run { deltaPath = resolved }
         }
@@ -373,8 +375,18 @@ struct DiffWorkspaceView: View {
     // MARK: Refresh
 
     private func refreshFileList() {
+        // Re-entrance guard: if a refresh is already in flight, just
+        // mark a follow-up. Without this, FSEvents bursts (and the
+        // self-trigger from running git itself) used to spawn N
+        // overlapping `git status` subprocesses, each tying up a
+        // core. Empirically: 800 % CPU on a 7-worktree machine.
+        if refreshInFlight {
+            refreshAgainPending = true
+            return
+        }
+        refreshInFlight = true
         let wt = worktreePath
-        Task.detached(priority: .userInitiated) {
+        _Concurrency.Task.detached(priority: .userInitiated) {
             let staged = GitChangesScanner.staged(worktree: wt)
             let unstaged = GitChangesScanner.unstaged(worktree: wt)
             let untracked = GitChangesScanner.untracked(worktree: wt)
@@ -415,6 +427,11 @@ struct DiffWorkspaceView: View {
                     default: break
                     }
                 }
+                self.refreshInFlight = false
+                if self.refreshAgainPending {
+                    self.refreshAgainPending = false
+                    self.refreshFileList()
+                }
             }
         }
     }
@@ -442,7 +459,7 @@ struct DiffWorkspaceView: View {
 
     private func stage(paths: [String]) {
         let wt = worktreePath
-        Task.detached(priority: .userInitiated) {
+        _Concurrency.Task.detached(priority: .userInitiated) {
             _ = GitChangesScanner.add(paths: paths, worktree: wt)
             await MainActor.run { refreshFileList() }
         }
@@ -458,7 +475,7 @@ struct DiffWorkspaceView: View {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let wt = worktreePath
-        Task.detached(priority: .userInitiated) {
+        _Concurrency.Task.detached(priority: .userInitiated) {
             _ = GitChangesScanner.discard(paths: paths, worktree: wt)
             await MainActor.run { refreshFileList() }
         }
@@ -466,7 +483,7 @@ struct DiffWorkspaceView: View {
 
     private func unstage(paths: [String]) {
         let wt = worktreePath
-        Task.detached(priority: .userInitiated) {
+        _Concurrency.Task.detached(priority: .userInitiated) {
             _ = GitChangesScanner.unstage(paths: paths, worktree: wt)
             await MainActor.run { refreshFileList() }
         }
@@ -476,7 +493,7 @@ struct DiffWorkspaceView: View {
         let msg = commitMessage
         let wt = worktreePath
         commitInFlight = true
-        Task.detached(priority: .userInitiated) {
+        _Concurrency.Task.detached(priority: .userInitiated) {
             let ok = GitChangesScanner.commitStaged(message: msg, worktree: wt)
             await MainActor.run {
                 commitInFlight = false
@@ -493,7 +510,7 @@ struct DiffWorkspaceView: View {
     private func startFSWatching() {
         let watcher = WorktreeFSWatcher(root: worktreePath) {
             // Coalesce bursts of writes.
-            Task { @MainActor in refreshFileList() }
+            _Concurrency.Task { @MainActor in refreshFileList() }
         }
         watcher.start()
         fsWatcher = watcher
@@ -506,9 +523,9 @@ struct DiffWorkspaceView: View {
         // Wait briefly for the spawn to settle (zsh's initial prompt arrives
         // ~800 ms after fork; matches ClaudeTaskSpec's delay).
         let runner = store.runner
-        let path = jobPath
-        Task.detached {
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        let path = taskPath
+        _Concurrency.Task.detached {
+            try? await _Concurrency.Task.sleep(nanoseconds: 1_000_000_000)
             guard let pty = await runner.pty(for: path) else { return }
             // Suppress keystroke echo + clear screen so the only thing the
             // user ever sees in this pane is delta output (and any error
@@ -546,11 +563,11 @@ struct DiffWorkspaceView: View {
     // shell respawn, no rendering hiccup beyond the brief screen restore.
     private func sendCommand(_ command: String) {
         let runner = store.runner
-        let path = jobPath
-        Task.detached {
+        let path = taskPath
+        _Concurrency.Task.detached {
             guard let pty = await runner.pty(for: path) else { return }
             pty.write(Data("\u{15}q\u{15}".utf8))
-            try? await Task.sleep(nanoseconds: 40_000_000)
+            try? await _Concurrency.Task.sleep(nanoseconds: 40_000_000)
             pty.write(Data(command.utf8))
         }
     }
@@ -563,7 +580,7 @@ struct DiffWorkspaceView: View {
     private func addSelectedToGit() {
         let paths = Array(untrackedSelection)
         let wt = worktreePath
-        Task.detached(priority: .userInitiated) {
+        _Concurrency.Task.detached(priority: .userInitiated) {
             _ = GitChangesScanner.add(paths: paths, worktree: wt)
             await MainActor.run {
                 untrackedSelection.removeAll()

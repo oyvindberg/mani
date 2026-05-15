@@ -32,12 +32,16 @@ If you change the public API of `ManiCore`, update tests in the same change.
    and function takes its arguments explicitly. Auto-synthesized memberwise
    inits are fine because they have no defaults.
 2. **Switches over our enums must be compile-exhaustive.** Never use
-   `default:` for `Action`, `Event`, `Effect`, `JobStatus`, `JobKind`,
+   `default:` for `Action`, `Event`, `Effect`, `TaskKind`, `TaskRuntime`,
    `WorktreeKind`. List every unhandled case by name. Adding a new case must
    fail compilation until every consumer handles it.
-3. **`Job` is the type name for what we call "task" in UI and conversation.**
-   Renamed because Swift's `_Concurrency.Task` would create constant
-   ambiguity. Don't rename it back.
+3. **`Task` is the type name for the long-lived unit of work in a
+   workspace.** Matches the UI / conversation name. The collision with
+   Swift's `_Concurrency.Task` is real but tolerable: our `Task` has
+   no closure-init, so most `Task { … }` call sites resolve correctly;
+   where the compiler needs help, qualify the concurrency one as
+   `_Concurrency.Task`. The type was previously named `Job` to dodge
+   the collision — that decision was reversed; do not rename it back.
 4. **Don't theme the terminal viewport.** Per-project color goes in chrome
    only (sidebar border, band above content, breadcrumb). The terminal grid
    stays neutral so vim/tmux/colored CLI output isn't broken.
@@ -64,8 +68,8 @@ If you change the public API of `ManiCore`, update tests in the same change.
 
 ```
 Sources/ManiCore/
-  Model/                  # AppState, Project, Worktree, Job, ProcessSpec
-  Paths.swift             # WorktreePath, JobPath
+  Model/                  # AppState, Project, Worktree, Task, ProcessSpec
+  Paths.swift             # WorktreePath, TaskPath
   Action.swift            # user/system intents
   Event.swift             # durable facts (persisted to events.jsonl)
   Effect.swift            # side effects (process spawn, fs writes, …)

@@ -12,7 +12,7 @@ enum PTYError: Error {
     case forkpty(errno: Int32)
 }
 
-final class ManagedPTY: @unchecked Sendable {
+final class ManagedPTY: @unchecked Sendable, TaskIO {
     let masterFD: Int32
     let pid: pid_t
 
@@ -23,14 +23,6 @@ final class ManagedPTY: @unchecked Sendable {
 
     var onExit: ((Int32) -> Void)?
 
-    // Output is multi-subscriber so both the renderer and the scrollback writer
-    // can tap the same byte stream without stepping on each other. Subscribers
-    // hold the returned token; on token deinit the handler is removed.
-    final class OutputSubscription {
-        private let cancel: () -> Void
-        init(_ cancel: @escaping () -> Void) { self.cancel = cancel }
-        deinit { cancel() }
-    }
     private let outputHandlersLock = NSLock()
     private var outputHandlers: [UUID: (Data) -> Void] = [:]
     // Bytes the PTY emitted before any handler subscribed get replayed when a
@@ -40,7 +32,7 @@ final class ManagedPTY: @unchecked Sendable {
     private var capturedOutput = Data()
     private let captureCap = 1_048_576
 
-    func addOutputHandler(_ handler: @escaping (Data) -> Void) -> OutputSubscription {
+    func addOutputHandler(_ handler: @escaping (Data) -> Void) -> IOSubscription {
         addOutputHandler(replayCaptured: true, handler)
     }
 
@@ -53,14 +45,14 @@ final class ManagedPTY: @unchecked Sendable {
     func addOutputHandler(
         replayCaptured: Bool,
         _ handler: @escaping (Data) -> Void
-    ) -> OutputSubscription {
+    ) -> IOSubscription {
         let id = UUID()
         outputHandlersLock.lock()
         let snapshot = replayCaptured ? capturedOutput : Data()
         outputHandlers[id] = handler
         outputHandlersLock.unlock()
         if !snapshot.isEmpty { handler(snapshot) }
-        return OutputSubscription { [weak self] in
+        return IOSubscription { [weak self] in
             guard let self else { return }
             self.outputHandlersLock.lock()
             self.outputHandlers.removeValue(forKey: id)

@@ -1,40 +1,138 @@
 import Foundation
 import ManiCore
 
-// The only place I/O happens. Owns the live ManagedPTY instances keyed by
-// JobPath, drives PersistenceStore, and dispatches actions back to the
+// The only place I/O happens. Owns the live TaskIO instances keyed by
+// TaskPath, drives PersistenceStore, and dispatches actions back to the
 // Store via the closure passed in.
 //
 // docs/architecture.md § "The effect runner".
 
 actor EffectRunner {
     private let persistence: PersistenceStore
-    private var ptys: [JobPath: ManagedPTY] = [:]
-    private var scrollbacks: [JobPath: ScrollbackWriter] = [:]
-    private var scrollbackSubscriptions: [JobPath: ManagedPTY.OutputSubscription] = [:]
+    private let host: ProcessHost
+    private var ptys: [TaskPath: TaskIO] = [:]
+    private var scrollbacks: [TaskPath: ScrollbackWriter] = [:]
+    private var scrollbackSubscriptions: [TaskPath: IOSubscription] = [:]
 
-    init(persistence: PersistenceStore) {
+    init(persistence: PersistenceStore, host: ProcessHost) {
         self.persistence = persistence
+        self.host = host
     }
 
     private var scrollbackRoot: URL {
         persistence.rootDir.appendingPathComponent("tasks")
     }
 
-    func pty(for path: JobPath) -> ManagedPTY? {
+    func pty(for path: TaskPath) -> TaskIO? {
         ptys[path]
     }
 
-    // Send SIGTERM to every live PTY. Used on graceful app quit so the
-    // forkpty children don't outlive Mani as orphans (init becomes their
-    // PPID, the master FD closes, and zsh/claude usually exit on the
-    // resulting SIGHUP — but actively SIGTERMing them is faster and
-    // deterministic). escalateAfter is short because macOS gives the
-    // app only ~1s during applicationWillTerminate before force-quit.
+    // Drive a size change through the attach PTY. The agent forwards
+    // the RESIZE frame to the inner PTY via TIOCSWINSZ.
+    func resize(path: TaskPath, rows: UInt16, cols: UInt16) async {
+        ptys[path]?.resize(rows: rows, cols: cols)
+    }
+
+    // On graceful app quit, do NOT terminate the host's agents — the
+    // whole point of detaching them is that processes outlive Mani.
+    // Closing our attach client is enough; the agent keeps running.
     func terminateAll() {
         for pty in ptys.values {
             let captured = pty
-            Task.detached { captured.terminate(escalateAfter: 0.3) }
+            _Concurrency.Task.detached {
+                if let agent = captured as? AgentClient { agent.close() }
+            }
+        }
+    }
+
+    // Bidirectional boot reconciliation. For every task we probe the
+    // host's view of aliveness and reconcile the reducer's runtime:
+    //   - .running  + agent alive   → attach pty (no event)
+    //   - .running  + agent gone    → dispatch .taskExited
+    //   - .exited   + agent alive   → dispatch .taskSpawned + attach
+    //                                  (process outlived Mani)
+    //   - .exited   + agent gone    → leave alone
+    //   - .neverStarted + agent alive → same as .exited + alive
+    //                                    (this covers tasks an older
+    //                                    Mani migration miscategorized
+    //                                    as never-started even though
+    //                                    they did have a process)
+    //   - .neverStarted + agent gone → leave alone (external claudes,
+    //                                  brand-new tasks awaiting spawn)
+    //   - .completed                 → leave alone (user intent)
+    //
+    // The exited/neverStarted → running flip is what makes "I quit
+    // Mani, the agent and its claude session stayed up, I relaunch,
+    // the task is recovered" actually work.
+    func reconcileRuntime(
+        state: AppState,
+        dispatch: @escaping (Action) async -> Void
+    ) async {
+        for project in state.projects {
+            for worktree in project.worktrees {
+                for task in worktree.tasks {
+                    let path = TaskPath(
+                        project: project.id, worktree: worktree.id, task: task.id
+                    )
+                    switch task.runtime {
+                    case .running:
+                        if await host.isAlive(taskId: task.id) {
+                            await attachAndWire(path: path, dispatch: dispatch)
+                        } else {
+                            await dispatch(.taskExited(
+                                at: path, when: Date(), code: -1
+                            ))
+                        }
+                    case .exited, .neverStarted:
+                        if await host.isAlive(taskId: task.id) {
+                            await dispatch(.taskSpawned(at: path, when: Date()))
+                            await attachAndWire(path: path, dispatch: dispatch)
+                        }
+                    case .completed:
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    // Open an attach handle to a live agent and wire its onExit /
+    // scrollback subscription the same way .spawn does. Used by
+    // boot reconciliation when we discover an existing agent and
+    // need the pty to be immediately available to the UI.
+    private func attachAndWire(
+        path: TaskPath,
+        dispatch: @escaping (Action) async -> Void
+    ) async {
+        if ptys[path] != nil { return }
+        do {
+            let pty = try await host.attach(taskId: path.task)
+            ptys[path] = pty
+            let runner = self
+            pty.onExit = { [weak pty] code in
+                _Concurrency.Task {
+                    let current = await runner.pty(for: path)
+                    if let pty, pty === current {
+                        await dispatch(.taskExited(
+                            at: path, when: Date(), code: code
+                        ))
+                    }
+                }
+            }
+            let scrollbackDir = scrollbackRoot
+                .appendingPathComponent(path.task.uuidString)
+            let scrollbackPath = scrollbackDir
+                .appendingPathComponent("scrollback.log").path
+            // Don't rotate on recovery — the existing log belongs to
+            // the same long-lived process we're reattaching to.
+            let writer = ScrollbackWriter(
+                path: scrollbackPath, capBytes: 32 * 1024 * 1024
+            )
+            let sub = pty.addOutputHandler { data in writer.append(data) }
+            scrollbacks[path] = writer
+            scrollbackSubscriptions[path] = sub
+        } catch {
+            NSLog("[mani] attachAndWire failed for \(path.task): \(error)")
         }
     }
 
@@ -47,100 +145,88 @@ actor EffectRunner {
             }
 
         case .writeSnapshot:
-            // The runner doesn't know AppState; the Store hands it to us
-            // explicitly via `compact(_:)`. Treating .writeSnapshot as a
-            // no-op here keeps the effect→runner protocol clean.
             break
 
-        case let .spawn(path, index, spec):
+        case let .spawn(path, spec):
             do {
-                var env = ProcessInfo.processInfo.environment
-                for (k, v) in spec.env { env[k] = v }
-                env["TERM"] = "xterm-256color"
-                env["COLORTERM"] = "truecolor"
-                // Terminal.app and iTerm advertise themselves via TERM_PROGRAM;
-                // some TUIs (claude code's UI library among them) gate
-                // full-repaint-on-resize on the presence of a recognized value.
-                // Setting it lets claude believe it's in a smart terminal.
-                // Pose as ghostty so TUIs that special-case ghostty's
-                // capabilities (claude code's full-redraw-on-SIGWINCH path
-                // among them) take that branch. The renderer IS libghostty,
-                // so this isn't a lie — just an honest advertisement.
-                env["TERM_PROGRAM"] = "ghostty"
-                // Strip env vars that leak in from whichever shell launched
-                // Mani (e.g. Terminal.app via `open`). A stale TERM_SESSION_ID
-                // or TERM_PROGRAM_VERSION from another terminal confuses TUIs
-                // that key off them.
-                for k in ["TERM_PROGRAM_VERSION", "TERM_SESSION_ID",
-                          "ITERM_SESSION_ID", "ITERM_PROFILE",
-                          "LC_TERMINAL", "LC_TERMINAL_VERSION"] {
-                    env.removeValue(forKey: k)
+                try await host.ensureReady()
+                // Drop any prior attach client for this path before we
+                // touch the agent on disk — its onExit (when the agent
+                // socket goes away) must not race against the new pty
+                // we're about to install.
+                if let prev = ptys[path] {
+                    if let agent = prev as? AgentClient { agent.close() }
+                    ptys[path] = nil
                 }
-                // App-launched processes inherit a stripped PATH from launchd
-                // that doesn't include user-installed binary directories, so
-                // `env claude` (and any other tool not in /usr/bin) fails with
-                // ENOENT. Prepend the conventional user bin paths.
-                let homeBin = "\(NSHomeDirectory())/.local/bin"
-                let extraPath = "\(homeBin):/opt/homebrew/bin:/usr/local/bin"
-                let existing = env["PATH"] ?? "/usr/bin:/bin"
-                env["PATH"] = "\(extraPath):\(existing)"
-                let pty = try ManagedPTY(
-                    executable: spec.command,
-                    args: spec.args,
-                    env: env,
-                    cwd: spec.cwd.path,
-                    rawMode: false
-                )
+                // Always start from "no agent on disk" so spawn semantics
+                // are unambiguous. If there's a live agent for this id,
+                // terminate it and wait for the socket to disappear
+                // before launching the replacement. This makes Restart
+                // robust against the race where the old agent is still
+                // tearing down when the new spawn starts.
+                if await host.isAlive(taskId: path.task) {
+                    try? await host.terminate(taskId: path.task)
+                    let killBy = Date().addingTimeInterval(2.0)
+                    while await host.isAlive(taskId: path.task) {
+                        if Date() > killBy { break }
+                        try? await _Concurrency.Task.sleep(nanoseconds: 25_000_000)
+                    }
+                }
+                try await host.spawn(taskId: path.task, spec: spec)
+                let pty = try await host.attach(taskId: path.task)
                 ptys[path] = pty
-                pty.onExit = { code in
-                    Task { await dispatch(.processExited(at: path, index: index, code: code)) }
-                }
+                await dispatch(.taskSpawned(at: path, when: Date()))
 
-                // Synthetic-typing path: when a job spec carries an initialInput
-                // (e.g. a claude job that spawns zsh and injects "claude\r"),
-                // write it after a delay so the shell has finished sourcing
-                // ~/.zshrc and rendering the first prompt. Mirrors the user's
-                // manual flow of typing into a settled prompt — required for
-                // claude's TUI to reflow on SIGWINCH.
-                if let input = spec.initialInput, !input.isEmpty {
-                    let bytes = Data(input.utf8)
-                    let captured = pty
-                    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.8) { [captured, bytes] in
-                        captured.write(bytes)
+                let runner = self
+                pty.onExit = { [weak pty] code in
+                    _Concurrency.Task {
+                        let current = await runner.pty(for: path)
+                        if let pty, pty === current {
+                            await dispatch(.taskExited(
+                                at: path, when: Date(), code: code
+                            ))
+                        }
                     }
                 }
 
-                // Tier 1 scrollback: tee the same byte stream the renderer uses
-                // into ~/Library/Application Support/Mani/tasks/<job-id>/scrollback.log.
-                // On Restart, rotate the existing log to scrollback-<unix>.log so
-                // the new session's bytes don't bleed into the old one's history.
+                // Tier 1 scrollback: tee the same byte stream the renderer
+                // uses into tasks/<task-id>/scrollback.log. On Restart,
+                // rotate the existing log so old session bytes don't
+                // bleed into the new session's history.
                 let scrollbackDir = scrollbackRoot
-                    .appendingPathComponent(path.job.uuidString)
+                    .appendingPathComponent(path.task.uuidString)
                 let scrollbackPath = scrollbackDir
                     .appendingPathComponent("scrollback.log").path
                 if FileManager.default.fileExists(atPath: scrollbackPath) {
                     let stamp = Int(Date().timeIntervalSince1970)
                     let archived = scrollbackDir
                         .appendingPathComponent("scrollback-\(stamp).log").path
-                    _ = try? FileManager.default.moveItem(atPath: scrollbackPath, toPath: archived)
+                    _ = try? FileManager.default.moveItem(
+                        atPath: scrollbackPath, toPath: archived
+                    )
                 }
-                let writer = ScrollbackWriter(path: scrollbackPath, capBytes: 32 * 1024 * 1024)
+                let writer = ScrollbackWriter(
+                    path: scrollbackPath, capBytes: 32 * 1024 * 1024
+                )
                 let sub = pty.addOutputHandler { data in writer.append(data) }
                 scrollbacks[path] = writer
                 scrollbackSubscriptions[path] = sub
-
-                await dispatch(.processStarted(at: path, index: index, pid: pty.pid))
             } catch {
-                await dispatch(.processExited(at: path, index: index, code: -1))
+                NSLog("[mani] host.spawn failed for \(path.task): \(error)")
+                await dispatch(.taskExited(at: path, when: Date(), code: -1))
             }
 
-        case let .terminate(pid, escalate):
-            // Find the PTY by pid. ManagedPTY.terminate blocks until the child
-            // has been reaped, so wrap in Task.detached to avoid wedging the actor.
-            for pty in ptys.values where pty.pid == pid {
-                let captured = pty
-                Task.detached { captured.terminate(escalateAfter: escalate) }
-                break
+        case let .terminate(at):
+            if let pty = ptys[at] {
+                if let agent = pty as? AgentClient { agent.close() }
+                ptys[at] = nil
+            }
+            scrollbackSubscriptions[at] = nil
+            scrollbacks[at] = nil
+            let hostRef = host
+            let taskId = at.task
+            _Concurrency.Task.detached {
+                try? await hostRef.terminate(taskId: taskId)
             }
 
         case let .userNotification(title, body):
@@ -155,22 +241,16 @@ actor EffectRunner {
             )
 
         case .archive, .watchClaudeProjects:
-            // Not implemented yet; archive = task completion → compress &
-            // rotate scrollback. watchClaudeProjects is a hint for the
-            // ClaudeWatcher service which is started directly from ManiApp.
             break
         }
     }
 
-    // Returns nothing; caller pattern is fire-and-forget. Errors are NSLog'd.
     private static func runGitWorktreeAdd(
         repoRoot: URL,
         branch: String,
         path: URL,
         baseRef: String?
     ) async {
-        // Prune stale metadata first so a previously-deleted same-path worktree
-        // doesn't block this add. See docs/git-worktree.md case 3.
         _ = await runGit(args: ["worktree", "prune"], cwd: repoRoot)
 
         var addArgs = ["worktree", "add", path.path]
@@ -185,11 +265,11 @@ actor EffectRunner {
             return
         }
 
-        // If the new worktree contains submodules, init them so the user gets
-        // a usable checkout. See docs/git-worktree.md case 5.
         let gitmodules = path.appendingPathComponent(".gitmodules")
         if FileManager.default.fileExists(atPath: gitmodules.path) {
-            _ = await runGit(args: ["submodule", "update", "--init", "--recursive"], cwd: path)
+            _ = await runGit(
+                args: ["submodule", "update", "--init", "--recursive"], cwd: path
+            )
         }
     }
 

@@ -29,13 +29,13 @@ final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewD
     private let terminalView: GhosttyTerminal.TerminalView
     private let controller: TerminalController
     // PTY output subscription is OWNED by the renderer (not the SwiftUI
-    // Coordinator) so that re-mounting TerminalPane on the same JobPath
+    // Coordinator) so that re-mounting TerminalPane on the same TaskPath
     // — which happens any time the user navigates away and back — does
     // not stack additional subscribers on the same PTY. Setting a new
     // value drops the previous one, whose deinit cancels the kernel-side
     // handler registration. See TerminalRendererCache for the caching
     // story this enables.
-    private var outputSub: ManagedPTY.OutputSubscription?
+    private var outputSub: IOSubscription?
     // True iff this renderer has already been wired to a PTY at least
     // once. First-attach gets the captured-output replay (so the
     // initial banner / spawn output isn't lost during the brief polling
@@ -88,9 +88,18 @@ final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewD
     // cancels the previous registration via its deinit — no risk of
     // duplicate feeds when a fresh Coordinator attaches to a cached
     // renderer instance.
-    func attachToPTY(_ pty: ManagedPTY) {
+    func attachToPTY(_ pty: TaskIO) {
         let replay = !hasEverAttached
-        outputSub = pty.addOutputHandler(replayCaptured: replay) { [weak self] data in
+        attachToPTY(pty, replayCaptured: replay)
+    }
+
+    // Same as attachToPTY but force the captured-replay decision. The
+    // Coordinator uses this when it has just pre-fed the on-disk
+    // scrollback log: disk content already covers everything the
+    // AgentClient has captured this attach, so a captured-replay
+    // would duplicate what's on screen.
+    func attachToPTY(_ pty: TaskIO, replayCaptured: Bool) {
+        outputSub = pty.addOutputHandler(replayCaptured: replayCaptured) { [weak self] data in
             DispatchQueue.main.async { self?.feed(data) }
         }
         hasEverAttached = true

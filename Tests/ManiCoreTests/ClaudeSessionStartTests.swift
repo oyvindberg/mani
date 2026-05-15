@@ -20,21 +20,21 @@ final class ClaudeSessionStartTests: XCTestCase {
         )
     }
 
-    // MARK: - resume retargets the most-recently-created mismatched job
+    // MARK: - resume retargets the most-recently-created mismatched task
 
-    func test_route_resume_retargetsMatchingWorktreeJob() {
+    func test_route_resume_retargetsMatchingWorktreeTask() {
         let oldSid = "old-session-id"
         let newSid = "new-session-id"
         let projectId = UUID()
         let worktreeId = UUID()
-        let jobId = UUID()
+        let taskId = UUID()
         let wtPath = URL(fileURLWithPath: "/Users/me/wt")
         let state = stateWith(
             projectId: projectId,
             worktreeId: worktreeId,
             worktreePath: wtPath,
-            jobs: [
-                claudeJob(id: jobId, sid: oldSid, createdAt: Date())
+            tasks: [
+                claudeTask(id: taskId, sid: oldSid, createdAt: Date())
             ]
         )
         let payload = SessionStartPayload(
@@ -54,19 +54,19 @@ final class ClaudeSessionStartTests: XCTestCase {
         XCTAssertEqual(sid, newSid)
         XCTAssertEqual(at.project, projectId)
         XCTAssertEqual(at.worktree, worktreeId)
-        XCTAssertEqual(at.job, jobId)
+        XCTAssertEqual(at.task, taskId)
     }
 
     func test_route_resume_withMultipleMismatches_picksMostRecent() {
         let projectId = UUID()
         let worktreeId = UUID()
-        let oldJob = claudeJob(id: UUID(), sid: "old-1", createdAt: Date(timeIntervalSinceReferenceDate: 1_000))
-        let newJob = claudeJob(id: UUID(), sid: "old-2", createdAt: Date(timeIntervalSinceReferenceDate: 9_000))
+        let oldTask = claudeTask(id: UUID(), sid: "old-1", createdAt: Date(timeIntervalSinceReferenceDate: 1_000))
+        let newTask = claudeTask(id: UUID(), sid: "old-2", createdAt: Date(timeIntervalSinceReferenceDate: 9_000))
         let state = stateWith(
             projectId: projectId,
             worktreeId: worktreeId,
             worktreePath: URL(fileURLWithPath: "/wt"),
-            jobs: [oldJob, newJob]
+            tasks: [oldTask, newTask]
         )
         let payload = SessionStartPayload(
             sessionId: "new", cwd: "/wt", transcriptPath: nil, source: .resume
@@ -79,17 +79,17 @@ final class ClaudeSessionStartTests: XCTestCase {
         guard case let .linkClaudeSession(at, _) = action else {
             return XCTFail("expected linkClaudeSession")
         }
-        XCTAssertEqual(at.job, newJob.id)
+        XCTAssertEqual(at.task, newTask.id)
     }
 
     // MARK: - clear / compact route like resume
 
     func test_route_clear_retargets() {
-        let job = claudeJob(id: UUID(), sid: "old", createdAt: Date())
+        let task = claudeTask(id: UUID(), sid: "old", createdAt: Date())
         let state = stateWith(
             projectId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt"),
-            jobs: [job]
+            tasks: [task]
         )
         let payload = SessionStartPayload(
             sessionId: "new", cwd: "/wt", transcriptPath: nil, source: .clear
@@ -105,11 +105,11 @@ final class ClaudeSessionStartTests: XCTestCase {
     }
 
     func test_route_compact_retargets() {
-        let job = claudeJob(id: UUID(), sid: "old", createdAt: Date())
+        let task = claudeTask(id: UUID(), sid: "old", createdAt: Date())
         let state = stateWith(
             projectId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt"),
-            jobs: [job]
+            tasks: [task]
         )
         let payload = SessionStartPayload(
             sessionId: "new", cwd: "/wt", transcriptPath: nil, source: .compact
@@ -133,7 +133,7 @@ final class ClaudeSessionStartTests: XCTestCase {
         let state = stateWith(
             projectId: projectId, worktreeId: worktreeId,
             worktreePath: URL(fileURLWithPath: "/wt"),
-            jobs: [claudeJob(id: unlinkedId, sid: nil, createdAt: Date())]
+            tasks: [claudeTask(id: unlinkedId, sid: nil, createdAt: Date())]
         )
         let payload = SessionStartPayload(
             sessionId: "fresh", cwd: "/wt", transcriptPath: nil, source: .startup
@@ -146,7 +146,7 @@ final class ClaudeSessionStartTests: XCTestCase {
         guard case let .linkClaudeSession(at, sid) = action else {
             return XCTFail("expected linkClaudeSession for startup")
         }
-        XCTAssertEqual(at.job, unlinkedId)
+        XCTAssertEqual(at.task, unlinkedId)
         XCTAssertEqual(sid, "fresh")
     }
 
@@ -154,7 +154,7 @@ final class ClaudeSessionStartTests: XCTestCase {
         let state = stateWith(
             projectId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt"),
-            jobs: [] // no claude jobs
+            tasks: []
         )
         let payload = SessionStartPayload(
             sessionId: "fresh", cwd: "/wt", transcriptPath: nil, source: .startup
@@ -173,12 +173,12 @@ final class ClaudeSessionStartTests: XCTestCase {
 
     // MARK: - fork always creates a sibling
 
-    func test_route_fork_createsSibling_evenWhenExistingClaudeJobExists() {
-        let existing = claudeJob(id: UUID(), sid: "original", createdAt: Date())
+    func test_route_fork_createsSibling_evenWhenExistingClaudeTaskExists() {
+        let existing = claudeTask(id: UUID(), sid: "original", createdAt: Date())
         let state = stateWith(
             projectId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt"),
-            jobs: [existing]
+            tasks: [existing]
         )
         let payload = SessionStartPayload(
             sessionId: "forked", cwd: "/wt", transcriptPath: nil, source: .fork
@@ -198,11 +198,11 @@ final class ClaudeSessionStartTests: XCTestCase {
 
     func test_route_alreadyTrackedSid_returnsNil() {
         let sid = "live"
-        let job = claudeJob(id: UUID(), sid: sid, createdAt: Date())
+        let task = claudeTask(id: UUID(), sid: sid, createdAt: Date())
         let state = stateWith(
             projectId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt"),
-            jobs: [job]
+            tasks: [task]
         )
         let payload = SessionStartPayload(
             sessionId: sid, cwd: "/wt", transcriptPath: nil, source: .resume
@@ -221,7 +221,7 @@ final class ClaudeSessionStartTests: XCTestCase {
         let state = stateWith(
             projectId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt-a"),
-            jobs: [claudeJob(id: UUID(), sid: "old", createdAt: Date())]
+            tasks: [claudeTask(id: UUID(), sid: "old", createdAt: Date())]
         )
         let payload = SessionStartPayload(
             sessionId: "new", cwd: "/somewhere/else", transcriptPath: nil, source: .resume
@@ -239,7 +239,7 @@ final class ClaudeSessionStartTests: XCTestCase {
         let state = stateWith(
             projectId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: homePath),
-            jobs: [claudeJob(id: UUID(), sid: "old", createdAt: Date())]
+            tasks: [claudeTask(id: UUID(), sid: "old", createdAt: Date())]
         )
         let payload = SessionStartPayload(
             sessionId: "new",
@@ -259,7 +259,7 @@ final class ClaudeSessionStartTests: XCTestCase {
         let state = stateWith(
             projectId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt"),
-            jobs: [claudeJob(id: UUID(), sid: "old", createdAt: Date())]
+            tasks: [claudeTask(id: UUID(), sid: "old", createdAt: Date())]
         )
         let payload = SessionStartPayload(
             sessionId: "new", cwd: nil, transcriptPath: nil, source: .resume
@@ -278,21 +278,21 @@ final class ClaudeSessionStartTests: XCTestCase {
         projectId: UUID,
         worktreeId: UUID,
         worktreePath: URL,
-        jobs: [Job]
+        tasks: [Task]
     ) -> AppState {
         AppState(
-            schemaVersion: 1,
+            schemaVersion: 2,
             projects: [
                 Project(
                     id: projectId, name: "p", color: "#000",
                     enabled: true,
+                    rootDir: worktreePath,
                     worktrees: [
                         Worktree(
-                            id: worktreeId, name: "wt",
+                            id: worktreeId,
                             path: worktreePath, kind: .folder,
                             enabled: true, missing: false,
-                            jobs: jobs, createdAt: Date(),
-                            primary: false
+                            tasks: tasks, createdAt: Date()
                         )
                     ],
                     createdAt: Date(),
@@ -306,23 +306,25 @@ final class ClaudeSessionStartTests: XCTestCase {
                 terminalFontFamily: "",
                 terminalFontSize: 13,
                 claudeInvocation: "claude"
-            )
+            ),
+            selectedTaskPath: nil
         )
     }
 
-    private func claudeJob(id: UUID, sid: String?, createdAt: Date) -> Job {
-        Job(
+    private func claudeTask(id: UUID, sid: String?, createdAt: Date) -> Task {
+        Task(
             id: id, name: "claude",
             kind: .claude(sessionId: sid),
-            enabled: true, status: .running,
-            primary: ProcessSpec(
+            enabled: true,
+            spec: ProcessSpec(
                 command: "/bin/zsh", args: ["-l"], env: [:],
                 cwd: URL(fileURLWithPath: "/wt"),
-                pid: 100, initialInput: "claude\r", restartPolicy: .never
+                initialInput: "claude\r"
             ),
-            auxiliary: [],
+            runtime: .running(spawnedAt: createdAt),
             unread: 0,
             createdAt: createdAt,
-            completedAt: nil, renamed: false        )
+            renamed: false
+        )
     }
 }

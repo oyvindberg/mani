@@ -9,7 +9,8 @@ final class ReducerTests: XCTestCase {
         let state = AppState.empty
         let action = Action.createProject(
             name: "atlas",
-            color: "#ff5500"
+            color: "#ff5500",
+            rootDir: URL(fileURLWithPath: "/Users/me/atlas")
         )
 
         let (events, effects) = reduce(state, action)
@@ -22,7 +23,9 @@ final class ReducerTests: XCTestCase {
         XCTAssertEqual(project.name, "atlas")
         XCTAssertEqual(project.color, "#ff5500")
         XCTAssertTrue(project.enabled)
-        XCTAssertTrue(project.worktrees.isEmpty)
+        XCTAssertEqual(project.rootDir.path, "/Users/me/atlas")
+        XCTAssertEqual(project.worktrees.count, 1)
+        XCTAssertEqual(project.worktrees[0].path.path, "/Users/me/atlas")
     }
 
     func test_apply_projectCreated_appendsToState() {
@@ -60,17 +63,18 @@ final class ReducerTests: XCTestCase {
 
     func test_setProjectEnabled_disabled_cascadesTerminations() {
         let projectId = UUID()
+        let taskId = UUID()
         var state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: UUID(), jobs: [
-                    makeJob(id: UUID(), primaryPid: 12345, auxPids: [12346])
+                makeWorktree(id: UUID(), tasks: [
+                    makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
 
         let (events, effects) = reduce(state, .setProjectEnabled(id: projectId, enabled: false))
 
-        XCTAssertEqual(Set(terminatedPids(in: effects)), [12345, 12346])
+        XCTAssertEqual(Set(terminatedTaskIds(in: effects)), [taskId])
         for e in events { apply(&state, e) }
         XCTAssertFalse(state.projects[0].enabled)
     }
@@ -86,10 +90,13 @@ final class ReducerTests: XCTestCase {
 
     func test_deleteProject_cascadesTerminationsAndRemovesProject() {
         let projectId = UUID()
+        let t1 = UUID()
+        let t2 = UUID()
         var state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: UUID(), jobs: [
-                    makeJob(id: UUID(), primaryPid: 7, auxPids: [8, 9])
+                makeWorktree(id: UUID(), tasks: [
+                    makeTask(id: t1, runtime: .running(spawnedAt: Date())),
+                    makeTask(id: t2, runtime: .exited(at: Date(), code: 0)),
                 ])
             ])
         ])
@@ -97,7 +104,9 @@ final class ReducerTests: XCTestCase {
         let (events, effects) = reduce(state, .deleteProject(id: projectId))
 
         XCTAssertEqual(events, [.projectDeleted(id: projectId)])
-        XCTAssertEqual(Set(terminatedPids(in: effects)), [7, 8, 9])
+        // terminate fires for all tasks; host resolves whether anything's
+        // actually alive. Reducer doesn't filter on runtime.
+        XCTAssertEqual(Set(terminatedTaskIds(in: effects)), [t1, t2])
         for e in events { apply(&state, e) }
         XCTAssertTrue(state.projects.isEmpty)
     }
@@ -117,7 +126,6 @@ final class ReducerTests: XCTestCase {
 
         let (events, effects) = reduce(state, .createWorktree(
             projectId: projectId,
-            name: "main",
             kind: .folder,
             path: URL(fileURLWithPath: "/wt/main")
         ))
@@ -126,23 +134,19 @@ final class ReducerTests: XCTestCase {
         XCTAssertEqual(effects.count, 1)
         for e in events { apply(&state, e) }
         XCTAssertEqual(state.projects[0].worktrees.count, 1)
-        XCTAssertEqual(state.projects[0].worktrees[0].name, "main")
+        XCTAssertEqual(state.projects[0].worktrees[0].path.lastPathComponent, "main")
         XCTAssertEqual(state.projects[0].worktrees[0].kind, .folder)
         XCTAssertFalse(state.projects[0].worktrees[0].missing)
     }
 
-    func test_createWorktree_git_withPrimary_emitsCreateGitWorktreeFromPrimary() {
+    func test_createWorktree_git_usesProjectRootDirAsRepoRoot() {
         let projectId = UUID()
-        var primary = makeWorktree(id: UUID(), jobs: [])
-        primary.primary = true
-        primary.path = URL(fileURLWithPath: "/wt/main")
         let state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [primary])
+            makeProject(id: projectId, worktrees: [])
         ])
 
         let (_, effects) = reduce(state, .createWorktree(
             projectId: projectId,
-            name: "feat",
             kind: .git(branch: "feat/auth", baseRef: "main"),
             path: URL(fileURLWithPath: "/wt/feat")
         ))
@@ -161,33 +165,10 @@ final class ReducerTests: XCTestCase {
         XCTAssertEqual(baseRef, "main")
     }
 
-    func test_createWorktree_git_withoutPrimary_skipsEffect() {
-        // When the project has no primary worktree yet (e.g. user is
-        // adding their very first worktree as a `.git` kind), we can't
-        // know which repo to `git worktree add` from, so the effect is
-        // skipped. The worktree row still appears in state — the user
-        // has to populate the directory themselves.
-        let projectId = UUID()
-        let state = stateWith(projects: [makeProject(id: projectId, worktrees: [])])
-
-        let (_, effects) = reduce(state, .createWorktree(
-            projectId: projectId,
-            name: "feat",
-            kind: .git(branch: "feat/auth", baseRef: "main"),
-            path: URL(fileURLWithPath: "/wt/feat")
-        ))
-
-        XCTAssertFalse(effects.contains(where: { effect in
-            if case .createGitWorktree = effect { return true }
-            return false
-        }))
-    }
-
     func test_createWorktree_unknownProject_isNoop() {
         let state = AppState.empty
         let (events, effects) = reduce(state, .createWorktree(
             projectId: UUID(),
-            name: "main",
             kind: .folder,
             path: URL(fileURLWithPath: "/wt/main")
         ))
@@ -200,10 +181,11 @@ final class ReducerTests: XCTestCase {
     func test_setWorktreeEnabled_disabled_cascadesTerminations() {
         let projectId = UUID()
         let worktreeId = UUID()
+        let taskId = UUID()
         var state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [
-                    makeJob(id: UUID(), primaryPid: 100, auxPids: [101])
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
@@ -211,7 +193,7 @@ final class ReducerTests: XCTestCase {
 
         let (events, effects) = reduce(state, .setWorktreeEnabled(at: path, enabled: false))
 
-        XCTAssertEqual(Set(terminatedPids(in: effects)), [100, 101])
+        XCTAssertEqual(terminatedTaskIds(in: effects), [taskId])
         for e in events { apply(&state, e) }
         XCTAssertFalse(state.projects[0].worktrees[0].enabled)
     }
@@ -231,7 +213,7 @@ final class ReducerTests: XCTestCase {
         let worktreeId = UUID()
         var state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [])
+                makeWorktree(id: worktreeId, tasks: [])
             ])
         ])
         let path = WorktreePath(project: projectId, worktree: worktreeId)
@@ -248,10 +230,11 @@ final class ReducerTests: XCTestCase {
     func test_deleteWorktree_cascadesTerminationsAndRemoves() {
         let projectId = UUID()
         let worktreeId = UUID()
+        let taskId = UUID()
         var state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [
-                    makeJob(id: UUID(), primaryPid: 200, auxPids: [])
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
@@ -260,130 +243,172 @@ final class ReducerTests: XCTestCase {
         let (events, effects) = reduce(state, .deleteWorktree(at: path))
 
         XCTAssertEqual(events, [.worktreeDeleted(at: path)])
-        XCTAssertEqual(terminatedPids(in: effects), [200])
+        XCTAssertEqual(terminatedTaskIds(in: effects), [taskId])
         for e in events { apply(&state, e) }
         XCTAssertTrue(state.projects[0].worktrees.isEmpty)
     }
 
-    // MARK: - createJob
+    // MARK: - createTask
 
-    func test_createJob_emitsSpawnForPrimaryAndAuxiliary() {
+    func test_createTask_emitsTaskCreatedSpawnAndAutoSelection() {
         let projectId = UUID()
         let worktreeId = UUID()
-        let state = stateWith(projects: [
+        var state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [])
+                makeWorktree(id: worktreeId, tasks: [])
             ])
         ])
         let path = WorktreePath(project: projectId, worktree: worktreeId)
-        let primary = ProcessSpec(
-            command: "/bin/zsh",
-            args: [],
-            env: [:],
+        let spec = ProcessSpec(
+            command: "/bin/zsh", args: [], env: [:],
             cwd: URL(fileURLWithPath: "/wt"),
-            pid: nil,
-            initialInput: nil, restartPolicy: .never)
-        let aux = ProcessSpec(
-            command: "/usr/bin/dev",
-            args: ["server"],
-            env: [:],
-            cwd: URL(fileURLWithPath: "/wt"),
-            pid: nil,
-            initialInput: nil, restartPolicy: .never)
+            initialInput: nil
+        )
 
-        let (events, effects) = reduce(state, .createJob(
-            at: path, name: "shell", kind: .shell,
-            primary: primary, auxiliary: [aux]
+        let (events, effects) = reduce(state, .createTask(
+            at: path, name: "shell", kind: .shell, spec: spec, autoSelect: true
         ))
 
-        guard case let .jobCreated(receivedPath, job) = events.first else {
-            return XCTFail("expected jobCreated event")
+        guard case let .taskCreated(receivedPath, task) = events.first else {
+            return XCTFail("expected taskCreated event")
         }
         XCTAssertEqual(receivedPath, path)
-        XCTAssertEqual(job.name, "shell")
-        XCTAssertEqual(job.status, .running)
-        XCTAssertTrue(job.enabled)
+        XCTAssertEqual(task.name, "shell")
+        XCTAssertTrue(task.enabled)
+        if case .running = task.runtime { /* expected */ } else {
+            XCTFail("expected runtime to be .running on fresh task, got \(task.runtime)")
+        }
 
-        let spawnIndices = effects.compactMap { effect -> Int? in
-            if case let .spawn(_, index, _) = effect { return index }
+        // Second event is the auto-selection — that's why the user
+        // sees the new task immediately on creation.
+        let expectedPath = TaskPath(project: projectId, worktree: worktreeId, task: task.id)
+        XCTAssertEqual(events.count, 2)
+        if case let .taskSelectionChanged(p) = events[1] {
+            XCTAssertEqual(p, expectedPath)
+        } else {
+            XCTFail("expected taskSelectionChanged as 2nd event, got \(events[1])")
+        }
+
+        // Exactly one spawn for the new task UUID.
+        let spawnIds = effects.compactMap { effect -> UUID? in
+            if case let .spawn(p, _) = effect { return p.task }
             return nil
         }
-        XCTAssertEqual(spawnIndices, [0, 1])
+        XCTAssertEqual(spawnIds, [task.id])
+
+        for e in events { apply(&state, e) }
+        XCTAssertEqual(state.projects[0].worktrees[0].tasks.count, 1)
+        XCTAssertEqual(state.projects[0].worktrees[0].tasks[0].id, task.id)
+        XCTAssertEqual(state.selectedTaskPath, expectedPath)
     }
 
-    func test_createJob_unknownWorktree_isNoop() {
+    func test_createTask_unknownWorktree_isNoop() {
         let state = AppState.empty
         let path = WorktreePath(project: UUID(), worktree: UUID())
         let spec = ProcessSpec(
             command: "/bin/zsh", args: [], env: [:],
-            cwd: URL(fileURLWithPath: "/p"), pid: nil,
-            initialInput: nil, restartPolicy: .never)
-        let (events, effects) = reduce(state, .createJob(
-            at: path, name: "x", kind: .shell, primary: spec, auxiliary: []
+            cwd: URL(fileURLWithPath: "/p"),
+            initialInput: nil
+        )
+        let (events, effects) = reduce(state, .createTask(
+            at: path, name: "x", kind: .shell, spec: spec, autoSelect: true
         ))
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(effects.isEmpty)
     }
 
-    // MARK: - setJobEnabled
-
-    func test_setJobEnabled_disabled_cascadesTerminations() {
+    func test_createTask_autoSelectFalse_doesNotChangeSelection() {
         let projectId = UUID()
         let worktreeId = UUID()
-        let jobId = UUID()
+        let priorSelected = TaskPath(
+            project: projectId, worktree: worktreeId, task: UUID()
+        )
+        let state = stateWith(
+            projects: [
+                makeProject(id: projectId, worktrees: [
+                    makeWorktree(id: worktreeId, tasks: [
+                        makeTask(id: priorSelected.task, runtime: .running(spawnedAt: Date()))
+                    ])
+                ])
+            ],
+            selectedTaskPath: priorSelected
+        )
+        let path = WorktreePath(project: projectId, worktree: worktreeId)
+        let spec = ProcessSpec(
+            command: "/bin/zsh", args: [], env: [:],
+            cwd: URL(fileURLWithPath: "/p"),
+            initialInput: nil
+        )
+
+        let (events, _) = reduce(state, .createTask(
+            at: path, name: "diff", kind: .diff, spec: spec, autoSelect: false
+        ))
+
+        XCTAssertEqual(events.count, 1, "no selection event when autoSelect=false")
+        guard case .taskCreated = events.first else {
+            return XCTFail("expected only taskCreated")
+        }
+    }
+
+    // MARK: - setTaskEnabled
+
+    func test_setTaskEnabled_disabled_emitsTerminate() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let taskId = UUID()
         var state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [
-                    makeJob(id: jobId, primaryPid: 555, auxPids: [556])
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
 
-        let (events, effects) = reduce(state, .setJobEnabled(at: path, enabled: false))
+        let (events, effects) = reduce(state, .setTaskEnabled(at: path, enabled: false))
 
-        XCTAssertEqual(Set(terminatedPids(in: effects)), [555, 556])
+        XCTAssertEqual(terminatedTaskIds(in: effects), [taskId])
         for e in events { apply(&state, e) }
-        XCTAssertFalse(state.projects[0].worktrees[0].jobs[0].enabled)
+        XCTAssertFalse(state.projects[0].worktrees[0].tasks[0].enabled)
     }
 
     // MARK: - linkClaudeSession
 
-    func test_linkClaudeSession_claudeJob_appliesSessionId() {
+    func test_linkClaudeSession_claudeTask_appliesSessionId() {
         let projectId = UUID()
         let worktreeId = UUID()
-        let jobId = UUID()
+        let taskId = UUID()
         var state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [
-                    makeJob(id: jobId, kind: .claude(sessionId: nil), primaryPid: nil, auxPids: [])
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, kind: .claude(sessionId: nil), runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
 
         let (events, _) = reduce(state, .linkClaudeSession(at: path, sessionId: "abc123"))
 
         XCTAssertEqual(events, [.claudeSessionLinked(at: path, sessionId: "abc123")])
         for e in events { apply(&state, e) }
-        guard case let .claude(sessionId) = state.projects[0].worktrees[0].jobs[0].kind else {
+        guard case let .claude(sessionId) = state.projects[0].worktrees[0].tasks[0].kind else {
             return XCTFail("expected claude kind")
         }
         XCTAssertEqual(sessionId, "abc123")
     }
 
-    func test_linkClaudeSession_shellJob_isNoop() {
+    func test_linkClaudeSession_shellTask_isNoop() {
         let projectId = UUID()
         let worktreeId = UUID()
-        let jobId = UUID()
+        let taskId = UUID()
         let state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [
-                    makeJob(id: jobId, primaryPid: nil, auxPids: [])
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, runtime: .neverStarted)
                 ])
             ])
         ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
 
         let (events, effects) = reduce(state, .linkClaudeSession(at: path, sessionId: "x"))
 
@@ -391,292 +416,521 @@ final class ReducerTests: XCTestCase {
         XCTAssertTrue(effects.isEmpty)
     }
 
-    // MARK: - completeJob
+    // MARK: - completeTask
 
-    func test_completeJob_setsStatusAndCompletedAtAndCascades() {
+    func test_completeTask_setsRuntimeToCompletedAndTerminates() {
         let projectId = UUID()
         let worktreeId = UUID()
-        let jobId = UUID()
+        let taskId = UUID()
         var state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [
-                    makeJob(id: jobId, primaryPid: 999, auxPids: [])
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
 
-        let (events, effects) = reduce(state, .completeJob(at: path))
+        let (events, effects) = reduce(state, .completeTask(at: path))
 
-        guard case let .jobCompleted(receivedPath, completedAt) = events.first else {
-            return XCTFail("expected jobCompleted event")
+        guard case let .taskCompleted(receivedPath, completedAt) = events.first else {
+            return XCTFail("expected taskCompleted event")
         }
         XCTAssertEqual(receivedPath, path)
-        XCTAssertEqual(terminatedPids(in: effects), [999])
+        XCTAssertEqual(terminatedTaskIds(in: effects), [taskId])
 
         for e in events { apply(&state, e) }
-        XCTAssertEqual(state.projects[0].worktrees[0].jobs[0].status, .completed)
-        XCTAssertEqual(state.projects[0].worktrees[0].jobs[0].completedAt, completedAt)
+        if case let .completed(when) = state.projects[0].worktrees[0].tasks[0].runtime {
+            XCTAssertEqual(when, completedAt)
+        } else {
+            XCTFail("expected runtime = .completed")
+        }
     }
 
-    // MARK: - processStarted / processExited
+    // MARK: - taskSpawned / taskExited
 
-    func test_processStarted_setsPidOnPrimary() {
+    func test_taskSpawned_setsRunningRuntime() {
         let projectId = UUID()
         let worktreeId = UUID()
-        let jobId = UUID()
+        let taskId = UUID()
         var state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [
-                    makeJob(id: jobId, primaryPid: nil, auxPids: [])
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, runtime: .exited(at: Date(), code: 1))
                 ])
             ])
         ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let now = Date()
 
-        let (events, _) = reduce(state, .processStarted(at: path, index: 0, pid: 4242))
+        let (events, _) = reduce(state, .taskSpawned(at: path, when: now))
         for e in events { apply(&state, e) }
 
-        XCTAssertEqual(state.projects[0].worktrees[0].jobs[0].primary.pid, 4242)
+        if case let .running(when) = state.projects[0].worktrees[0].tasks[0].runtime {
+            XCTAssertEqual(when, now)
+        } else {
+            XCTFail("expected runtime = .running")
+        }
     }
 
-    func test_processStarted_setsPidOnAuxiliary() {
+    func test_taskExited_flipsRunningToExited() {
         let projectId = UUID()
         let worktreeId = UUID()
-        let jobId = UUID()
+        let taskId = UUID()
         var state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [
-                    makeJob(id: jobId, primaryPid: nil, auxPids: [nil])
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let when = Date()
 
-        let (events, _) = reduce(state, .processStarted(at: path, index: 1, pid: 5151))
+        let (events, _) = reduce(state, .taskExited(at: path, when: when, code: 42))
         for e in events { apply(&state, e) }
 
-        XCTAssertEqual(state.projects[0].worktrees[0].jobs[0].auxiliary[0].pid, 5151)
+        if case let .exited(receivedAt, code) = state.projects[0].worktrees[0].tasks[0].runtime {
+            XCTAssertEqual(receivedAt, when)
+            XCTAssertEqual(code, 42)
+        } else {
+            XCTFail("expected runtime = .exited")
+        }
     }
 
-    // MARK: - renameJob
-
-    func test_renameJob_known_emitsEventAndApplies() {
+    func test_taskExited_doesNotDowngradeCompletedRuntime() {
+        // .completed reflects the user's intent — a late .exited from the
+        // agent must not stomp on it. Tested because the order is racy
+        // in practice: completeTask fires a terminate effect which yields
+        // an exit code shortly after.
         let projectId = UUID()
         let worktreeId = UUID()
-        let jobId = UUID()
+        let taskId = UUID()
+        let completedAt = Date()
         var state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [
-                    makeJob(id: jobId, primaryPid: 1, auxPids: [])
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, runtime: .completed(at: completedAt))
                 ])
             ])
         ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
 
-        let (events, effects) = reduce(state, .renameJob(at: path, name: "  api server  "))
+        let (events, _) = reduce(state, .taskExited(at: path, when: Date(), code: -1))
+        for e in events { apply(&state, e) }
 
-        // Trimmed, persisted, applied.
-        XCTAssertEqual(events, [.jobRenamed(at: path, name: "api server")])
+        if case let .completed(when) = state.projects[0].worktrees[0].tasks[0].runtime {
+            XCTAssertEqual(when, completedAt, "completion timestamp must be preserved")
+        } else {
+            XCTFail("completed runtime must not be downgraded by taskExited")
+        }
+    }
+
+    // MARK: - renameTask
+
+    func test_renameTask_known_emitsEventAndApplies() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let taskId = UUID()
+        var state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
+                ])
+            ])
+        ])
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+
+        let (events, effects) = reduce(state, .renameTask(at: path, name: "  api server  "))
+
+        XCTAssertEqual(events, [.taskRenamed(at: path, name: "api server")])
         XCTAssertEqual(effects.count, 1)
         for e in events { apply(&state, e) }
-        XCTAssertEqual(state.projects[0].worktrees[0].jobs[0].name, "api server")
+        XCTAssertEqual(state.projects[0].worktrees[0].tasks[0].name, "api server")
+        XCTAssertTrue(state.projects[0].worktrees[0].tasks[0].renamed)
     }
 
-    func test_renameJob_emptyAfterTrim_isNoop() {
+    func test_renameTask_emptyAfterTrim_isNoop() {
         let projectId = UUID()
         let worktreeId = UUID()
-        let jobId = UUID()
+        let taskId = UUID()
         let state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [
-                    makeJob(id: jobId, primaryPid: nil, auxPids: [])
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, runtime: .neverStarted)
                 ])
             ])
         ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
 
-        let (events, effects) = reduce(state, .renameJob(at: path, name: "   "))
+        let (events, effects) = reduce(state, .renameTask(at: path, name: "   "))
 
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(effects.isEmpty)
     }
 
-    func test_renameJob_unknownPath_isNoop() {
+    func test_renameTask_unknownPath_isNoop() {
         let state = AppState.empty
-        let path = JobPath(project: UUID(), worktree: UUID(), job: UUID())
-        let (events, effects) = reduce(state, .renameJob(at: path, name: "x"))
+        let path = TaskPath(project: UUID(), worktree: UUID(), task: UUID())
+        let (events, effects) = reduce(state, .renameTask(at: path, name: "x"))
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(effects.isEmpty)
     }
 
-    // MARK: - deleteJob + dedupe
+    // MARK: - deleteTask
 
-    func test_deleteJob_known_emitsEventAndTerminatesPids() {
+    func test_deleteTask_unselected_emitsTaskDeletedAndTerminate() {
         let projectId = UUID()
         let worktreeId = UUID()
-        let jobId = UUID()
+        let taskId = UUID()
         var state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [
-                    makeJob(id: jobId, primaryPid: 42, auxPids: [43, 44])
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
 
-        let (events, effects) = reduce(state, .deleteJob(at: path))
+        let (events, effects) = reduce(state, .deleteTask(at: path))
 
-        XCTAssertEqual(events, [.jobDeleted(at: path)])
-        XCTAssertEqual(Set(terminatedPids(in: effects)), [42, 43, 44])
+        XCTAssertEqual(events, [.taskDeleted(at: path)])
+        XCTAssertEqual(terminatedTaskIds(in: effects), [taskId])
         for e in events { apply(&state, e) }
-        XCTAssertTrue(state.projects[0].worktrees[0].jobs.isEmpty)
+        XCTAssertTrue(state.projects[0].worktrees[0].tasks.isEmpty)
     }
 
-    func test_deleteJob_deadJob_emitsEventNoTerminate() {
+    func test_deleteTask_currentlySelected_alsoEmitsTaskSelectionChangedNil() {
         let projectId = UUID()
         let worktreeId = UUID()
-        let jobId = UUID()
-        let state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [
-                    makeJob(id: jobId, primaryPid: nil, auxPids: [])
+        let taskId = UUID()
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        var state = stateWith(
+            projects: [
+                makeProject(id: projectId, worktrees: [
+                    makeWorktree(id: worktreeId, tasks: [
+                        makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
+                    ])
                 ])
-            ])
+            ],
+            selectedTaskPath: path
+        )
+
+        let (events, _) = reduce(state, .deleteTask(at: path))
+
+        XCTAssertEqual(events, [
+            .taskDeleted(at: path),
+            .taskSelectionChanged(nil),
         ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
-
-        let (events, effects) = reduce(state, .deleteJob(at: path))
-
-        XCTAssertEqual(events, [.jobDeleted(at: path)])
-        XCTAssertTrue(terminatedPids(in: effects).isEmpty)
+        for e in events { apply(&state, e) }
+        XCTAssertNil(state.selectedTaskPath)
     }
 
-    func test_deleteJob_unknown_isNoop() {
+    func test_deleteTask_unknown_isNoop() {
         let state = AppState.empty
         let (events, effects) = reduce(
             state,
-            .deleteJob(at: JobPath(project: UUID(), worktree: UUID(), job: UUID()))
+            .deleteTask(at: TaskPath(project: UUID(), worktree: UUID(), task: UUID()))
         )
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(effects.isEmpty)
     }
 
-    func test_duplicateClaudeJobsToRemove_prefersLivePid() {
-        let dupSid = "shared-sid"
+    // MARK: - restartTask
+
+    func test_restartTask_emitsSpawnedAndSpawn_noStandaloneTerminate() {
+        // Restart emits ONLY .spawn (no separate .terminate) because
+        // EffectRunner.spawn is responsible for terminating any stale
+        // agent before launching the replacement — emitting both as
+        // independent effects races and produced the "code -1 on
+        // Restart" bug.
         let projectId = UUID()
         let worktreeId = UUID()
-        let live = makeJob(
-            id: UUID(), kind: .claude(sessionId: dupSid),
-            primaryPid: 100, auxPids: []
+        let taskId = UUID()
+        var state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, runtime: .exited(at: Date(), code: 1))
+                ])
+            ])
+        ])
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+
+        let (events, effects) = reduce(state, .restartTask(at: path))
+
+        guard case .taskSpawned = events.first else {
+            return XCTFail("expected taskSpawned event")
+        }
+        XCTAssertFalse(effects.contains(where: { effect in
+            if case .terminate = effect { return true }
+            return false
+        }), "restartTask must NOT emit a standalone .terminate effect")
+        XCTAssertTrue(effects.contains(where: { effect in
+            if case let .spawn(p, _) = effect, p.task == taskId { return true }
+            return false
+        }))
+
+        for e in events { apply(&state, e) }
+        if case .running = state.projects[0].worktrees[0].tasks[0].runtime { /* ok */ } else {
+            XCTFail("expected runtime to flip back to .running after restartTask")
+        }
+    }
+
+    func test_restartTask_externalClaude_isNoop() {
+        // External claudes (discovered via FSEvents) have no agent we own;
+        // Restart on them is a UX-level no-op, not a spawn.
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let taskId = UUID()
+        var externalTask = makeTask(
+            id: taskId, kind: .claude(sessionId: "sid"), runtime: .neverStarted
         )
-        let dead = makeJob(
-            id: UUID(), kind: .claude(sessionId: dupSid),
-            primaryPid: nil, auxPids: []
+        externalTask.spec = ProcessSpec(
+            command: "(external claude)", args: [], env: [:],
+            cwd: URL(fileURLWithPath: "/somewhere"), initialInput: nil
         )
         let state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [dead, live])
+                makeWorktree(id: worktreeId, tasks: [externalTask])
+            ])
+        ])
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+
+        let (events, effects) = reduce(state, .restartTask(at: path))
+
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertTrue(effects.isEmpty)
+    }
+
+    // MARK: - dedupe
+
+    func test_duplicateClaudeTasksToRemove_prefersLiveRuntime() {
+        let dupSid = "shared-sid"
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let live = makeTask(
+            id: UUID(), kind: .claude(sessionId: dupSid),
+            runtime: .running(spawnedAt: Date())
+        )
+        let dead = makeTask(
+            id: UUID(), kind: .claude(sessionId: dupSid),
+            runtime: .exited(at: Date(), code: 0)
+        )
+        let state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, tasks: [dead, live])
             ])
         ])
 
-        let toRemove = state.duplicateClaudeJobsToRemove()
+        let toRemove = state.duplicateClaudeTasksToRemove()
 
         XCTAssertEqual(toRemove.count, 1)
-        XCTAssertEqual(toRemove[0].job, dead.id)
+        XCTAssertEqual(toRemove[0].task, dead.id)
     }
 
-    func test_duplicateClaudeJobsToRemove_tieBreaksOnUnreadThenCreatedAt() {
+    func test_duplicateClaudeTasksToRemove_tieBreaksOnUnreadThenCreatedAt() {
         let sid = "s"
-        let high = makeJob(
-            id: UUID(), kind: .claude(sessionId: sid),
-            primaryPid: nil, auxPids: []
+        var high = makeTask(
+            id: UUID(), kind: .claude(sessionId: sid), runtime: .exited(at: Date(), code: 0)
         )
-        var highWithUnread = high
-        highWithUnread.unread = 5
-        let low = makeJob(
-            id: UUID(), kind: .claude(sessionId: sid),
-            primaryPid: nil, auxPids: []
+        high.unread = 5
+        let low = makeTask(
+            id: UUID(), kind: .claude(sessionId: sid), runtime: .exited(at: Date(), code: 0)
         )
         let state = stateWith(projects: [
             makeProject(id: UUID(), worktrees: [
-                makeWorktree(id: UUID(), jobs: [low, highWithUnread])
+                makeWorktree(id: UUID(), tasks: [low, high])
             ])
         ])
 
-        let toRemove = state.duplicateClaudeJobsToRemove()
+        let toRemove = state.duplicateClaudeTasksToRemove()
 
         XCTAssertEqual(toRemove.count, 1)
-        XCTAssertEqual(toRemove[0].job, low.id)
+        XCTAssertEqual(toRemove[0].task, low.id)
     }
 
-    func test_duplicateClaudeJobsToRemove_renamedBeatsLivePid() {
-        // The renamed flag MUST outrank live pid. Lost-rename was a real
-        // foot-gun in v0.2-wave-2 before the renamed flag existed.
+    func test_duplicateClaudeTasksToRemove_renamedBeatsLiveRuntime() {
         let sid = "shared"
         let renamedId = UUID()
         let liveId = UUID()
-        var renamedJob = makeJob(
-            id: renamedId, kind: .claude(sessionId: sid),
-            primaryPid: nil, auxPids: []
+        var renamedTask = makeTask(
+            id: renamedId, kind: .claude(sessionId: sid), runtime: .exited(at: Date(), code: 0)
         )
-        renamedJob.name = "my custom name"
-        renamedJob.renamed = true
-        let liveJob = makeJob(
-            id: liveId, kind: .claude(sessionId: sid),
-            primaryPid: 9999, auxPids: []
+        renamedTask.name = "my custom name"
+        renamedTask.renamed = true
+        let liveTask = makeTask(
+            id: liveId, kind: .claude(sessionId: sid), runtime: .running(spawnedAt: Date())
         )
         let state = stateWith(projects: [
             makeProject(id: UUID(), worktrees: [
-                makeWorktree(id: UUID(), jobs: [liveJob, renamedJob])
+                makeWorktree(id: UUID(), tasks: [liveTask, renamedTask])
             ])
         ])
 
-        let toRemove = state.duplicateClaudeJobsToRemove()
+        let toRemove = state.duplicateClaudeTasksToRemove()
 
         XCTAssertEqual(toRemove.count, 1)
-        XCTAssertEqual(toRemove[0].job, liveId,
-            "expected the renamed Job to survive, not the live unnamed one")
+        XCTAssertEqual(toRemove[0].task, liveId,
+            "expected the renamed Task to survive, not the live unnamed one")
     }
 
-    func test_duplicateClaudeJobsToRemove_ignoresUnlinkedAndUniqueSids() {
+    func test_duplicateClaudeTasksToRemove_ignoresUnlinkedAndUniqueSids() {
         let aId = UUID()
         let bId = UUID()
         let unlinkedId = UUID()
         let state = stateWith(projects: [
             makeProject(id: UUID(), worktrees: [
-                makeWorktree(id: UUID(), jobs: [
-                    makeJob(id: aId, kind: .claude(sessionId: "A"), primaryPid: nil, auxPids: []),
-                    makeJob(id: bId, kind: .claude(sessionId: "B"), primaryPid: nil, auxPids: []),
-                    makeJob(id: unlinkedId, kind: .claude(sessionId: nil), primaryPid: nil, auxPids: []),
+                makeWorktree(id: UUID(), tasks: [
+                    makeTask(id: aId, kind: .claude(sessionId: "A"), runtime: .neverStarted),
+                    makeTask(id: bId, kind: .claude(sessionId: "B"), runtime: .neverStarted),
+                    makeTask(id: unlinkedId, kind: .claude(sessionId: nil), runtime: .neverStarted),
                 ])
             ])
         ])
 
-        XCTAssertTrue(state.duplicateClaudeJobsToRemove().isEmpty)
+        XCTAssertTrue(state.duplicateClaudeTasksToRemove().isEmpty)
+    }
+
+    // MARK: - selectTask
+
+    func test_selectTask_validPath_emitsAndApplies() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let taskId = UUID()
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        var state = stateWith(projects: [
+            makeProject(id: projectId, worktrees: [
+                makeWorktree(id: worktreeId, tasks: [
+                    makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
+                ])
+            ])
+        ])
+
+        let (events, _) = reduce(state, .selectTask(at: path))
+
+        XCTAssertEqual(events, [.taskSelectionChanged(path)])
+        for e in events { apply(&state, e) }
+        XCTAssertEqual(state.selectedTaskPath, path)
+    }
+
+    func test_selectTask_unknownPath_isNoop() {
+        // Guarding against dangling selections at the reducer layer
+        // means the UI never has to defend against them.
+        let state = AppState.empty
+        let bogus = TaskPath(project: UUID(), worktree: UUID(), task: UUID())
+        let (events, effects) = reduce(state, .selectTask(at: bogus))
+        XCTAssertTrue(events.isEmpty)
+        XCTAssertTrue(effects.isEmpty)
+    }
+
+    func test_selectTask_alreadySelected_isNoop() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let taskId = UUID()
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let state = stateWith(
+            projects: [
+                makeProject(id: projectId, worktrees: [
+                    makeWorktree(id: worktreeId, tasks: [
+                        makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
+                    ])
+                ])
+            ],
+            selectedTaskPath: path
+        )
+
+        let (events, _) = reduce(state, .selectTask(at: path))
+        XCTAssertTrue(events.isEmpty)
+    }
+
+    func test_selectTask_nil_deselects() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let taskId = UUID()
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        var state = stateWith(
+            projects: [
+                makeProject(id: projectId, worktrees: [
+                    makeWorktree(id: worktreeId, tasks: [
+                        makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
+                    ])
+                ])
+            ],
+            selectedTaskPath: path
+        )
+
+        let (events, _) = reduce(state, .selectTask(at: nil))
+        XCTAssertEqual(events, [.taskSelectionChanged(nil)])
+        for e in events { apply(&state, e) }
+        XCTAssertNil(state.selectedTaskPath)
+    }
+
+    func test_deleteWorktree_deselectsIfSelectionWasInside() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let taskId = UUID()
+        let wtPath = WorktreePath(project: projectId, worktree: worktreeId)
+        let selected = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        var state = stateWith(
+            projects: [
+                makeProject(id: projectId, worktrees: [
+                    makeWorktree(id: worktreeId, tasks: [
+                        makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
+                    ])
+                ])
+            ],
+            selectedTaskPath: selected
+        )
+
+        let (events, _) = reduce(state, .deleteWorktree(at: wtPath))
+
+        XCTAssertTrue(events.contains(.taskSelectionChanged(nil)))
+        for e in events { apply(&state, e) }
+        XCTAssertNil(state.selectedTaskPath)
+    }
+
+    func test_deleteProject_deselectsIfSelectionWasInside() {
+        let projectId = UUID()
+        let worktreeId = UUID()
+        let taskId = UUID()
+        let selected = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        var state = stateWith(
+            projects: [
+                makeProject(id: projectId, worktrees: [
+                    makeWorktree(id: worktreeId, tasks: [
+                        makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
+                    ])
+                ])
+            ],
+            selectedTaskPath: selected
+        )
+
+        let (events, _) = reduce(state, .deleteProject(id: projectId))
+
+        XCTAssertTrue(events.contains(.taskSelectionChanged(nil)))
+        for e in events { apply(&state, e) }
+        XCTAssertNil(state.selectedTaskPath)
     }
 
     // MARK: - claude session-id uniqueness
 
-    func test_linkClaudeSession_otherJobOwnsTheSid_isNoop() {
+    func test_linkClaudeSession_otherTaskOwnsTheSid_isNoop() {
         let projectId = UUID()
         let worktreeId = UUID()
         let ownerId = UUID()
         let targetId = UUID()
-        let owner = makeJob(
-            id: ownerId, kind: .claude(sessionId: "shared"),
-            primaryPid: nil, auxPids: []
+        let owner = makeTask(
+            id: ownerId, kind: .claude(sessionId: "shared"), runtime: .running(spawnedAt: Date())
         )
-        let target = makeJob(
-            id: targetId, kind: .claude(sessionId: nil),
-            primaryPid: nil, auxPids: []
+        let target = makeTask(
+            id: targetId, kind: .claude(sessionId: nil), runtime: .running(spawnedAt: Date())
         )
         let state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [owner, target])
+                makeWorktree(id: worktreeId, tasks: [owner, target])
             ])
         ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: targetId)
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: targetId)
 
         let (events, effects) = reduce(state, .linkClaudeSession(at: path, sessionId: "shared"))
 
@@ -684,22 +938,19 @@ final class ReducerTests: XCTestCase {
         XCTAssertTrue(effects.isEmpty)
     }
 
-    func test_linkClaudeSession_sameJobReLinkingItsOwnSid_isAllowed() {
-        // A sid the SAME job already tracks is fine to re-link (no-op on
-        // disk, but not a "conflict" — the owner *is* this job).
+    func test_linkClaudeSession_sameTaskReLinkingItsOwnSid_isAllowed() {
         let projectId = UUID()
         let worktreeId = UUID()
-        let jobId = UUID()
-        let job = makeJob(
-            id: jobId, kind: .claude(sessionId: "live"),
-            primaryPid: nil, auxPids: []
+        let taskId = UUID()
+        let task = makeTask(
+            id: taskId, kind: .claude(sessionId: "live"), runtime: .running(spawnedAt: Date())
         )
         let state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [job])
+                makeWorktree(id: worktreeId, tasks: [task])
             ])
         ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
+        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
 
         let (events, effects) = reduce(state, .linkClaudeSession(at: path, sessionId: "live"))
 
@@ -711,14 +962,13 @@ final class ReducerTests: XCTestCase {
         let projectId = UUID()
         let wtA = UUID()
         let wtB = UUID()
-        let existing = makeJob(
-            id: UUID(), kind: .claude(sessionId: "live"),
-            primaryPid: nil, auxPids: []
+        let existing = makeTask(
+            id: UUID(), kind: .claude(sessionId: "live"), runtime: .running(spawnedAt: Date())
         )
         let state = stateWith(projects: [
             makeProject(id: projectId, worktrees: [
-                makeWorktree(id: wtA, jobs: [existing]),
-                makeWorktree(id: wtB, jobs: [])
+                makeWorktree(id: wtA, tasks: [existing]),
+                makeWorktree(id: wtB, tasks: [])
             ])
         ])
 
@@ -731,139 +981,39 @@ final class ReducerTests: XCTestCase {
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(effects.isEmpty)
     }
-
-    func test_processExited_clearsPid() {
-        let projectId = UUID()
-        let worktreeId = UUID()
-        let jobId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [
-                    makeJob(id: jobId, primaryPid: 333, auxPids: [])
-                ])
-            ])
-        ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
-
-        let (events, _) = reduce(state, .processExited(at: path, index: 0, code: 0))
-        for e in events { apply(&state, e) }
-
-        XCTAssertNil(state.projects[0].worktrees[0].jobs[0].primary.pid)
-    }
-
-    func test_processExited_aux_alwaysRestart_emitsSpawn() {
-        let projectId = UUID()
-        let worktreeId = UUID()
-        let jobId = UUID()
-        let auxSpec = ProcessSpec(
-            command: "/usr/local/bin/dev",
-            args: ["server"],
-            env: [:],
-            cwd: URL(fileURLWithPath: "/wt"),
-            pid: 9999,
-            initialInput: nil,
-            restartPolicy: .alwaysRestart
-        )
-        let job = Job(
-            id: jobId, name: "stack", kind: .shell, enabled: true, status: .running,
-            primary: ProcessSpec(
-                command: "/bin/zsh", args: [], env: [:],
-                cwd: URL(fileURLWithPath: "/wt"),
-                pid: 1, initialInput: nil, restartPolicy: .never
-            ),
-            auxiliary: [auxSpec],
-            unread: 0, createdAt: Date(), completedAt: nil, renamed: false        )
-        let state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [job])
-            ])
-        ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
-
-        let (_, effects) = reduce(state, .processExited(at: path, index: 1, code: 1))
-
-        let spawnEffects = effects.compactMap { effect -> ProcessSpec? in
-            if case let .spawn(_, idx, spec) = effect, idx == 1 { return spec }
-            return nil
-        }
-        XCTAssertEqual(spawnEffects.count, 1)
-        XCTAssertEqual(spawnEffects[0].command, "/usr/local/bin/dev")
-    }
-
-    func test_processExited_aux_neverPolicy_doesNotRestart() {
-        let projectId = UUID()
-        let worktreeId = UUID()
-        let jobId = UUID()
-        let job = Job(
-            id: jobId, name: "j", kind: .shell, enabled: true, status: .running,
-            primary: ProcessSpec(
-                command: "/bin/zsh", args: [], env: [:],
-                cwd: URL(fileURLWithPath: "/wt"),
-                pid: 1, initialInput: nil, restartPolicy: .never
-            ),
-            auxiliary: [ProcessSpec(
-                command: "/bin/dev", args: [], env: [:],
-                cwd: URL(fileURLWithPath: "/wt"),
-                pid: 2, initialInput: nil, restartPolicy: .never
-            )],
-            unread: 0, createdAt: Date(), completedAt: nil, renamed: false        )
-        let state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [job])
-            ])
-        ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
-
-        let (_, effects) = reduce(state, .processExited(at: path, index: 1, code: 0))
-
-        XCTAssertFalse(effects.contains(where: { effect in
-            if case .spawn = effect { return true }
-            return false
-        }))
-    }
-
-    func test_processExited_aux_alwaysRestart_butJobDisabled_doesNotRestart() {
-        // Disabling the job is the user's panic switch — alwaysRestart must
-        // not loop respawn while the job is off.
-        let projectId = UUID()
-        let worktreeId = UUID()
-        let jobId = UUID()
-        let job = Job(
-            id: jobId, name: "j", kind: .shell, enabled: false, status: .stopped,
-            primary: ProcessSpec(
-                command: "/bin/zsh", args: [], env: [:],
-                cwd: URL(fileURLWithPath: "/wt"),
-                pid: nil, initialInput: nil, restartPolicy: .never
-            ),
-            auxiliary: [ProcessSpec(
-                command: "/bin/dev", args: [], env: [:],
-                cwd: URL(fileURLWithPath: "/wt"),
-                pid: 7, initialInput: nil, restartPolicy: .alwaysRestart
-            )],
-            unread: 0, createdAt: Date(), completedAt: nil, renamed: false        )
-        let state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
-                makeWorktree(id: worktreeId, jobs: [job])
-            ])
-        ])
-        let path = JobPath(project: projectId, worktree: worktreeId, job: jobId)
-
-        let (_, effects) = reduce(state, .processExited(at: path, index: 1, code: 0))
-
-        XCTAssertFalse(effects.contains(where: { effect in
-            if case .spawn = effect { return true }
-            return false
-        }))
-    }
 }
 
 // MARK: - Helpers
 
 private func stateWith(projects: [Project]) -> AppState {
     AppState(
-        schemaVersion: 1,
+        schemaVersion: 2,
         projects: projects,
-        settings: Settings(scrollbackCapBytes: 1024, snapshotIntervalSeconds: 30, terminalTheme: "Dracula", terminalFontFamily: "", terminalFontSize: 13, claudeInvocation: "claude")
+        settings: Settings(
+            scrollbackCapBytes: 1024,
+            snapshotIntervalSeconds: 30,
+            terminalTheme: "Dracula",
+            terminalFontFamily: "",
+            terminalFontSize: 13,
+            claudeInvocation: "claude"
+        ),
+        selectedTaskPath: nil
+    )
+}
+
+private func stateWith(projects: [Project], selectedTaskPath: TaskPath?) -> AppState {
+    AppState(
+        schemaVersion: 2,
+        projects: projects,
+        settings: Settings(
+            scrollbackCapBytes: 1024,
+            snapshotIntervalSeconds: 30,
+            terminalTheme: "Dracula",
+            terminalFontFamily: "",
+            terminalFontSize: 13,
+            claudeInvocation: "claude"
+        ),
+        selectedTaskPath: selectedTaskPath
     )
 }
 
@@ -873,61 +1023,50 @@ private func makeProject(id: UUID, worktrees: [Worktree]) -> Project {
         name: "atlas",
         color: "#ff5500",
         enabled: true,
+        rootDir: URL(fileURLWithPath: "/wt/main"),
         worktrees: worktrees,
         createdAt: Date(),
         claudeInvocation: nil
     )
 }
 
-private func makeWorktree(id: UUID, jobs: [Job]) -> Worktree {
+private func makeWorktree(id: UUID, tasks: [Task]) -> Worktree {
     Worktree(
         id: id,
-        name: "main",
         path: URL(fileURLWithPath: "/wt/main"),
         kind: .folder,
         enabled: true,
         missing: false,
-        jobs: jobs,
-        createdAt: Date(),
-        primary: false
+        tasks: tasks,
+        createdAt: Date()
     )
 }
 
-private func makeJob(id: UUID, primaryPid: Int32?, auxPids: [Int32?]) -> Job {
-    makeJob(id: id, kind: .shell, primaryPid: primaryPid, auxPids: auxPids)
+private func makeTask(id: UUID, runtime: TaskRuntime) -> Task {
+    makeTask(id: id, kind: .shell, runtime: runtime)
 }
 
-private func makeJob(id: UUID, kind: JobKind, primaryPid: Int32?, auxPids: [Int32?]) -> Job {
-    Job(
+private func makeTask(id: UUID, kind: TaskKind, runtime: TaskRuntime) -> Task {
+    Task(
         id: id,
         name: "shell",
         kind: kind,
         enabled: true,
-        status: .running,
-        primary: ProcessSpec(
-            command: "/bin/zsh",
-            args: [],
-            env: [:],
+        spec: ProcessSpec(
+            command: "/bin/zsh", args: [], env: [:],
             cwd: URL(fileURLWithPath: "/wt/main"),
-            pid: primaryPid,
-            initialInput: nil, restartPolicy: .never),
-        auxiliary: auxPids.map { pid in
-            ProcessSpec(
-                command: "/usr/local/bin/aux",
-                args: [],
-                env: [:],
-                cwd: URL(fileURLWithPath: "/wt/main"),
-                pid: pid,
-                initialInput: nil, restartPolicy: .never)
-        },
+            initialInput: nil
+        ),
+        runtime: runtime,
         unread: 0,
         createdAt: Date(),
-        completedAt: nil, renamed: false    )
+        renamed: false
+    )
 }
 
-private func terminatedPids(in effects: [Effect]) -> [Int32] {
-    effects.compactMap { effect -> Int32? in
-        if case let .terminate(pid, _) = effect { return pid }
+private func terminatedTaskIds(in effects: [Effect]) -> [UUID] {
+    effects.compactMap { effect -> UUID? in
+        if case let .terminate(path) = effect { return path.task }
         return nil
     }
 }

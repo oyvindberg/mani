@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 // Per-session metadata cache for external (Mani-discovered) claude
-// transcripts. The data in here doesn't fit on the reducer-driven Job
+// transcripts. The data in here doesn't fit on the reducer-driven Task
 // model — it's derived from the on-disk JSONL and is purely UI-side
 // (relative dates, message previews). Sidebar's PastSessionRow reads
 // from this cache to show something more useful than a UUID.

@@ -30,7 +30,8 @@ func randomAction(state: AppState, rng: inout LCG) -> Action? {
         let id = rng.next() % 100_000
         return .createProject(
             name: "p\(id)",
-            color: "#ff5500"
+            color: "#ff5500",
+            rootDir: URL(fileURLWithPath: "/tmp/p\(id)")
         )
     }
 
@@ -40,7 +41,6 @@ func randomAction(state: AppState, rng: inout LCG) -> Action? {
         let id = rng.next() % 100_000
         return .createWorktree(
             projectId: project.id,
-            name: "w\(id)",
             kind: .folder,
             path: URL(fileURLWithPath: "/tmp/w\(id)")
         )
@@ -49,21 +49,19 @@ func randomAction(state: AppState, rng: inout LCG) -> Action? {
     let worktree = project.worktrees[Int(rng.next() % UInt64(project.worktrees.count))]
     let wtPath = WorktreePath(project: project.id, worktree: worktree.id)
 
-    if worktree.jobs.isEmpty || r < 70 {
+    if worktree.tasks.isEmpty || r < 70 {
         let spec = ProcessSpec(
             command: "/bin/zsh", args: [], env: [:],
-            cwd: URL(fileURLWithPath: "/tmp"), pid: nil,
-            initialInput: nil, restartPolicy: .never)
-        return .createJob(
-            at: wtPath, name: "j", kind: .shell,
-            primary: spec, auxiliary: []
+            cwd: URL(fileURLWithPath: "/tmp"),
+            initialInput: nil
         )
+        return .createTask(at: wtPath, name: "t", kind: .shell, spec: spec, autoSelect: false)
     }
 
-    let job = worktree.jobs[Int(rng.next() % UInt64(worktree.jobs.count))]
-    let jobPath = JobPath(project: project.id, worktree: worktree.id, job: job.id)
+    let task = worktree.tasks[Int(rng.next() % UInt64(worktree.tasks.count))]
+    let taskPath = TaskPath(project: project.id, worktree: worktree.id, task: task.id)
 
-    if r < 78 { return .completeJob(at: jobPath) }
+    if r < 78 { return .completeTask(at: taskPath) }
     if r < 84 { return .renameProject(id: project.id, name: "renamed-\(rng.next() % 1000)") }
     if r < 89 { return .markWorktreeMissing(at: wtPath) }
     if r < 94 { return .deleteWorktree(at: wtPath) }
@@ -74,8 +72,8 @@ func randomAction(state: AppState, rng: inout LCG) -> Action? {
 
 func validate(_ state: AppState) -> [String] {
     var errors: [String] = []
-    if state.schemaVersion != 1 {
-        errors.append("schemaVersion=\(state.schemaVersion) (want 1)")
+    if state.schemaVersion != 2 {
+        errors.append("schemaVersion=\(state.schemaVersion) (want 2)")
     }
     var ids = Set<UUID>()
     for project in state.projects {
@@ -92,12 +90,12 @@ func validate(_ state: AppState) -> [String] {
             if !worktree.createdAt.timeIntervalSince1970.isFinite {
                 errors.append("worktree \(worktree.id) createdAt non-finite")
             }
-            for job in worktree.jobs {
-                if !ids.insert(job.id).inserted {
-                    errors.append("dup job id \(job.id)")
+            for task in worktree.tasks {
+                if !ids.insert(task.id).inserted {
+                    errors.append("dup task id \(task.id)")
                 }
-                if !job.createdAt.timeIntervalSince1970.isFinite {
-                    errors.append("job \(job.id) createdAt non-finite")
+                if !task.createdAt.timeIntervalSince1970.isFinite {
+                    errors.append("task \(task.id) createdAt non-finite")
                 }
             }
         }

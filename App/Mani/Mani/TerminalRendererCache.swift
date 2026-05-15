@@ -3,7 +3,7 @@ import AppKit
 import GhosttyTerminal
 import ManiCore
 
-// Per-JobPath cache of LibGhosttyRenderer instances. Without it, every
+// Per-TaskPath cache of LibGhosttyRenderer instances. Without it, every
 // re-mount of TerminalPane (i.e. switching to another sidebar item and
 // back) tears down libghostty's surface and replays scrollback from
 // disk — slow and visible.
@@ -17,8 +17,8 @@ import ManiCore
 // Invalidation: theme / font changes blow away the cached entry. The
 // renderer takes those at init; we don't have a re-theme path.
 //
-// Lifetime: entries for deleted jobs leak until app quit. Bounded
-// (one entry per job ever opened); acceptable for a dev tool.
+// Lifetime: entries for deleted tasks leak until app quit. Bounded
+// (one entry per task ever opened); acceptable for a dev tool.
 @MainActor
 final class TerminalRendererCache {
     static let shared = TerminalRendererCache()
@@ -29,14 +29,14 @@ final class TerminalRendererCache {
         let fontFamily: String
         let fontSize: Int
     }
-    private var entries: [JobPath: Entry] = [:]
+    private var entries: [TaskPath: Entry] = [:]
 
     // `themeKey` is an opaque string the caller picks (e.g. a serialised
     // representation of the project color the theme was generated from).
     // When it changes the cached entry is invalidated and a fresh renderer
     // is built with the supplied `theme`.
     func renderer(
-        for path: JobPath,
+        for path: TaskPath,
         themeKey: String,
         theme: TerminalTheme,
         fontFamily: String,
@@ -62,14 +62,14 @@ final class TerminalRendererCache {
         return renderer
     }
 
-    func discard(_ path: JobPath) {
+    func discard(_ path: TaskPath) {
         entries.removeValue(forKey: path)
     }
 
     // Non-creating lookup. Used when a feature (e.g. search scroll-to-line)
     // needs to address the renderer if it exists but should NOT build a
     // new one as a side effect.
-    func rendererIfPresent(for path: JobPath) -> LibGhosttyRenderer? {
+    func rendererIfPresent(for path: TaskPath) -> LibGhosttyRenderer? {
         entries[path]?.renderer
     }
 }

@@ -2,27 +2,27 @@ import SwiftUI
 import AppKit
 import ManiCore
 
-// Cmd-F overlay for the currently-selected job's terminal pane. libghostty
+// Cmd-F overlay for the currently-selected task's terminal pane. libghostty
 // has no API to jump-scroll its grid to a match, so we settle for showing
 // matched lines from the on-disk scrollback file with their line numbers.
 // Click → copy the line to the pasteboard. Useful for "find the thing I
 // remember was 3000 lines back" without rolling a wheel.
 struct ScrollbackSearchSheet: View {
-    // One source per Mani job — its display label (project › worktree › name),
-    // the on-disk scrollback file path, and the JobPath that identifies it
+    // One source per Mani task — its display label (project › worktree › name),
+    // the on-disk scrollback file path, and the TaskPath that identifies it
     // in Store state (so clicking a match can navigate to that task).
     struct Source {
         let label: String
-        let jobPath: JobPath
+        let taskPath: TaskPath
         let scrollbackPath: String
     }
 
     let sources: [Source]
     @Binding var isPresented: Bool
-    // (jobPath, lineNumber) — the line number is the 1-indexed line in the
-    // job's scrollback rotation chain (oldest → newest). Receiver should
-    // navigate to the job AND scroll the renderer so the match is visible.
-    var onSelectMatch: (JobPath, Int) -> Void
+    // (taskPath, lineNumber) — the line number is the 1-indexed line in the
+    // task's scrollback rotation chain (oldest → newest). Receiver should
+    // navigate to the task AND scroll the renderer so the match is visible.
+    var onSelectMatch: (TaskPath, Int) -> Void
 
     @State private var query: String = ""
     @State private var results: [Match] = []
@@ -33,7 +33,7 @@ struct ScrollbackSearchSheet: View {
     struct Match: Identifiable, Equatable {
         let id = UUID()
         let sourceLabel: String        // which task this came from
-        let sourceJobPath: JobPath     // navigate target when clicked
+        let sourceJobPath: TaskPath     // navigate target when clicked
         let lineNumber: Int
         let fullLine: String           // ANSI-stripped, full
 
@@ -228,7 +228,7 @@ struct ScrollbackSearchSheet: View {
         let needle = query
         let cap = 200
         let allSources = sources
-        Task.detached(priority: .userInitiated) {
+        _Concurrency.Task.detached(priority: .userInitiated) {
             guard !needle.isEmpty else {
                 var total = 0
                 for src in allSources {
@@ -279,7 +279,7 @@ struct ScrollbackSearchSheet: View {
                         )
                         matches.append(Match(
                             sourceLabel: src.label,
-                            sourceJobPath: src.jobPath,
+                            sourceJobPath: src.taskPath,
                             lineNumber: lineNo,
                             fullLine: lineStr,
                             context: ctx,

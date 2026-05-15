@@ -23,11 +23,16 @@ import SwiftUI
 final class SafekeepingSweeper: ObservableObject {
     @Published private(set) var isRunning: Bool = false
     @Published private(set) var lastSweepAt: Date?
+    // The slug directory currently being scanned (e.g.
+    // "-Users-oyvind-asp"). Cleared after the sweep finishes. The
+    // sidebar status row reads this to render "Scanning Claude
+    // history… (-Users-oyvind-asp)".
+    @Published private(set) var currentScanLabel: String?
 
     private let store: Store
     private let archive: SafekeepingStore
     private let cache: SessionArchiveCache
-    private var loopTask: Task<Void, Never>?
+    private var loopTask: _Concurrency.Task<Void, Never>?
 
     init(store: Store, archive: SafekeepingStore, cache: SessionArchiveCache) {
         self.store = store
@@ -37,16 +42,16 @@ final class SafekeepingSweeper: ObservableObject {
 
     func start() {
         loopTask?.cancel()
-        loopTask = Task { @MainActor [weak self] in
+        loopTask = _Concurrency.Task { @MainActor [weak self] in
             // First sweep is delayed 5s so the UI gets a chance to draw
             // and the rest of the boot path runs unimpeded. The user's
             // existing cache (from the previous app session) is already
             // visible from disk via SessionArchiveCache.loadFromDisk.
-            try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
-            while !Task.isCancelled {
+            try? await _Concurrency.Task.sleep(nanoseconds: 5 * 1_000_000_000)
+            while !_Concurrency.Task.isCancelled {
                 guard let self else { return }
                 await self.runOnce()
-                try? await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
+                try? await _Concurrency.Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
             }
         }
     }
@@ -62,6 +67,7 @@ final class SafekeepingSweeper: ObservableObject {
         isRunning = true
         defer {
             isRunning = false
+            currentScanLabel = nil
             lastSweepAt = Date()
         }
 
@@ -71,18 +77,27 @@ final class SafekeepingSweeper: ObservableObject {
         let projectsSnapshot: [ProjectMatcher] = store.state.projects.map {
             ProjectMatcher(
                 id: $0.id,
+                name: $0.name,
                 worktreePaths: $0.worktrees.map { $0.path.resolvingSymlinksInPath().path }
             )
         }
         let archive = self.archive
         let cache = self.cache
 
+        // Progress callback published back onto the main actor so the
+        // sidebar status row can show which slug is being scanned.
+        let progress: (String) -> Void = { [weak self] label in
+            _Concurrency.Task { @MainActor [weak self] in
+                self?.currentScanLabel = label
+            }
+        }
+
         // The actual filesystem walk + gzip work runs off the main
         // actor; results come back as a per-project diff to apply to
         // the cache.
-        let diffs = await Task.detached(priority: .utility) {
+        let diffs = await _Concurrency.Task.detached(priority: .utility) {
             SafekeepingSweepWorker.sweep(
-                projects: projectsSnapshot, archive: archive
+                projects: projectsSnapshot, archive: archive, progress: progress
             )
         }.value
 
@@ -102,6 +117,7 @@ final class SafekeepingSweeper: ObservableObject {
 // snapshotting Project structs across actor boundaries.
 struct ProjectMatcher {
     let id: UUID
+    let name: String
     let worktreePaths: [String]
 }
 
@@ -112,7 +128,8 @@ enum SafekeepingSweepWorker {
     // are omitted (don't touch their cache slot).
     static func sweep(
         projects: [ProjectMatcher],
-        archive: SafekeepingStore
+        archive: SafekeepingStore,
+        progress: (String) -> Void
     ) -> [UUID: [SessionIndexEntry]] {
         let claudeRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
@@ -120,170 +137,97 @@ enum SafekeepingSweepWorker {
             at: claudeRoot, includingPropertiesForKeys: nil
         ) else { return [:] }
 
-        // Start each project from its on-disk index. We re-write only
-        // when something actually changed, so a no-op sweep doesn't
-        // bump file mtimes.
+        // Rebuild each project's index from scratch this pass. We
+        // seed an "archived metadata" lookup from the prior on-disk
+        // index so previously-archived sessions keep their
+        // archivedAt + transcriptBytes; entries we don't re-add this
+        // pass are dropped (content-gone cleanup).
         var indexes: [UUID: SessionIndex] = [:]
+        var priorArchived: [UUID: [String: SessionIndexEntry]] = [:]
         var changed: Set<UUID> = []
         for project in projects {
-            indexes[project.id] = archive.loadIndex(for: project.id)
+            let prior = archive.loadIndex(for: project.id)
+            var lookup: [String: SessionIndexEntry] = [:]
+            for entry in prior.entries { lookup[entry.sessionId] = entry }
+            priorArchived[project.id] = lookup
+            indexes[project.id] = .empty
+            if !prior.entries.isEmpty { changed.insert(project.id) }
         }
 
         let homePath = FileManager.default.homeDirectoryForCurrentUser
             .resolvingSymlinksInPath().path
-        let now = Date()
 
+        // Single source of truth: claude's own per-slug sessions-
+        // index.json. One small JSON per slug dir, already pre-
+        // indexed. We never open individual JSONL files for
+        // metadata — that's hundreds of MB of file I/O.
+        //
+        // Archiving (gzipping the transcript) IS the only time we
+        // touch a JSONL, and only ONCE per session — the
+        // alreadySafekept check skips re-archival on every sweep.
         for slugDir in slugDirs {
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: slugDir.path, isDirectory: &isDir),
                   isDir.boolValue else { continue }
 
-            let jsonls = (try? FileManager.default.contentsOfDirectory(
-                at: slugDir, includingPropertiesForKeys: [.contentModificationDateKey]
-            )) ?? []
-            var sidsCoveredByJsonlPass: Set<String> = []
+            progress(slugDir.lastPathComponent)
 
-            for jsonl in jsonls where jsonl.pathExtension == "jsonl" {
-                sidsCoveredByJsonlPass.insert(
-                    jsonl.deletingPathExtension().lastPathComponent
-                )
-                let sessionId = jsonl.deletingPathExtension().lastPathComponent
+            let claudeIndexURL = slugDir
+                .appendingPathComponent("sessions-index.json", isDirectory: false)
+            guard FileManager.default.fileExists(atPath: claudeIndexURL.path),
+                  let data = try? Data(contentsOf: claudeIndexURL),
+                  let parsed = ClaudeOwnSessionsIndex.parse(data: data)
+            else { continue }
 
-                // First-line peek: cheap. Gives us cwd + sometimes the
-                // first user message in a few KB of read.
-                guard let peek = peekFirstLine(jsonl: jsonl),
-                      let cwd = peek.cwd
-                else { continue }
-
+            for record in parsed.entries {
+                let cwd = record.projectPath
                 if cwd == homePath || cwd == "/" { continue }
-
-                guard let match = bestMatch(cwd: cwd, projects: projects) else { continue }
+                guard let match = bestMatch(cwd: cwd, projects: projects)
+                else { continue }
                 let projectId = match.id
 
-                // Re-parse for the full summary (lastMessageAt, count,
-                // firstUserMessage). Cheaper than it sounds: the
-                // ClaudeHistoryScanner reads stream-style and stops at
-                // EOF.
-                guard let summary = ClaudeHistoryScanner.parsePublic(jsonl: jsonl)
-                else { continue }
-
-                let mtime = (try? jsonl.resourceValues(forKeys: [.contentModificationDateKey])
-                    .contentModificationDate) ?? .distantPast
-                let settled = now.timeIntervalSince(mtime) > 5 * 60
-
-                let alreadyArchived = archive.hasTranscript(
-                    sessionId: sessionId, for: projectId
+                let fullPath = URL(fileURLWithPath: record.fullPath)
+                let transcriptExists = FileManager.default
+                    .fileExists(atPath: fullPath.path)
+                let alreadySafekept = archive.hasTranscript(
+                    sessionId: record.sessionId, for: projectId
                 )
-                let existing = indexes[projectId]?.entries
-                    .first(where: { $0.sessionId == sessionId })
+                // Content-gone (no JSONL, no gzip) → skip; nothing
+                // actionable for the user.
+                if !transcriptExists, !alreadySafekept { continue }
 
-                var archivedAt: Date? = existing?.archivedAt
-                var transcriptBytes: Int = existing?.transcriptBytes ?? 0
+                let prior = priorArchived[projectId]?[record.sessionId]
+                var archivedAt: Date? = prior?.archivedAt
+                var transcriptBytes: Int = prior?.transcriptBytes ?? 0
 
-                if settled && !alreadyArchived {
+                if transcriptExists, !alreadySafekept {
                     do {
                         let bytes = try archive.archiveTranscript(
-                            from: jsonl, sessionId: sessionId, for: projectId
+                            from: fullPath, sessionId: record.sessionId,
+                            for: projectId
                         )
                         archivedAt = Date()
                         transcriptBytes = bytes
                     } catch {
-                        NSLog("[mani] safekeeping archive failed for \(sessionId): \(error)")
+                        NSLog("[mani] safekeeping archive failed for \(record.sessionId): \(error)")
                     }
                 }
 
                 let entry = SessionIndexEntry(
-                    sessionId: sessionId,
+                    sessionId: record.sessionId,
                     originatingCwd: cwd,
                     originatingWorktreeName: URL(fileURLWithPath: cwd).lastPathComponent,
-                    firstUserMessage: summary.firstUserMessage,
-                    lastMessageAt: summary.lastMessageAt,
-                    messageCount: summary.messageCount,
+                    firstUserMessage: record.firstPrompt ?? record.summary,
+                    lastMessageAt: record.modified,
+                    messageCount: record.messageCount ?? 0,
                     transcriptBytes: transcriptBytes,
                     archivedAt: archivedAt
                 )
 
-                if existing != entry {
-                    var idx = indexes[projectId] ?? .empty
-                    if let i = idx.entries.firstIndex(where: { $0.sessionId == sessionId }) {
-                        idx.entries[i] = entry
-                    } else {
-                        idx.entries.append(entry)
-                    }
-                    indexes[projectId] = idx
-                    changed.insert(projectId)
-                }
-            }
-
-            // Second pass: claude's own sessions-index.json (one per
-            // slug dir) is the authoritative list of session metadata
-            // in newer claude versions where the on-disk JSONL has
-            // been migrated off the slug-root. We harvest summary
-            // info from there for any sessionId we didn't already
-            // cover via the flat-JSONL pass. Entries whose fullPath
-            // doesn't exist are still surfaced (read-only past
-            // sessions) — we just skip the gzip archive step.
-            let claudeIndexURL = slugDir
-                .appendingPathComponent("sessions-index.json", isDirectory: false)
-            if FileManager.default.fileExists(atPath: claudeIndexURL.path),
-               let data = try? Data(contentsOf: claudeIndexURL),
-               let parsed = ClaudeOwnSessionsIndex.parse(data: data) {
-                for record in parsed.entries {
-                    if sidsCoveredByJsonlPass.contains(record.sessionId) { continue }
-                    let cwd = record.projectPath
-                    if cwd == homePath || cwd == "/" { continue }
-                    guard let match = bestMatch(cwd: cwd, projects: projects)
-                    else { continue }
-                    let projectId = match.id
-
-                    let fullPath = URL(fileURLWithPath: record.fullPath)
-                    let transcriptExists = FileManager.default
-                        .fileExists(atPath: fullPath.path)
-
-                    let existing = indexes[projectId]?.entries
-                        .first(where: { $0.sessionId == record.sessionId })
-
-                    var archivedAt: Date? = existing?.archivedAt
-                    var transcriptBytes: Int = existing?.transcriptBytes ?? 0
-
-                    let alreadyArchived = archive.hasTranscript(
-                        sessionId: record.sessionId, for: projectId
-                    )
-                    if transcriptExists, !alreadyArchived {
-                        do {
-                            let bytes = try archive.archiveTranscript(
-                                from: fullPath, sessionId: record.sessionId,
-                                for: projectId
-                            )
-                            archivedAt = Date()
-                            transcriptBytes = bytes
-                        } catch {
-                            NSLog("[mani] safekeeping archive failed for \(record.sessionId): \(error)")
-                        }
-                    }
-
-                    let entry = SessionIndexEntry(
-                        sessionId: record.sessionId,
-                        originatingCwd: cwd,
-                        originatingWorktreeName: URL(fileURLWithPath: cwd).lastPathComponent,
-                        firstUserMessage: record.firstPrompt ?? record.summary,
-                        lastMessageAt: record.modified,
-                        messageCount: record.messageCount ?? 0,
-                        transcriptBytes: transcriptBytes,
-                        archivedAt: archivedAt
-                    )
-
-                    if existing != entry {
-                        var idx = indexes[projectId] ?? .empty
-                        if let i = idx.entries.firstIndex(where: { $0.sessionId == record.sessionId }) {
-                            idx.entries[i] = entry
-                        } else {
-                            idx.entries.append(entry)
-                        }
-                        indexes[projectId] = idx
-                        changed.insert(projectId)
-                    }
-                }
+                var idx = indexes[projectId] ?? .empty
+                idx.entries.append(entry)
+                indexes[projectId] = idx
+                if prior != entry { changed.insert(projectId) }
             }
         }
 
@@ -327,28 +271,44 @@ enum SafekeepingSweepWorker {
         return best
     }
 
-    // Read just the first line of a JSONL to get cwd + sessionId
-    // without loading the full transcript. The JSONL format puts a
-    // header-ish first record up top so this is enough for matching.
+    // Scan the first N lines of a JSONL until we find both `cwd`
+    // and `sessionId`. Older claude versions put cwd on line 1;
+    // newer ones lead with a `permission-mode` record (no cwd) and
+    // sometimes a `file-history-snapshot` record before getting to
+    // the first user message (which carries the cwd at the top
+    // level). Read up to a bounded byte/line budget covering all
+    // observed formats.
     private static func peekFirstLine(jsonl: URL) -> (cwd: String?, sid: String?)? {
-        guard let stream = InputStream(url: jsonl) else { return nil }
-        stream.open()
-        defer { stream.close() }
-        var buf = [UInt8](repeating: 0, count: 4096)
-        var data = Data()
-        while stream.hasBytesAvailable {
-            let n = stream.read(&buf, maxLength: buf.count)
-            if n <= 0 { break }
-            data.append(buf, count: n)
-            if let nl = data.firstIndex(of: 0x0A) {
-                data = data.subdata(in: 0..<nl)
-                break
+        // Read in one shot up to a safe upper bound — bigger than
+        // any plausible header but small enough to be cheap. Then
+        // split into UTF-8 byte lines explicitly with our own
+        // offset arithmetic (Data indices aren't 0-based after
+        // mutation, which broke an earlier streaming attempt).
+        guard let handle = try? FileHandle(forReadingFrom: jsonl) else { return nil }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 256 * 1024) else { return nil }
+        var cwd: String?
+        var sid: String?
+        var linesScanned = 0
+        let maxLines = 30
+        var start = 0
+        let bytes = [UInt8](data)
+        while start < bytes.count, linesScanned < maxLines {
+            var end = start
+            while end < bytes.count, bytes[end] != 0x0A { end += 1 }
+            if end > start {
+                let lineData = Data(bytes[start..<end])
+                if let json = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] {
+                    if cwd == nil, let c = json["cwd"] as? String { cwd = c }
+                    if sid == nil, let s = json["sessionId"] as? String { sid = s }
+                    if cwd != nil, sid != nil { return (cwd, sid) }
+                }
             }
-            if data.count > 64 * 1024 { break } // safety
+            linesScanned += 1
+            start = end + 1
         }
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return (json["cwd"] as? String, json["sessionId"] as? String)
+        if cwd == nil && sid == nil { return nil }
+        return (cwd, sid)
     }
 }
 

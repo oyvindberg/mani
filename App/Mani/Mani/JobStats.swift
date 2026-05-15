@@ -1,32 +1,32 @@
 import Foundation
 import SwiftUI
 
-// Per-job runtime stats refreshed by a background poller every 5s. For
-// claude jobs we expose the transcript file size (a useful proxy for
+// Per-task runtime stats refreshed by a background poller every 5s. For
+// claude tasks we expose the transcript file size (a useful proxy for
 // "how much conversation has accumulated") plus the message count from
-// the existing ExternalSessionInfoCache. Shell jobs get a stat hole —
+// the existing ExternalSessionInfoCache. Shell tasks get a stat hole —
 // future polls could add RSS, log line counts etc.
 
-struct JobStats: Equatable {
+struct TaskStats: Equatable {
     var transcriptBytes: Int?     // size of the <sid>.jsonl on disk
     var messageCount: Int?        // duplicated from ExternalSessionInfoCache for convenience
     var lastCheckedAt: Date
 }
 
 @MainActor
-final class JobStatsCache: ObservableObject {
-    static let shared = JobStatsCache()
-    @Published private(set) var stats: [UUID: JobStats] = [:]
+final class TaskStatsCache: ObservableObject {
+    static let shared = TaskStatsCache()
+    @Published private(set) var stats: [UUID: TaskStats] = [:]
 
-    func record(jobId: UUID, stats: JobStats) {
-        self.stats[jobId] = stats
+    func record(taskId: UUID, stats: TaskStats) {
+        self.stats[taskId] = stats
     }
 }
 
-final class JobStatsPoller {
+final class TaskStatsPoller {
     private let tickSeconds: UInt64 = 5
     private weak var store: Store?
-    private var task: Task<Void, Never>?
+    private var task: _Concurrency.Task<Void, Never>?
 
     init(store: Store) {
         self.store = store
@@ -34,7 +34,7 @@ final class JobStatsPoller {
 
     func start() {
         task?.cancel()
-        task = Task.detached(priority: .utility) { [weak self] in
+        task = _Concurrency.Task.detached(priority: .utility) { [weak self] in
             await self?.loop()
         }
     }
@@ -45,22 +45,22 @@ final class JobStatsPoller {
     }
 
     private func loop() async {
-        while !Task.isCancelled {
+        while !_Concurrency.Task.isCancelled {
             let snapshots = await collectSnapshots()
             for s in snapshots {
-                guard !Task.isCancelled else { return }
+                guard !_Concurrency.Task.isCancelled else { return }
                 let stats = Self.statsFor(snapshot: s)
                 await MainActor.run {
-                    JobStatsCache.shared.record(jobId: s.jobId, stats: stats)
+                    TaskStatsCache.shared.record(taskId: s.taskId, stats: stats)
                 }
             }
-            try? await Task.sleep(nanoseconds: tickSeconds * 1_000_000_000)
+            try? await _Concurrency.Task.sleep(nanoseconds: tickSeconds * 1_000_000_000)
         }
     }
 
     // Snapshot of just the bits we need to compute stats off the main actor.
     private struct Snapshot {
-        let jobId: UUID
+        let taskId: UUID
         let sessionId: String?
         let cwd: URL
     }
@@ -71,10 +71,10 @@ final class JobStatsPoller {
         var out: [Snapshot] = []
         for project in store.state.projects {
             for worktree in project.worktrees {
-                for job in worktree.jobs {
-                    if case let .claude(sid) = job.kind {
+                for task in worktree.tasks {
+                    if case let .claude(sid) = task.kind {
                         out.append(Snapshot(
-                            jobId: job.id, sessionId: sid, cwd: job.primary.cwd
+                            taskId: task.id, sessionId: sid, cwd: task.spec.cwd
                         ))
                     }
                 }
@@ -83,7 +83,7 @@ final class JobStatsPoller {
         return out
     }
 
-    private static func statsFor(snapshot s: Snapshot) -> JobStats {
+    private static func statsFor(snapshot s: Snapshot) -> TaskStats {
         var bytes: Int? = nil
         var msgCount: Int? = nil
         if let sid = s.sessionId {
@@ -96,7 +96,7 @@ final class JobStatsPoller {
             // the discovery + watcher path populated it.
             msgCount = nil // resolved on read-side from the cache directly
         }
-        return JobStats(
+        return TaskStats(
             transcriptBytes: bytes,
             messageCount: msgCount,
             lastCheckedAt: Date()
@@ -118,7 +118,7 @@ final class JobStatsPoller {
 
 // MARK: - Formatting helpers
 
-enum JobStatsFormatter {
+enum TaskStatsFormatter {
     static func size(bytes: Int) -> String {
         let units = ["B", "KB", "MB", "GB"]
         var value = Double(bytes)

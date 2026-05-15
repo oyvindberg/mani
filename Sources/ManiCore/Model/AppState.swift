@@ -4,15 +4,41 @@ public struct AppState: Codable, Equatable {
     public var schemaVersion: Int
     public var projects: [Project]
     public var settings: Settings
+    // Currently selected task in the UI. Reducer-owned so creating
+    // a new task can auto-focus it, deleting the selected task can
+    // auto-deselect, and the choice survives Mani restarts.
+    public var selectedTaskPath: TaskPath?
 
-    public init(schemaVersion: Int, projects: [Project], settings: Settings) {
+    public init(
+        schemaVersion: Int,
+        projects: [Project],
+        settings: Settings,
+        selectedTaskPath: TaskPath?
+    ) {
         self.schemaVersion = schemaVersion
         self.projects = projects
         self.settings = settings
+        self.selectedTaskPath = selectedTaskPath
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, projects, settings, selectedTaskPath
+    }
+
+    // Custom decoder so older snapshots (no selectedTaskPath field)
+    // still load — selection defaults to nil for migrated state.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
+        self.projects = try c.decode([Project].self, forKey: .projects)
+        self.settings = try c.decode(Settings.self, forKey: .settings)
+        self.selectedTaskPath = try c.decodeIfPresent(
+            TaskPath.self, forKey: .selectedTaskPath
+        )
     }
 
     public static let empty = AppState(
-        schemaVersion: 1,
+        schemaVersion: 2,
         projects: [],
         settings: Settings(
             scrollbackCapBytes: 32 * 1024 * 1024,
@@ -21,41 +47,23 @@ public struct AppState: Codable, Equatable {
             terminalFontFamily: "",
             terminalFontSize: 13,
             claudeInvocation: "claude"
-        )
+        ),
+        selectedTaskPath: nil
     )
 
-    // Returns a copy with every `.claude` job removed across all projects
-    // and worktrees. Project, worktree, and non-claude job state is
-    // preserved. Used by Store.resetForNewClaudeTask before snapshotting
-    // and truncating events.jsonl. See ADR-015 for why we need this.
-    public func withoutClaudeJobs() -> AppState {
-        var copy = self
-        for projIdx in copy.projects.indices {
-            for wtIdx in copy.projects[projIdx].worktrees.indices {
-                copy.projects[projIdx].worktrees[wtIdx].jobs.removeAll { job in
-                    if case .claude = job.kind { return true }
-                    return false
-                }
-            }
-        }
-        return copy
-    }
-
-    // The JobPath of the (single) job that already tracks this claude
-    // session id, or nil if no job does. Used by the reducer to enforce
-    // global uniqueness: linkClaudeSession refuses to set a sid that
-    // belongs to a different job, and discoverClaudeSession refuses to
-    // create a new job for a sid that's already tracked anywhere.
-    // Invariant: at most one job per sid across the whole state.
-    public func jobOwningClaudeSession(_ sessionId: String) -> JobPath? {
+    // The TaskPath of the (single) Task that already tracks this claude
+    // session id, or nil if no task does. Invariant: at most one task
+    // per sid across the whole state — the reducer's linkClaudeSession
+    // and discoverClaudeSession both enforce this.
+    public func taskOwningClaudeSession(_ sessionId: String) -> TaskPath? {
         for project in projects {
             for worktree in project.worktrees {
-                for job in worktree.jobs {
-                    if case let .claude(sid) = job.kind, sid == sessionId {
-                        return JobPath(
+                for task in worktree.tasks {
+                    if case let .claude(sid) = task.kind, sid == sessionId {
+                        return TaskPath(
                             project: project.id,
                             worktree: worktree.id,
-                            job: job.id
+                            task: task.id
                         )
                     }
                 }
@@ -64,47 +72,42 @@ public struct AppState: Codable, Equatable {
         return nil
     }
 
-    // For each non-nil claude session id that appears on multiple Jobs,
-    // returns the JobPaths of the duplicates that should be deleted —
-    // i.e. the group minus the "best" surviving Job. Selection rule per
-    // group: prefer a Job with a live primary pid, then highest unread
-    // count, then most recent createdAt. Used by the dedupe sweep on
-    // app launch to clean up persisted dupes from older Mani builds
-    // that didn't enforce sid uniqueness in the reducer.
-    public func duplicateClaudeJobsToRemove() -> [JobPath] {
+    // For each non-nil claude session id appearing on multiple Tasks,
+    // returns the TaskPaths of the duplicates that should be deleted —
+    // the group minus the "best" surviving Task. Selection rule per
+    // group: a user-renamed Task ALWAYS wins (losing a rename to a
+    // dedupe sweep happened once and the fix was permanent). Within
+    // renamed-vs-renamed, fall back to "live runtime" (currently
+    // believed running) → unread → createdAt.
+    public func duplicateClaudeTasksToRemove() -> [TaskPath] {
         struct Entry {
-            let path: JobPath
-            let job: Job
+            let path: TaskPath
+            let task: Task
         }
         var bySid: [String: [Entry]] = [:]
         for project in projects {
             for worktree in project.worktrees {
-                for job in worktree.jobs {
-                    if case let .claude(sid?) = job.kind {
-                        let path = JobPath(
+                for task in worktree.tasks {
+                    if case let .claude(sid?) = task.kind {
+                        let path = TaskPath(
                             project: project.id,
                             worktree: worktree.id,
-                            job: job.id
+                            task: task.id
                         )
-                        bySid[sid, default: []].append(Entry(path: path, job: job))
+                        bySid[sid, default: []].append(Entry(path: path, task: task))
                     }
                 }
             }
         }
-        var result: [JobPath] = []
+        var result: [TaskPath] = []
         for (_, group) in bySid where group.count > 1 {
-            // Survivor priority: a user-renamed Job ALWAYS beats an
-            // auto-named one — losing a rename to a dedupe sweep silently
-            // happened once and is the kind of UX foot-gun we won't repeat.
-            // Within renamed-vs-renamed (or default-vs-default), fall back
-            // to live pid → unread → createdAt.
             let sorted = group.sorted { a, b in
-                if a.job.renamed != b.job.renamed { return a.job.renamed && !b.job.renamed }
-                let liveA = a.job.primary.pid != nil
-                let liveB = b.job.primary.pid != nil
+                if a.task.renamed != b.task.renamed { return a.task.renamed && !b.task.renamed }
+                let liveA = isRunning(a.task.runtime)
+                let liveB = isRunning(b.task.runtime)
                 if liveA != liveB { return liveA && !liveB }
-                if a.job.unread != b.job.unread { return a.job.unread > b.job.unread }
-                return a.job.createdAt > b.job.createdAt
+                if a.task.unread != b.task.unread { return a.task.unread > b.task.unread }
+                return a.task.createdAt > b.task.createdAt
             }
             for entry in sorted.dropFirst() {
                 result.append(entry.path)
@@ -113,19 +116,17 @@ public struct AppState: Codable, Equatable {
         return result
     }
 
-    // All `.claude` jobs across the state, paired with the (project,
-    // worktree) UUIDs that own them. The Store uses this to terminate
-    // their PTYs before invoking `withoutClaudeJobs()`.
-    public func claudeJobs() -> [(JobPath, Job)] {
-        var out: [(JobPath, Job)] = []
+    // All `.claude` Tasks across the state, paired with their TaskPath.
+    public func claudeTasks() -> [(TaskPath, Task)] {
+        var out: [(TaskPath, Task)] = []
         for project in projects {
             for worktree in project.worktrees {
-                for job in worktree.jobs {
-                    guard case .claude = job.kind else { continue }
-                    let path = JobPath(
-                        project: project.id, worktree: worktree.id, job: job.id
+                for task in worktree.tasks {
+                    guard case .claude = task.kind else { continue }
+                    let path = TaskPath(
+                        project: project.id, worktree: worktree.id, task: task.id
                     )
-                    out.append((path, job))
+                    out.append((path, task))
                 }
             }
         }
@@ -133,22 +134,30 @@ public struct AppState: Codable, Equatable {
     }
 }
 
+// True iff runtime represents "we believe an agent is currently alive"
+// — only `.running` qualifies. Boot reconciliation flips stale .running
+// entries to .exited if the agent's socket is no longer connectable.
+private func isRunning(_ runtime: TaskRuntime) -> Bool {
+    switch runtime {
+    case .running:                 return true
+    case .neverStarted,
+         .exited,
+         .completed:               return false
+    }
+}
+
 public struct Settings: Codable, Equatable {
     public var scrollbackCapBytes: Int
     public var snapshotIntervalSeconds: Int
-    // Name of a Ghostty theme from the GhosttyTheme catalog, e.g. "Dracula",
-    // "Tokyo Night Storm", "GitHub Light". Looked up at terminal-pane mount
-    // time; changing requires re-mounting the affected pane.
+    // Name of a Ghostty theme from the GhosttyTheme catalog. Looked up at
+    // terminal-pane mount time; changing requires re-mounting the pane.
     public var terminalTheme: String
-    // Monospace font family name (PostScript or display name resolvable by
-    // libghostty's font loader). Empty means "use libghostty default".
+    // Monospace font family. Empty means "use libghostty default".
     public var terminalFontFamily: String
-    // Point size for the terminal font.
     public var terminalFontSize: Int
-    // Default invocation of the claude binary. Per-project Project.
-    // claudeInvocation overrides this. `--resume <sid>` is appended at
-    // spawn time by ClaudeTaskSpec.make; the invocation should NOT
-    // include `--resume`.
+    // Default invocation of the claude binary; Project.claudeInvocation
+    // overrides per-project. `--resume <sid>` is appended at spawn time
+    // by ClaudeTaskSpec.make.
     public var claudeInvocation: String
 
     public init(
@@ -167,8 +176,6 @@ public struct Settings: Codable, Equatable {
         self.claudeInvocation = claudeInvocation
     }
 
-    // Backward-compat decode: state.json files written before later fields
-    // were added supply the defaults via decodeIfPresent.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.scrollbackCapBytes = try c.decode(Int.self, forKey: .scrollbackCapBytes)

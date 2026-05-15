@@ -3,9 +3,9 @@ import SwiftUI
 
 // Per-claude-session activity state, keyed by Claude session id.
 //
-// Why a separate tracker (vs. computing on the Job struct):
+// Why a separate tracker (vs. computing on the Task struct):
 //   - State decays with time (thinking → settled after silence). The
-//     reducer-driven Job model isn't the right place for time-based
+//     reducer-driven Task model isn't the right place for time-based
 //     transitions; we'd otherwise need wall-clock events fired into
 //     the reducer.
 //   - Multiple UI surfaces (sidebar rows, top-bar pills) read the
@@ -20,11 +20,11 @@ import SwiftUI
 //     is exceeded.
 //
 // "Ready" is NOT modeled here directly: the bar / sidebar combine
-// isThinking(sid) with Job.unread to decide. That keeps the source
-// of truth for unread-count on the Job (where the reducer can drive
+// isThinking(sid) with _Concurrency.Task.unread to decide. That keeps the source
+// of truth for unread-count on the Task (where the reducer can drive
 // markRead).
 @MainActor
-final class JobActivityTracker: ObservableObject {
+final class TaskActivityTracker: ObservableObject {
     // Promote to .idle when no bytes have arrived in this long.
     // Picked to ride through streaming gaps without lagging the
     // "ready" transition: claude's responses chunk in <0.5 s gaps
@@ -47,13 +47,13 @@ final class JobActivityTracker: ObservableObject {
     @Published private(set) var settledAt: [String: Date] = [:]
 
     private var lastByteAt: [String: Date] = [:]
-    private var tickTask: Task<Void, Never>?
+    private var tickTask: _Concurrency.Task<Void, Never>?
 
     func start() {
         tickTask?.cancel()
-        tickTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+        tickTask = _Concurrency.Task { @MainActor [weak self] in
+            while !_Concurrency.Task.isCancelled {
+                try? await _Concurrency.Task.sleep(nanoseconds: 1_000_000_000)
                 self?.tick()
             }
         }
@@ -76,7 +76,7 @@ final class JobActivityTracker: ObservableObject {
         }
     }
 
-    // Convenience for callers reading from sparse JobKind without
+    // Convenience for callers reading from sparse TaskKind without
     // unwrapping themselves.
     func isThinking(sid: String?) -> Bool {
         guard let sid else { return false }

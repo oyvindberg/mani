@@ -1,11 +1,10 @@
 import Foundation
 
-// Decoded `SessionStart` hook payload. Claude Code fires SessionStart on
-// every session entry — fresh startup, --resume, /clear, /compact, /fork.
-// The session_id field is claude's authoritative truth (whatever id it is
-// now writing under), and `source` distinguishes the entry kind. We use
-// the payload to reconcile a Mani Job's `kind: .claude(sid)` with whatever
-// claude actually ended up using. See ADR-016.
+// Decoded `SessionStart` hook payload from Claude Code. Claude fires
+// SessionStart on every session entry — fresh startup, --resume, /clear,
+// /compact, /fork. session_id is claude's authoritative id; `source`
+// distinguishes the entry kind. The payload reconciles a Mani Task's
+// `kind: .claude(sid)` with whatever claude actually ended up using.
 
 public struct SessionStartPayload: Equatable {
     public enum Source: Equatable {
@@ -43,29 +42,17 @@ public struct SessionStartPayload: Equatable {
 }
 
 // Pure routing: given the current AppState and an incoming SessionStart
-// payload, return the Action that should be dispatched (or nil if the
-// payload should be ignored).
+// payload, return the Action that should be dispatched (or nil to ignore).
 //
 // Rules:
-//   - Ignore payloads whose cwd is missing OR is a top-broad path (the
-//     user's $HOME or "/") — those would link claude sessions run anywhere
-//     on the machine to the matching worktree, which has caused phantom
-//     job spam in the past.
-//   - Ignore if any Job in the matching worktree already tracks this sid
-//     (the redundant work of re-linking the same sid is harmless but noisy).
+//   - Ignore payloads whose cwd is missing OR is too broad ($HOME or "/").
+//   - Ignore if the matching worktree already tracks this sid.
 //   - source = resume / clear / compact: retarget the most-recently-created
-//     `.claude(*)` Job in the worktree whose sid differs from the payload.
-//     This is the "claude allocated a new session id under the hood"
-//     reconciliation path.
-//   - source = startup: link to the first `.claude(nil)` Job in the
-//     worktree if one exists (the slot Mani created for a freshly-spawned
-//     claude task). Otherwise fall through to discover.
-//   - source = fork / other: discover (creates a sibling Job for the new sid,
-//     leaving the original alone — that's the natural "fork" UX).
-//   - Fallback when no source-specific rule matched: discover.
-//
-// The `homePathToExclude` argument is passed in (rather than read here) so
-// the function stays pure — tests construct it explicitly.
+//     `.claude(*)` Task in the worktree whose sid differs from the payload.
+//   - source = startup: link to the first `.claude(nil)` Task in the
+//     worktree if any; else fall through to discover.
+//   - source = fork / other: discover (creates a sibling Task).
+//   - Fallback: discover.
 public func routeSessionStart(
     payload: SessionStartPayload,
     state: AppState,
@@ -84,39 +71,39 @@ public func routeSessionStart(
             }
             let wtPathStruct = WorktreePath(project: project.id, worktree: worktree.id)
 
-            let alreadyTracked = worktree.jobs.contains { job in
-                if case let .claude(sid) = job.kind, sid == payload.sessionId {
+            let alreadyTracked = worktree.tasks.contains { task in
+                if case let .claude(sid) = task.kind, sid == payload.sessionId {
                     return true
                 }
                 return false
             }
             if alreadyTracked { return nil }
 
-            let claudeJobs = worktree.jobs.filter { job in
-                if case .claude = job.kind { return true }
+            let claudeTasks = worktree.tasks.filter { task in
+                if case .claude = task.kind { return true }
                 return false
             }
 
             switch payload.source {
             case .resume, .clear, .compact:
                 if let target = mostRecentMismatch(
-                    in: claudeJobs, sessionId: payload.sessionId
+                    in: claudeTasks, sessionId: payload.sessionId
                 ) {
-                    let jobPath = JobPath(
-                        project: project.id, worktree: worktree.id, job: target.id
+                    let taskPath = TaskPath(
+                        project: project.id, worktree: worktree.id, task: target.id
                     )
-                    return .linkClaudeSession(at: jobPath, sessionId: payload.sessionId)
+                    return .linkClaudeSession(at: taskPath, sessionId: payload.sessionId)
                 }
 
             case .startup:
-                if let unlinked = claudeJobs.first(where: { job in
-                    if case let .claude(sid) = job.kind, sid == nil { return true }
+                if let unlinked = claudeTasks.first(where: { task in
+                    if case let .claude(sid) = task.kind, sid == nil { return true }
                     return false
                 }) {
-                    let jobPath = JobPath(
-                        project: project.id, worktree: worktree.id, job: unlinked.id
+                    let taskPath = TaskPath(
+                        project: project.id, worktree: worktree.id, task: unlinked.id
                     )
-                    return .linkClaudeSession(at: jobPath, sessionId: payload.sessionId)
+                    return .linkClaudeSession(at: taskPath, sessionId: payload.sessionId)
                 }
 
             case .fork, .other:
@@ -133,13 +120,10 @@ public func routeSessionStart(
     return nil
 }
 
-// Pick the claude job in `jobs` whose sid differs from sessionId and which
-// was created most recently. Returns nil if no claude job has a non-matching
-// sid (e.g. the worktree only has a `.claude(nil)` slot).
-private func mostRecentMismatch(in jobs: [Job], sessionId: String) -> Job? {
-    jobs
-        .filter { job in
-            if case let .claude(sid) = job.kind, sid != sessionId { return true }
+private func mostRecentMismatch(in tasks: [Task], sessionId: String) -> Task? {
+    tasks
+        .filter { task in
+            if case let .claude(sid) = task.kind, sid != sessionId { return true }
             return false
         }
         .max(by: { $0.createdAt < $1.createdAt })

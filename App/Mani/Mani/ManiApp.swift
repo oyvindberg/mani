@@ -11,11 +11,11 @@ struct ManiApp: App {
     // Held so the pollers' Tasks aren't reaped. Started in the WindowGroup
     // .task once the store + initial state are ready.
     private let worktreeStatsPoller: WorktreeStatsPoller
-    private let jobStatsPoller: JobStatsPoller
+    private let taskStatsPoller: TaskStatsPoller
     private let safekeepingStore: SafekeepingStore
     @StateObject private var sweeper: SafekeepingSweeper
     @StateObject private var archiveCache: SessionArchiveCache = SessionArchiveCache.shared
-    @StateObject private var activityTracker = JobActivityTracker()
+    @StateObject private var activityTracker = TaskActivityTracker()
 
     init() {
         let appSupport = FileManager.default.urls(
@@ -24,9 +24,20 @@ struct ManiApp: App {
         ).first!
         let storeRoot = appSupport.appendingPathComponent("Mani")
         let persistence = try! PersistenceStore(rootDir: storeRoot)
-        let recovered = (try? persistence.recover().state) ?? .empty
-        let initialState = Self.reconcileAfterCrash(recovered)
-        let runner = EffectRunner(persistence: persistence)
+        // Recovery is event-sourced — state.json + replay of any tail
+        // events. Per-task aliveness is recomputed against the agent
+        // sockets at boot via EffectRunner.reconcileRuntime, so no
+        // synthetic state mutation is needed here.
+        let initialState = (try? persistence.recover().state) ?? .empty
+        // ProcessHost — local tmux for now. SshTmuxHost will share
+        // this protocol later. Hard-failing here would be hostile;
+        // when tmux is missing we'd surface a "please brew install
+        // tmux" empty state and stay alive for the user to install.
+        // For the walking skeleton, fall back to a no-op host if
+        // tmux is missing so the app still boots.
+        let host: ProcessHost = LocalAgentHost.detect()
+            ?? UnavailableProcessHost()
+        let runner = EffectRunner(persistence: persistence, host: host)
         let store = Store(state: initialState, runner: runner)
         _store = StateObject(wrappedValue: store)
 
@@ -39,7 +50,7 @@ struct ManiApp: App {
         _hookListener = StateObject(wrappedValue: HookListenerService(socketPath: socketPath))
 
         worktreeStatsPoller = WorktreeStatsPoller(store: store)
-        jobStatsPoller = JobStatsPoller(store: store)
+        taskStatsPoller = TaskStatsPoller(store: store)
 
         let safekeeping = try! SafekeepingStore(appSupportRoot: storeRoot)
         self.safekeepingStore = safekeeping
@@ -51,7 +62,7 @@ struct ManiApp: App {
 
         // Cmd-Q / quit menu: SIGTERM every live PTY before the app exits.
         // macOS gives ~1s before force-quit, so we don't block waiting for
-        // reaps — Task.detached fires-and-forgets the terminate() calls and
+        // reaps — _Concurrency.Task.detached fires-and-forgets the terminate() calls and
         // the kernel delivers SIGTERM regardless of whether Mani is still
         // alive when the syscall completes.
         NotificationCenter.default.addObserver(
@@ -59,7 +70,7 @@ struct ManiApp: App {
             object: nil,
             queue: nil
         ) { _ in
-            Task { await runner.terminateAll() }
+            _Concurrency.Task { await runner.terminateAll() }
         }
     }
 
@@ -81,35 +92,60 @@ struct ManiApp: App {
                     Self.registerHookShimIfPossible()
                     watcher.onNewSession = { [weak store] detected in
                         guard let store else { return }
-                        Task { @MainActor in
+                        _Concurrency.Task { @MainActor in
                             await Self.handleDiscoveredSession(detected, store: store)
                         }
                     }
                     let tracker = activityTracker
                     watcher.onMessages = { [weak store, tracker] detected, delta in
                         guard let store else { return }
-                        Task { @MainActor in
+                        _Concurrency.Task { @MainActor in
                             tracker.recordActivity(sid: detected.sessionId)
                             await Self.handleSessionMessages(
                                 detected, delta: delta, store: store
                             )
                         }
                     }
+                    watcher.onActivity = { [tracker] sid in
+                        _Concurrency.Task { @MainActor in
+                            tracker.recordActivity(sid: sid)
+                        }
+                    }
                     hookListener.onSessionStart = { [weak store] payload in
                         guard let store else { return }
-                        Task { @MainActor in
+                        _Concurrency.Task { @MainActor in
                             await Self.handleSessionStart(payload, store: store)
                         }
                     }
                     watcher.start()
                     hookListener.start()
-                    // No auto-seed: first launch shows an empty-state CTA.
-                    // Auto-seeding a worktree at $HOME made every Claude
-                    // session in the user's home tree get auto-discovered.
-                    if !store.state.projects.isEmpty {
-                        await Self.respawnSafelisted(store: store)
+                    // Boot reconciliation: drop any .running tasks whose
+                    // agent socket is no longer connectable. The user
+                    // restarts those manually via the Restart button.
+                    // No auto-respawn — a process that died across a Mani
+                    // restart should not silently come back; the user
+                    // should see the .exited state and decide.
+                    await store.runner.reconcileRuntime(
+                        state: store.state,
+                        dispatch: { action in await store.dispatch(action) }
+                    )
+                    // If the persisted selection points to a task that's
+                    // no longer in state (e.g. dedupe removed it last
+                    // session, or the user manually edited state.json),
+                    // clear it so the empty-state shows instead of a
+                    // broken breadcrumb.
+                    if let sel = store.state.selectedTaskPath,
+                       Self.taskExists(sel, in: store.state) == false {
+                        await store.dispatch(.selectTask(at: nil))
                     }
-                    await Self.dedupeClaudeJobs(store: store)
+                    // No auto-dedupe, no auto-prune. Tasks only leave
+                    // state via an explicit user delete. The previous
+                    // dedupe / prune passes were the main source of
+                    // "I created a task and Mani ate it" — both ran at
+                    // boot AND on a timer, comparing against external
+                    // signals (claude JSONL presence, session-id
+                    // uniqueness) that lag the reducer and produced
+                    // false positives.
                     await Self.ensureDiffJobsForGitWorktrees(store: store)
                     await Self.migrateRenamedFlags(store: store)
                     await Self.bootstrapSafekeepingFromDisk(
@@ -117,24 +153,12 @@ struct ManiApp: App {
                         cache: archiveCache,
                         archive: safekeepingStore
                     )
-                    // Immediate (synchronous wrt boot) sweep so the cache
-                    // covers anything not yet safekept. The reconcile
-                    // step inside runOnce dispatches discoverClaudeSession
-                    // for matched entries, bringing newly-recognized
-                    // sessions into the sidebar before the first prune
-                    // tick can run.
                     await sweeper.runOnce()
-                    // Prune AFTER both the bootstrap reconcile AND the
-                    // immediate sweep — those add back any jobs we lost
-                    // in a previous bad-prune cycle, then prune kills
-                    // only the truly orphaned ones.
-                    await Self.pruneStaleClaudeJobs(store: store)
                     sweeper.start()
                     activityTracker.start()
                     worktreeStatsPoller.start()
-                    jobStatsPoller.start()
+                    taskStatsPoller.start()
                     Self.startSnapshotTimer(store: store)
-                    Self.startStaleClaudePruneTimer(store: store)
                 }
         }
         Settings {
@@ -145,7 +169,7 @@ struct ManiApp: App {
 
     // docs/architecture.md § "Recovery": after loading the snapshot, any pid is
     // suspect (its process died with the previous app instance) and any
-    // .running job needs to drop to .stopped. Auto-restart is safelist-only —
+    // .running task needs to drop to .stopped. Auto-restart is safelist-only —
     // we re-spawn shells in `respawnSafelisted`.
     // Walking-skeleton hook bundling: try the proper auxiliary-executable
     // location inside the .app first; if missing, fall back to the
@@ -195,7 +219,7 @@ struct ManiApp: App {
     }
 
     // For each cached session whose originating worktree is still in
-    // the project AND no Job currently tracks it, dispatch
+    // the project AND no Task currently tracks it, dispatch
     // discoverClaudeSession so PastSessionRow appears under that
     // worktree. The reducer is globally idempotent on sessionId so
     // re-firing is safe.
@@ -220,7 +244,7 @@ struct ManiApp: App {
                     return entry.originatingCwd == wt
                         || entry.originatingCwd.hasPrefix(wt + "/")
                 }) else { continue }
-                if store.state.jobOwningClaudeSession(entry.sessionId) != nil {
+                if store.state.taskOwningClaudeSession(entry.sessionId) != nil {
                     continue
                 }
                 await store.dispatch(.discoverClaudeSession(
@@ -236,25 +260,25 @@ struct ManiApp: App {
     // flag existed default it to false. A name that diverges from the
     // auto-generated default pattern for its kind is almost certainly a
     // user rename — backfill the flag so the next dedupe sweep doesn't
-    // throw it away. Idempotent: jobs whose `renamed` flag is already
+    // throw it away. Idempotent: tasks whose `renamed` flag is already
     // true OR whose name matches the default pattern are skipped.
     @MainActor
     private static func migrateRenamedFlags(store: Store) async {
         for project in store.state.projects {
             for worktree in project.worktrees {
-                for job in worktree.jobs {
-                    if job.renamed { continue }
-                    if isDefaultJobName(job.name, kind: job.kind) { continue }
-                    let path = JobPath(
-                        project: project.id, worktree: worktree.id, job: job.id
+                for task in worktree.tasks {
+                    if task.renamed { continue }
+                    if isDefaultJobName(task.name, kind: task.kind) { continue }
+                    let path = TaskPath(
+                        project: project.id, worktree: worktree.id, task: task.id
                     )
-                    await store.dispatch(.renameJob(at: path, name: job.name))
+                    await store.dispatch(.renameTask(at: path, name: task.name))
                 }
             }
         }
     }
 
-    private static func isDefaultJobName(_ name: String, kind: JobKind) -> Bool {
+    private static func isDefaultJobName(_ name: String, kind: TaskKind) -> Bool {
         switch kind {
         case .shell:    return name == "shell"
         case .diff:     return name == "diff"
@@ -270,7 +294,7 @@ struct ManiApp: App {
         }
     }
 
-    // Every git-checkout worktree gets a permanent .diff Job (the Diff
+    // Every git-checkout worktree gets a permanent .diff Task (the Diff
     // Workspace is a fixture of the worktree, not something the user
     // spawns). The check is filesystem-based — Mani's WorktreeKind .folder
     // vs .git only tracks whether Mani created the directory via `git
@@ -282,8 +306,8 @@ struct ManiApp: App {
         for project in store.state.projects {
             for worktree in project.worktrees {
                 guard isGitCheckout(at: worktree.path) else { continue }
-                let hasDiff = worktree.jobs.contains { job in
-                    if case .diff = job.kind { return true }
+                let hasDiff = worktree.tasks.contains { task in
+                    if case .diff = task.kind { return true }
                     return false
                 }
                 if !hasDiff {
@@ -302,26 +326,11 @@ struct ManiApp: App {
         return FileManager.default.fileExists(atPath: gitMarker)
     }
 
-    // Periodically re-run pruneStaleClaudeJobs so an adopted/resumed
-    // claude that immediately exits ("No conversation found", crash,
-    // process killed externally) is cleaned up without requiring a
-    // relaunch. 30s feels right — short enough that dead Jobs don't
-    // linger noticeably, long enough not to thrash dispatch.
-    private static func startStaleClaudePruneTimer(store: Store) {
-        Task { @MainActor [weak store] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
-                guard let store else { return }
-                await Self.pruneStaleClaudeJobs(store: store)
-            }
-        }
-    }
-
     private static func startSnapshotTimer(store: Store) {
-        Task { @MainActor [weak store] in
-            while !Task.isCancelled {
+        _Concurrency.Task { @MainActor [weak store] in
+            while !_Concurrency.Task.isCancelled {
                 let interval = store?.state.settings.snapshotIntervalSeconds ?? 30
-                try? await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
+                try? await _Concurrency.Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
                 guard let store else { return }
                 let snapshot = store.state
                 await store.runner.compact(snapshot)
@@ -329,59 +338,49 @@ struct ManiApp: App {
         }
     }
 
-    private static func reconcileAfterCrash(_ state: AppState) -> AppState {
-        var s = state
-        for pi in s.projects.indices {
-            for wi in s.projects[pi].worktrees.indices {
-                for ji in s.projects[pi].worktrees[wi].jobs.indices {
-                    s.projects[pi].worktrees[wi].jobs[ji].primary.pid = nil
-                    for ai in s.projects[pi].worktrees[wi].jobs[ji].auxiliary.indices {
-                        s.projects[pi].worktrees[wi].jobs[ji].auxiliary[ai].pid = nil
-                    }
-                    if s.projects[pi].worktrees[wi].jobs[ji].status == .running {
-                        s.projects[pi].worktrees[wi].jobs[ji].status = .stopped
-                    }
-                }
-            }
-        }
-        return s
+    // Reconciliation happens dynamically via EffectRunner.reconcileRuntime
+    // at boot — no per-launch state-mutation pass needed. The reducer's
+    // .running runtime is recomputed against the agent's socket on disk;
+    // any task whose agent is gone gets a synthetic .taskExited.
+
+    private static func taskExists(_ path: TaskPath, in state: AppState) -> Bool {
+        state.projects
+            .first(where: { $0.id == path.project })?
+            .worktrees.first(where: { $0.id == path.worktree })?
+            .tasks.first(where: { $0.id == path.task }) != nil
     }
 
     private static func seedDefaults(store: Store) async {
         let home = FileManager.default.homeDirectoryForCurrentUser
         await store.dispatch(.createProject(
             name: "scratch",
-            color: "#ff5500"
+            color: "#ff5500",
+            rootDir: home
         ))
-        guard let project = store.state.projects.first else { return }
-        await store.dispatch(.createWorktree(
-            projectId: project.id,
-            name: "main",
-            kind: .folder,
-            path: home
-        ))
-        guard let worktree = store.state.projects.first?.worktrees.first else { return }
+        guard let project = store.state.projects.first,
+              let worktree = project.worktrees.first
+        else { return }
         let path = WorktreePath(project: project.id, worktree: worktree.id)
         let spec = ProcessSpec(
             command: "/bin/zsh",
             args: ["-l"],
             env: [:],
             cwd: home,
-            pid: nil,
-            initialInput: nil, restartPolicy: .never)
-        await store.dispatch(.createJob(
+            initialInput: nil
+        )
+        await store.dispatch(.createTask(
             at: path,
             name: "shell",
             kind: .shell,
-            primary: spec,
-            auxiliary: []
+            spec: spec,
+            autoSelect: true
         ))
     }
 
     // Map a freshly-detected Claude session to a Mani worktree by cwd. If
     // a worktree's path is a prefix of the session cwd, we treat the session
     // as belonging there and dispatch discoverClaudeSession (which is a no-op
-    // if a job already tracks this session id, so re-firing is safe).
+    // if a task already tracks this session id, so re-firing is safe).
     private static func handleDiscoveredSession(
         _ detected: ClaudeWatcher.DetectedSession,
         store: Store
@@ -390,7 +389,7 @@ struct ManiApp: App {
         let cwdURL = URL(fileURLWithPath: cwd).resolvingSymlinksInPath()
         // Skip auto-discovery when the matched worktree's path is too broad
         // (the user's $HOME, "/", or similar). Any claude run anywhere on
-        // the machine would otherwise produce a discovered job — that's the
+        // the machine would otherwise produce a discovered task — that's the
         // bug where dozens of "external claude" rows appear in the sidebar.
         let homePath = FileManager.default.homeDirectoryForCurrentUser
             .resolvingSymlinksInPath().path
@@ -404,19 +403,19 @@ struct ManiApp: App {
                 }
                 let path = WorktreePath(project: project.id, worktree: worktree.id)
 
-                // Prefer linking into an existing claude(nil) job in this
+                // Prefer linking into an existing claude(nil) task in this
                 // worktree (created by NewTaskSheet's "Claude" option) — the
                 // user spawned this session via Mani and wants the session
                 // attached to the existing slot, not a duplicate.
-                if let unlinked = worktree.jobs.first(where: { job in
-                    if case .claude(let sid) = job.kind, sid == nil { return true }
+                if let unlinked = worktree.tasks.first(where: { task in
+                    if case .claude(let sid) = task.kind, sid == nil { return true }
                     return false
                 }) {
-                    let jobPath = JobPath(
-                        project: project.id, worktree: worktree.id, job: unlinked.id
+                    let taskPath = TaskPath(
+                        project: project.id, worktree: worktree.id, task: unlinked.id
                     )
                     await store.dispatch(.linkClaudeSession(
-                        at: jobPath, sessionId: detected.sessionId
+                        at: taskPath, sessionId: detected.sessionId
                     ))
                 } else {
                     await store.dispatch(.discoverClaudeSession(
@@ -446,9 +445,9 @@ struct ManiApp: App {
         await store.dispatch(action)
     }
 
-    // Bump the unread badge on the job linked to this session whenever the
+    // Bump the unread badge on the task linked to this session whenever the
     // watcher sees new message lines on disk. ContentView clears it via
-    // markRead when the user selects the job.
+    // markRead when the user selects the task.
     private static func handleSessionMessages(
         _ detected: ClaudeWatcher.DetectedSession,
         delta: Int,
@@ -463,10 +462,10 @@ struct ManiApp: App {
         }
         for project in store.state.projects {
             for worktree in project.worktrees {
-                for job in worktree.jobs {
-                    if case let .claude(sid) = job.kind, sid == detected.sessionId {
-                        let path = JobPath(
-                            project: project.id, worktree: worktree.id, job: job.id
+                for task in worktree.tasks {
+                    if case let .claude(sid) = task.kind, sid == detected.sessionId {
+                        let path = TaskPath(
+                            project: project.id, worktree: worktree.id, task: task.id
                         )
                         await store.dispatch(.bumpUnread(at: path, by: delta))
                         return
@@ -474,7 +473,7 @@ struct ManiApp: App {
                 }
             }
         }
-        // No Job tracks this session id. Treat the message arrival
+        // No Task tracks this session id. Treat the message arrival
         // as a fresh discovery opportunity — covers the case where
         // the session's onNewSession fired against an empty project
         // list (claude was already running when the user added the
@@ -484,131 +483,24 @@ struct ManiApp: App {
         await handleDiscoveredSession(detected, store: store)
     }
 
-    // Walk all .claude(sid) jobs and delete any whose <sid>.jsonl is
+    // Walk all .claude(sid) tasks and delete any whose <sid>.jsonl is
     // missing under ~/.claude/projects/<slug>/. Covers:
-    //   - External claude jobs whose transcript was pruned by claude's
+    //   - External claude tasks whose transcript was pruned by claude's
     //     retention (and we can no longer adopt them).
-    //   - Mani-spawned claude jobs whose `claude --resume <sid>` failed
+    //   - Mani-spawned claude tasks whose `claude --resume <sid>` failed
     //     with "No conversation found" — these leave a live zsh prompt
-    //     attached to a useless Job, so the pid==nil guard from earlier
+    //     attached to a useless Task, so the pid==nil guard from earlier
     //     versions wasn't enough.
     //
     // Safety rules:
-    //   - Only consider jobs older than 5 s. Claude takes ~1 s to write
+    //   - Only consider tasks older than 5 s. Claude takes ~1 s to write
     //     its first event; we don't want to prune a task in the
-    //     post-spawn window before the JSONL appears.
-    //   - Only `.claude(sid)` with sid != nil. Unlinked `.claude(nil)`
-    //     slots stay (they're waiting for a hook/watcher link).
-    //   - Renamed jobs are pruned too: the rename refers to a session
-    //     that no longer exists, so it's stale clutter regardless.
-    @MainActor
-    private static func pruneStaleClaudeJobs(store: Store) async {
-        // Build a set of every session id that's recognized by either
-        // claude itself OR our safekeep cache:
-        //   - Flat <sid>.jsonl files anywhere under ~/.claude/projects.
-        //   - Entries in claude's own per-slug sessions-index.json
-        //     (newer format — flat JSONLs migrated to per-session
-        //     subdirs but the index still lists them).
-        //   - Entries in our own safekeep cache (we've seen them at
-        //     least once, so they're not stale from our POV).
-        // Old behavior used the per-worktree-slug path and kept
-        // false-positive deleting valid jobs whose transcript lived
-        // under a sibling slug.
-        let projectsRoot = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects")
-        var liveSids: Set<String> = []
-        if let slugs = try? FileManager.default.contentsOfDirectory(
-            at: projectsRoot, includingPropertiesForKeys: nil
-        ) {
-            for slugDir in slugs {
-                guard let files = try? FileManager.default.contentsOfDirectory(
-                    at: slugDir, includingPropertiesForKeys: nil
-                ) else { continue }
-                for file in files where file.pathExtension == "jsonl" {
-                    liveSids.insert(file.deletingPathExtension().lastPathComponent)
-                }
-                let claudeIndexURL = slugDir
-                    .appendingPathComponent("sessions-index.json", isDirectory: false)
-                if let data = try? Data(contentsOf: claudeIndexURL),
-                   let parsed = ClaudeOwnSessionsIndex.parse(data: data) {
-                    for record in parsed.entries {
-                        liveSids.insert(record.sessionId)
-                    }
-                }
-            }
-        }
-        for entries in SessionArchiveCache.shared.entriesByProject.values {
-            for entry in entries {
-                liveSids.insert(entry.sessionId)
-            }
-        }
+    // Note: pruneStaleClaudeJobs and dedupeClaudeJobs were removed.
+    // They auto-deleted tasks from state based on external signals
+    // (claude JSONL file presence, session-id uniqueness) that lag the
+    // reducer and produced false positives — the "Mani ate my task"
+    // bug. Removal of tasks is now exclusively via an explicit
+    // deleteTask action driven by the user. If duplicates or orphans
+    // accumulate, address them via UI affordances, not silent culling.
 
-        let now = Date()
-        var toRemove: [JobPath] = []
-        for project in store.state.projects {
-            for worktree in project.worktrees {
-                for job in worktree.jobs {
-                    guard case let .claude(sid) = job.kind, let sid else { continue }
-                    guard now.timeIntervalSince(job.createdAt) > 5 else { continue }
-                    if !liveSids.contains(sid) {
-                        toRemove.append(JobPath(
-                            project: project.id, worktree: worktree.id, job: job.id
-                        ))
-                    }
-                }
-            }
-        }
-        guard !toRemove.isEmpty else { return }
-        NSLog("[mani] pruning \(toRemove.count) claude jobs with missing transcripts")
-        for path in toRemove {
-            await store.dispatch(.deleteJob(at: path))
-        }
-    }
-
-    // Claude's slug convention for ~/.claude/projects/<slug>: leading dash
-    // followed by the absolute path with `/` replaced by `-`. Mirrors
-    // ClaudeHistoryScanner.sessions(forCwd:).
-    private static func claudeSlug(for worktreePath: URL) -> String {
-        let path = worktreePath.path
-        let trimmed = path.hasSuffix("/") ? String(path.dropLast()) : path
-        return "-" + trimmed
-            .split(separator: "/", omittingEmptySubsequences: true)
-            .joined(separator: "-")
-    }
-
-    // One-time cleanup on launch: persisted state from older Mani builds
-    // (before the reducer enforced sid uniqueness, ADR-016) can contain
-    // multiple claude jobs with the same session id. Walk the state, keep
-    // the "best" job per sid (live pid > most unread > most recent), and
-    // delete the rest via the standard deleteJob action so the deletion
-    // is durable on disk.
-    private static func dedupeClaudeJobs(store: Store) async {
-        let toRemove = store.state.duplicateClaudeJobsToRemove()
-        guard !toRemove.isEmpty else { return }
-        NSLog("[mani] deduping \(toRemove.count) duplicate claude jobs")
-        for path in toRemove {
-            await store.dispatch(.deleteJob(at: path))
-        }
-    }
-
-    private static func respawnSafelisted(store: Store) async {
-        for project in store.state.projects {
-            for worktree in project.worktrees {
-                for job in worktree.jobs {
-                    guard job.primary.command == "/bin/zsh",
-                          job.primary.pid == nil
-                    else { continue }
-                    let path = JobPath(project: project.id, worktree: worktree.id, job: job.id)
-                    // Re-spawn by emitting the same effect manually via the runner.
-                    // We don't go through the reducer because we don't want a new
-                    // jobCreated event — the job already exists; we're just
-                    // resuming its process.
-                    await store.runner.run(
-                        .spawn(at: path, index: 0, job.primary),
-                        dispatch: { action in await store.dispatch(action) }
-                    )
-                }
-            }
-        }
-    }
 }

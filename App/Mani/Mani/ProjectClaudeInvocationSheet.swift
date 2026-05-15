@@ -56,7 +56,7 @@ struct ProjectClaudeInvocationSheet: View {
                 Button("Apply") {
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     let next: String? = overrideEnabled && !trimmed.isEmpty ? trimmed : nil
-                    Task {
+                    _Concurrency.Task {
                         await store.dispatch(.setProjectClaudeInvocation(
                             id: project.id, invocation: next
                         ))

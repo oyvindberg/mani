@@ -25,7 +25,7 @@ struct SettingsView: View {
                     set: { newMB in
                         var s = store.state.settings
                         s.scrollbackCapBytes = max(1, newMB) * 1024 * 1024
-                        Task { await store.dispatch(.updateSettings(s)) }
+                        _Concurrency.Task { await store.dispatch(.updateSettings(s)) }
                     }
                 )
                 let intervalBinding = Binding<Int>(
@@ -33,7 +33,7 @@ struct SettingsView: View {
                     set: { newSec in
                         var s = store.state.settings
                         s.snapshotIntervalSeconds = max(5, newSec)
-                        Task { await store.dispatch(.updateSettings(s)) }
+                        _Concurrency.Task { await store.dispatch(.updateSettings(s)) }
                     }
                 )
                 Stepper(
@@ -51,7 +51,7 @@ struct SettingsView: View {
                     set: { value in
                         var s = store.state.settings
                         s.claudeInvocation = value
-                        Task { await store.dispatch(.updateSettings(s)) }
+                        _Concurrency.Task { await store.dispatch(.updateSettings(s)) }
                     }
                 )
                 TextField("Command", text: invocationBinding, prompt: Text("claude"))
@@ -75,7 +75,7 @@ struct SettingsView: View {
                     set: { name in
                         var s = store.state.settings
                         s.terminalTheme = name
-                        Task { await store.dispatch(.updateSettings(s)) }
+                        _Concurrency.Task { await store.dispatch(.updateSettings(s)) }
                     }
                 )
                 Picker("Theme", selection: themeBinding) {
@@ -92,7 +92,7 @@ struct SettingsView: View {
                     set: { name in
                         var s = store.state.settings
                         s.terminalFontFamily = (name == "(libghostty default)") ? "" : name
-                        Task { await store.dispatch(.updateSettings(s)) }
+                        _Concurrency.Task { await store.dispatch(.updateSettings(s)) }
                     }
                 )
                 Picker("Font", selection: fontBinding) {
@@ -107,7 +107,7 @@ struct SettingsView: View {
                     set: { newSize in
                         var s = store.state.settings
                         s.terminalFontSize = max(8, min(48, newSize))
-                        Task { await store.dispatch(.updateSettings(s)) }
+                        _Concurrency.Task { await store.dispatch(.updateSettings(s)) }
                     }
                 )
                 Stepper(
