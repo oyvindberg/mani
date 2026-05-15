@@ -96,6 +96,35 @@ actor EffectRunner {
         }
     }
 
+    // Add per-task env overrides at spawn time. Currently: HISTFILE,
+    // so each Mani-spawned zsh records its own shell history under
+    // tasks/<task-id>/zsh_history instead of clobbering the user's
+    // global ~/.zsh_history. We set it whenever the command is a
+    // POSIX shell (zsh/bash/ksh); fish doesn't honor HISTFILE and
+    // claude tasks immediately type their `claude` command into the
+    // shell, so any history captured for those is harmless noise.
+    // The env override is NOT persisted on the Task's spec — it's
+    // re-applied on every spawn — so older tasks pick this up on
+    // their next Restart without a migration.
+    private func augmentEnvForTask(spec: ProcessSpec, taskId: UUID) -> ProcessSpec {
+        let cmd = (spec.command as NSString).lastPathComponent
+        let isShell = (cmd == "zsh" || cmd == "bash" || cmd == "ksh")
+        guard isShell, spec.env["HISTFILE"] == nil else { return spec }
+        let dir = scrollbackRoot.appendingPathComponent(taskId.uuidString)
+        try? FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true
+        )
+        var env = spec.env
+        env["HISTFILE"] = dir.appendingPathComponent("zsh_history").path
+        return ProcessSpec(
+            command: spec.command,
+            args: spec.args,
+            env: env,
+            cwd: spec.cwd,
+            initialInput: spec.initialInput
+        )
+    }
+
     // Open an attach handle to a live agent and wire its onExit /
     // scrollback subscription the same way .spawn does. Used by
     // boot reconciliation when we discover an existing agent and
@@ -172,7 +201,8 @@ actor EffectRunner {
                         try? await _Concurrency.Task.sleep(nanoseconds: 25_000_000)
                     }
                 }
-                try await host.spawn(taskId: path.task, spec: spec)
+                let augmentedSpec = augmentEnvForTask(spec: spec, taskId: path.task)
+                try await host.spawn(taskId: path.task, spec: augmentedSpec)
                 let pty = try await host.attach(taskId: path.task)
                 ptys[path] = pty
                 await dispatch(.taskSpawned(at: path, when: Date()))
