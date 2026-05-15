@@ -1,22 +1,22 @@
 import SwiftUI
 import ManiCore
 
-// Per-project override for the `claude` command typed into the spawned
+// Per-repo override for the `claude` command typed into the spawned
 // shell. Empty / whitespace-only string clears the override and falls
 // back to Settings.claudeInvocation (Preferences → General).
-struct ProjectClaudeInvocationSheet: View {
+struct RepoClaudeInvocationSheet: View {
     let store: Store
-    let project: Project
+    let repo: Repo
     @Binding var isPresented: Bool
 
     @State private var text: String
     @State private var overrideEnabled: Bool
 
-    init(store: Store, project: Project, isPresented: Binding<Bool>) {
+    init(store: Store, repo: Repo, isPresented: Binding<Bool>) {
         self.store = store
-        self.project = project
+        self.repo = repo
         self._isPresented = isPresented
-        let initial = project.claudeInvocation
+        let initial = repo.claudeInvocation
         self._text = State(initialValue: initial ?? "")
         self._overrideEnabled = State(initialValue: initial != nil)
     }
@@ -25,10 +25,10 @@ struct ProjectClaudeInvocationSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
                 Circle()
-                    .fill(SwiftUI.Color(hex: project.color))
+                    .fill(SwiftUI.Color(hex: repo.color))
                     .frame(width: 22, height: 22)
                     .overlay(Circle().strokeBorder(.secondary.opacity(0.3), lineWidth: 0.5))
-                Text("Claude command for \(project.name)")
+                Text("Claude command for \(repo.name)")
                     .font(.headline)
                 Spacer()
             }
@@ -58,7 +58,7 @@ struct ProjectClaudeInvocationSheet: View {
                     let next: String? = overrideEnabled && !trimmed.isEmpty ? trimmed : nil
                     _Concurrency.Task {
                         await store.dispatch(.setProjectClaudeInvocation(
-                            id: project.id, invocation: next
+                            id: repo.id, invocation: next
                         ))
                         isPresented = false
                     }
@@ -74,6 +74,6 @@ struct ProjectClaudeInvocationSheet: View {
     private var hasChanges: Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let next: String? = overrideEnabled && !trimmed.isEmpty ? trimmed : nil
-        return next != project.claudeInvocation
+        return next != repo.claudeInvocation
     }
 }

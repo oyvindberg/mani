@@ -57,7 +57,7 @@ struct SettingsView: View {
                 TextField("Command", text: invocationBinding, prompt: Text("claude"))
                     .textFieldStyle(.roundedBorder)
                     .font(.system(.body, design: .monospaced))
-                Text("Typed into a fresh /bin/zsh -l after spawn. `--resume <sid>` is appended automatically when resuming. Override per project from the sidebar context menu.")
+                Text("Typed into a fresh /bin/zsh -l after spawn. `--resume <sid>` is appended automatically when resuming. Override per repo from the sidebar context menu.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } header: {

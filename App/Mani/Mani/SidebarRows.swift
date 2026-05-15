@@ -2,10 +2,10 @@ import SwiftUI
 import ManiCore
 
 // Visual components shared by the new sidebar hierarchy. Three levels:
-//   ProjectHeaderRow → WorktreeHeaderRow → TaskRow
+//   RepoHeaderRow → WorktreeHeaderRow → TaskRow
 // Each is collapsible at its parent level (the parent owns the
-// expansion state). A continuous project-color stripe runs along the
-// left edge of every row inside a project so the hierarchy reads as
+// expansion state). A continuous repo-color stripe runs along the
+// left edge of every row inside a repo so the hierarchy reads as
 // "this all belongs to atlas" even when worktrees are collapsed away.
 
 // MARK: - Task kind icon
@@ -57,10 +57,10 @@ struct TaskKindIcon: View {
     }
 }
 
-// MARK: - Project header
+// MARK: - Repo header
 
-struct ProjectHeaderRow: View {
-    let project: Project
+struct RepoHeaderRow: View {
+    let repo: Repo
     let isExpanded: Bool
     let taskCount: Int
     let anyChildThinking: Bool
@@ -72,17 +72,17 @@ struct ProjectHeaderRow: View {
     @State private var hovered = false
 
     var body: some View {
-        let color = SwiftUI.Color(hex: project.color)
+        let color = SwiftUI.Color(hex: repo.color)
         HStack(spacing: 8) {
             Image(systemName: "chevron.right")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(color.opacity(0.7))
                 .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 .frame(width: 12)
-            Text(project.name)
+            Text(repo.name)
                 .font(.system(.headline, design: .rounded))
-                .foregroundStyle(project.enabled ? color : color.opacity(0.55))
-                .strikethrough(!project.enabled)
+                .foregroundStyle(repo.enabled ? color : color.opacity(0.55))
+                .strikethrough(!repo.enabled)
             Spacer()
             if taskCount > 0 {
                 Text("\(taskCount)")
@@ -102,10 +102,10 @@ struct ProjectHeaderRow: View {
             ZStack {
                 if hovered { color.opacity(0.10) }
                 // .subtle so the per-task pulse remains the strongest
-                // signal — the project row is more of an aggregate
+                // signal — the repo row is more of an aggregate
                 // breathing.
                 ActivityOverlay(
-                    projectColor: color,
+                    repoColor: color,
                     isThinking: anyChildThinking,
                     isReady: anyChildReady,
                     isJustReady: anyChildJustReady,
@@ -123,7 +123,7 @@ struct ProjectHeaderRow: View {
 // MARK: - Worktree header
 
 struct WorktreeHeaderRow: View {
-    let project: Project
+    let repo: Repo
     let worktree: Worktree
     let isExpanded: Bool
     let diffJobId: UUID?
@@ -163,7 +163,7 @@ struct WorktreeHeaderRow: View {
                 // we don't want it to overpower the per-task pulses
                 // nested inside.
                 ActivityOverlay(
-                    projectColor: SwiftUI.Color(hex: project.color),
+                    repoColor: SwiftUI.Color(hex: repo.color),
                     isThinking: anyChildThinking,
                     isReady: anyChildReady,
                     isJustReady: anyChildJustReady,
@@ -192,11 +192,11 @@ struct WorktreeHeaderRow: View {
                 .opacity(worktree.enabled ? 1 : 0.5)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            if worktree.path == project.rootDir {
+            if worktree.path == repo.rootDir {
                 Image(systemName: "star.fill")
                     .font(.system(size: 8))
                     .foregroundStyle(.yellow)
-                    .help("Project root — `git worktree add` anchors here")
+                    .help("Repo root — `git worktree add` anchors here")
             }
             if worktree.missing {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -282,7 +282,7 @@ struct WorktreeHeaderRow: View {
 // MARK: - Task row
 
 struct TaskRow: View {
-    let project: Project
+    let repo: Repo
     let task: Task
     let selected: Bool
     let onTap: () -> Void
@@ -350,7 +350,7 @@ struct TaskRow: View {
                     SwiftUI.Color.secondary.opacity(0.10)
                 }
                 ActivityOverlay(
-                    projectColor: SwiftUI.Color(hex: project.color),
+                    repoColor: SwiftUI.Color(hex: repo.color),
                     isThinking: isThinking,
                     isReady: isReady,
                     isJustReady: isJustReady
@@ -426,7 +426,7 @@ struct SidebarActionButton: View {
 // truncated first-user-message preview underneath. Tap selects the
 // underlying Task so the user can adopt / delete from the right pane.
 struct PastSessionRow: View {
-    let project: Project
+    let repo: Repo
     let task: Task
     let selected: Bool
     let onTap: () -> Void
@@ -508,7 +508,7 @@ struct PastSessionRow: View {
 
 // MARK: - Pulse / ready overlay
 
-// Project-color overlay reused by both TaskRow and WorktreeHeaderRow.
+// Repo-color overlay reused by both TaskRow and WorktreeHeaderRow.
 // Three render modes:
 //   - thinking: opacity oscillates with a slow easeInOut, drawing the
 //     eye to "claude is working" — the row "breathes".
@@ -521,7 +521,7 @@ struct PastSessionRow: View {
 // rows; .subtle for the parent worktree (aggregate) row, so the
 // nested per-task pulse stays the primary signal.
 struct ActivityOverlay: View {
-    let projectColor: SwiftUI.Color
+    let repoColor: SwiftUI.Color
     let isThinking: Bool
     let isReady: Bool
     let isJustReady: Bool
@@ -533,13 +533,13 @@ struct ActivityOverlay: View {
     }
 
     init(
-        projectColor: SwiftUI.Color,
+        repoColor: SwiftUI.Color,
         isThinking: Bool,
         isReady: Bool,
         isJustReady: Bool,
         intensity: Intensity
     ) {
-        self.projectColor = projectColor
+        self.repoColor = repoColor
         self.isThinking = isThinking
         self.isReady = isReady
         self.isJustReady = isJustReady
@@ -550,13 +550,13 @@ struct ActivityOverlay: View {
     // override intensity). The "no default parameters" rule still
     // holds — this is a separate initializer, not a defaulted arg.
     init(
-        projectColor: SwiftUI.Color,
+        repoColor: SwiftUI.Color,
         isThinking: Bool,
         isReady: Bool,
         isJustReady: Bool
     ) {
         self.init(
-            projectColor: projectColor,
+            repoColor: repoColor,
             isThinking: isThinking,
             isReady: isReady,
             isJustReady: isJustReady,
@@ -594,7 +594,7 @@ struct ActivityOverlay: View {
     var body: some View {
         Group {
             if isThinking {
-                projectColor
+                repoColor
                     .opacity(pulsePhase ? maxThinkingOpacity : minThinkingOpacity)
                     .animation(
                         .easeInOut(duration: 1.2).repeatForever(autoreverses: true),
@@ -602,7 +602,7 @@ struct ActivityOverlay: View {
                     )
                     .onAppear { pulsePhase = true }
             } else if isReady {
-                projectColor
+                repoColor
                     .opacity(isJustReady ? justReadyOpacity : readyOpacity)
                     .animation(.easeOut(duration: 1.5), value: isJustReady)
             }
@@ -612,12 +612,12 @@ struct ActivityOverlay: View {
 }
 
 // Row for a safekept session whose originating worktree is no longer
-// in the project's live worktrees. Doesn't render off a Task because
+// in the repo's live worktrees. Doesn't render off a Task because
 // these don't have one — they live only in the SessionArchiveCache.
 // Click does nothing yet (a future "Adopt as worktree" / "Resume in
 // new worktree" action would dispatch through Store).
 struct ArchivedSessionRow: View {
-    let project: Project
+    let repo: Repo
     let entry: SessionIndexEntry
 
     @State private var hovered = false

@@ -2,7 +2,7 @@ import Foundation
 
 public struct AppState: Codable, Equatable {
     public var schemaVersion: Int
-    public var projects: [Project]
+    public var repos: [Repo]
     public var settings: Settings
     // Currently selected task in the UI. Reducer-owned so creating
     // a new task can auto-focus it, deleting the selected task can
@@ -11,26 +11,37 @@ public struct AppState: Codable, Equatable {
 
     public init(
         schemaVersion: Int,
-        projects: [Project],
+        repos: [Repo],
         settings: Settings,
         selectedTaskPath: TaskPath?
     ) {
         self.schemaVersion = schemaVersion
-        self.projects = projects
+        self.repos = repos
         self.settings = settings
         self.selectedTaskPath = selectedTaskPath
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, projects, settings, selectedTaskPath
+        case schemaVersion, repos, settings, selectedTaskPath
     }
 
-    // Custom decoder so older snapshots (no selectedTaskPath field)
-    // still load — selection defaults to nil for migrated state.
+    // Legacy key from before the Project → Repo rename.
+    private enum LegacyKeys: String, CodingKey {
+        case projects
+    }
+
+    // Decoder accepts both the new `repos` key and the legacy
+    // `projects` key so snapshots written by older Mani builds load
+    // cleanly. selectedTaskPath also tolerates absent (defaults nil).
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
-        self.projects = try c.decode([Project].self, forKey: .projects)
+        if let repos = try c.decodeIfPresent([Repo].self, forKey: .repos) {
+            self.repos = repos
+        } else {
+            let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+            self.repos = try legacy.decode([Repo].self, forKey: .projects)
+        }
         self.settings = try c.decode(Settings.self, forKey: .settings)
         self.selectedTaskPath = try c.decodeIfPresent(
             TaskPath.self, forKey: .selectedTaskPath
@@ -39,7 +50,7 @@ public struct AppState: Codable, Equatable {
 
     public static let empty = AppState(
         schemaVersion: 2,
-        projects: [],
+        repos: [],
         settings: Settings(
             scrollbackCapBytes: 32 * 1024 * 1024,
             snapshotIntervalSeconds: 30,
@@ -56,12 +67,12 @@ public struct AppState: Codable, Equatable {
     // per sid across the whole state — the reducer's linkClaudeSession
     // and discoverClaudeSession both enforce this.
     public func taskOwningClaudeSession(_ sessionId: String) -> TaskPath? {
-        for project in projects {
-            for worktree in project.worktrees {
+        for repo in repos {
+            for worktree in repo.worktrees {
                 for task in worktree.tasks {
                     if case let .claude(sid) = task.kind, sid == sessionId {
                         return TaskPath(
-                            project: project.id,
+                            repo: repo.id,
                             worktree: worktree.id,
                             task: task.id
                         )
@@ -85,12 +96,12 @@ public struct AppState: Codable, Equatable {
             let task: Task
         }
         var bySid: [String: [Entry]] = [:]
-        for project in projects {
-            for worktree in project.worktrees {
+        for repo in repos {
+            for worktree in repo.worktrees {
                 for task in worktree.tasks {
                     if case let .claude(sid?) = task.kind {
                         let path = TaskPath(
-                            project: project.id,
+                            repo: repo.id,
                             worktree: worktree.id,
                             task: task.id
                         )
@@ -119,12 +130,12 @@ public struct AppState: Codable, Equatable {
     // All `.claude` Tasks across the state, paired with their TaskPath.
     public func claudeTasks() -> [(TaskPath, Task)] {
         var out: [(TaskPath, Task)] = []
-        for project in projects {
-            for worktree in project.worktrees {
+        for repo in repos {
+            for worktree in repo.worktrees {
                 for task in worktree.tasks {
                     guard case .claude = task.kind else { continue }
                     let path = TaskPath(
-                        project: project.id, worktree: worktree.id, task: task.id
+                        repo: repo.id, worktree: worktree.id, task: task.id
                     )
                     out.append((path, task))
                 }
@@ -155,8 +166,8 @@ public struct Settings: Codable, Equatable {
     // Monospace font family. Empty means "use libghostty default".
     public var terminalFontFamily: String
     public var terminalFontSize: Int
-    // Default invocation of the claude binary; Project.claudeInvocation
-    // overrides per-project. `--resume <sid>` is appended at spawn time
+    // Default invocation of the claude binary; Repo.claudeInvocation
+    // overrides per-repo. `--resume <sid>` is appended at spawn time
     // by ClaudeTaskSpec.make.
     public var claudeInvocation: String
 

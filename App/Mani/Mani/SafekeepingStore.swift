@@ -2,19 +2,19 @@ import Foundation
 import ManiCore
 import SwiftUI
 
-// Persistent per-project archive of historical Claude conversations.
+// Persistent per-repo archive of historical Claude conversations.
 //
-// Layout under ~/Library/Application Support/Mani/projects/<project-uuid>/:
+// Layout under ~/Library/Application Support/Mani/repos/<repo-uuid>/:
 //   sessions-index.json            tiny summary, read on every boot
 //   sessions/<session-id>.jsonl.gz gzipped transcript copy
 //
 // Why this exists:
 //   1. claude.ai's own cleanup deletes session JSONLs after some period,
 //      but the user wants conversations from worktrees that have since
-//      been moved/deleted to keep showing up under their project. We
+//      been moved/deleted to keep showing up under their repo. We
 //      copy + compress to a place WE control.
 //   2. discoverHistoricalClaudeSessions previously walked every
-//      ~/.claude/projects/*.jsonl on every boot — hundreds of MB of
+//      ~/.claude/repos/*.jsonl on every boot — hundreds of MB of
 //      file I/O. Reading sessions-index.json instead is microseconds.
 //
 // Atomicity:
@@ -24,23 +24,23 @@ import SwiftUI
 //     half-written .tmp is invisible (we only ever look for the final
 //     name) and harmless.
 //
-// We never delete the source ~/.claude/projects/*.jsonl — claude itself
+// We never delete the source ~/.claude/repos/*.jsonl — claude itself
 // uses those for --resume. We safe-guard a copy.
 final class SafekeepingStore: ObservableObject {
-    let projectsRoot: URL
+    let reposRoot: URL
 
     init(appSupportRoot: URL) throws {
-        let url = appSupportRoot.appendingPathComponent("projects", isDirectory: true)
+        let url = appSupportRoot.appendingPathComponent("repos", isDirectory: true)
         try FileManager.default.createDirectory(
             at: url, withIntermediateDirectories: true
         )
-        self.projectsRoot = url
+        self.reposRoot = url
     }
 
     // MARK: - Index
 
-    func indexURL(for projectId: UUID) -> URL {
-        projectDir(projectId)
+    func indexURL(for repoId: UUID) -> URL {
+        repoDir(repoId)
             .appendingPathComponent("sessions-index.json", isDirectory: false)
     }
 
@@ -48,16 +48,16 @@ final class SafekeepingStore: ObservableObject {
     // corrupt. We accept a single .empty fallback rather than throwing
     // because the alternative is a boot-time crash on the very file we
     // wrote to make boots faster.
-    func loadIndex(for projectId: UUID) -> SessionIndex {
-        let url = indexURL(for: projectId)
+    func loadIndex(for repoId: UUID) -> SessionIndex {
+        let url = indexURL(for: repoId)
         guard let data = try? Data(contentsOf: url) else { return .empty }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return (try? decoder.decode(SessionIndex.self, from: data)) ?? .empty
     }
 
-    func writeIndex(_ index: SessionIndex, for projectId: UUID) throws {
-        let dir = projectDir(projectId)
+    func writeIndex(_ index: SessionIndex, for repoId: UUID) throws {
+        let dir = repoDir(repoId)
         try FileManager.default.createDirectory(
             at: dir, withIntermediateDirectories: true
         )
@@ -65,7 +65,7 @@ final class SafekeepingStore: ObservableObject {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(index)
-        let final = indexURL(for: projectId)
+        let final = indexURL(for: repoId)
         let tmp = final.appendingPathExtension("tmp")
         try data.write(to: tmp, options: [.atomic])
         if FileManager.default.fileExists(atPath: final.path) {
@@ -76,30 +76,30 @@ final class SafekeepingStore: ObservableObject {
 
     // Upsert a single entry — keyed by sessionId, preserving entry order
     // so the index is stable on disk (helps diff-driven debugging).
-    func upsert(_ entry: SessionIndexEntry, for projectId: UUID) throws {
-        var index = loadIndex(for: projectId)
+    func upsert(_ entry: SessionIndexEntry, for repoId: UUID) throws {
+        var index = loadIndex(for: repoId)
         if let i = index.entries.firstIndex(where: { $0.sessionId == entry.sessionId }) {
             index.entries[i] = entry
         } else {
             index.entries.append(entry)
         }
-        try writeIndex(index, for: projectId)
+        try writeIndex(index, for: repoId)
     }
 
     // MARK: - Transcripts
 
-    func transcriptURL(sessionId: String, for projectId: UUID) -> URL {
-        sessionsDir(projectId)
+    func transcriptURL(sessionId: String, for repoId: UUID) -> URL {
+        sessionsDir(repoId)
             .appendingPathComponent("\(sessionId).jsonl.gz", isDirectory: false)
     }
 
-    func hasTranscript(sessionId: String, for projectId: UUID) -> Bool {
+    func hasTranscript(sessionId: String, for repoId: UUID) -> Bool {
         FileManager.default.fileExists(atPath:
-            transcriptURL(sessionId: sessionId, for: projectId).path
+            transcriptURL(sessionId: sessionId, for: repoId).path
         )
     }
 
-    // gzip-copy `source` into the project's sessions dir. Returns the
+    // gzip-copy `source` into the repo's sessions dir. Returns the
     // uncompressed byte count (which the caller stores in the index
     // entry as transcriptBytes). Synchronous; intended to be called
     // off the main actor by the sweeper.
@@ -107,13 +107,13 @@ final class SafekeepingStore: ObservableObject {
     func archiveTranscript(
         from source: URL,
         sessionId: String,
-        for projectId: UUID
+        for repoId: UUID
     ) throws -> Int {
-        let dir = sessionsDir(projectId)
+        let dir = sessionsDir(repoId)
         try FileManager.default.createDirectory(
             at: dir, withIntermediateDirectories: true
         )
-        let final = transcriptURL(sessionId: sessionId, for: projectId)
+        let final = transcriptURL(sessionId: sessionId, for: repoId)
         let tmp = final.appendingPathExtension("tmp")
         if FileManager.default.fileExists(atPath: tmp.path) {
             try FileManager.default.removeItem(at: tmp)
@@ -158,9 +158,9 @@ final class SafekeepingStore: ObservableObject {
     // live FD on a potentially-gone-from-disk source. Synchronous;
     // call off the main actor.
     func readArchivedTranscript(
-        sessionId: String, for projectId: UUID
+        sessionId: String, for repoId: UUID
     ) throws -> Data {
-        let url = transcriptURL(sessionId: sessionId, for: projectId)
+        let url = transcriptURL(sessionId: sessionId, for: repoId)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/gzip")
         process.arguments = ["-dc", url.path]
@@ -181,14 +181,14 @@ final class SafekeepingStore: ObservableObject {
 
     // MARK: - Paths
 
-    private func projectDir(_ projectId: UUID) -> URL {
-        projectsRoot.appendingPathComponent(
-            projectId.uuidString, isDirectory: true
+    private func repoDir(_ repoId: UUID) -> URL {
+        reposRoot.appendingPathComponent(
+            repoId.uuidString, isDirectory: true
         )
     }
 
-    private func sessionsDir(_ projectId: UUID) -> URL {
-        projectDir(projectId)
+    private func sessionsDir(_ repoId: UUID) -> URL {
+        repoDir(repoId)
             .appendingPathComponent("sessions", isDirectory: true)
     }
 }

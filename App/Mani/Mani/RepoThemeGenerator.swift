@@ -2,15 +2,15 @@ import Foundation
 import GhosttyTerminal
 
 // Builds a TerminalTheme (which carries both light + dark variants) from
-// a single hex color — the project's identity color. libghostty swaps
-// light vs. dark automatically with the system appearance, so per-project
+// a single hex color — the repo's identity color. libghostty swaps
+// light vs. dark automatically with the system appearance, so per-repo
 // glow follows macOS Light/Dark without us re-rendering.
 //
 // Approach: hand-pick a GitHub-Light-ish bright palette and a Tokyo-Night-
-// ish dark palette, then tint each background ~10% toward the project
+// ish dark palette, then tint each background ~10% toward the repo
 // color so the surface has a soft glow that's recognisable at a glance
 // while still leaving plenty of contrast for foreground text.
-enum ProjectThemeGenerator {
+enum RepoThemeGenerator {
 
     static func theme(forProjectColor hex: String) -> TerminalTheme {
         let accent = RGB(hex: hex) ?? RGB(r: 0.5, g: 0.5, b: 0.5)
@@ -21,7 +21,7 @@ enum ProjectThemeGenerator {
     }
 
     // Cache key fragment. Theme generation is deterministic in the input
-    // hex, so the TerminalRendererCache can use this to key per-project
+    // hex, so the TerminalRendererCache can use this to key per-repo
     // theme without serialising the whole TerminalTheme.
     static func cacheKey(forProjectColor hex: String) -> String {
         "gen:\(hex.lowercased())"

@@ -48,12 +48,12 @@ public enum ClaudeTaskSpec {
         return task.spec
     }
 
-    // Resolve project override → settings default → literal "claude".
+    // Resolve repo override → settings default → literal "claude".
     public static func resolveInvocation(
-        project: Project?,
+        repo: Repo?,
         settings: Settings
     ) -> String {
-        let raw = project?.claudeInvocation ?? settings.claudeInvocation
+        let raw = repo?.claudeInvocation ?? settings.claudeInvocation
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "claude" : trimmed
     }

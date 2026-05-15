@@ -10,7 +10,7 @@ public enum Effect {
     // Tell the host to kill the agent for this Task. Resolution is by
     // task UUID; no pid required because Mani doesn't store kernel pids.
     case terminate(at: TaskPath)
-    case createGitWorktree(projectId: UUID, repoRoot: URL, branch: String, path: URL, baseRef: String?)
+    case createGitWorktree(repoId: UUID, repoRoot: URL, branch: String, path: URL, baseRef: String?)
     case archive(at: TaskPath)
     case watchClaudeProjects(URL)
     case userNotification(title: String, body: String)

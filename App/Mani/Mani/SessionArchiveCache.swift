@@ -2,17 +2,17 @@ import Foundation
 import SwiftUI
 import ManiCore
 
-// Main-actor cache of per-project session index entries.
+// Main-actor cache of per-repo session index entries.
 //
 // Boot:
-//   1. ManiApp calls loadFromDisk(for:) for every project — populates
+//   1. ManiApp calls loadFromDisk(for:) for every repo — populates
 //      the cache from sessions-index.json instantly.
 //   2. ExternalSessionInfoCache is mirrored from these entries so
 //      every existing PastSessionRow / TaskStats display keeps working
 //      without modification.
 //
 // Live:
-//   - SafekeepingSweeper replaces the per-project entry set every 5
+//   - SafekeepingSweeper replaces the per-repo entry set every 5
 //     min. Sidebar re-renders via @ObservedObject.
 //   - ClaudeWatcher.onMessages still calls
 //     ExternalSessionInfoCache.touch(...) for hot sessions; the
@@ -21,15 +21,15 @@ import ManiCore
 final class SessionArchiveCache: ObservableObject {
     static let shared = SessionArchiveCache()
 
-    @Published private(set) var entriesByProject: [UUID: [SessionIndexEntry]] = [:]
+    @Published private(set) var entriesByRepo: [UUID: [SessionIndexEntry]] = [:]
 
     // Used by the sidebar status row to show "Scanning Claude
     // history…" while the very first post-boot sweep is in flight.
     @Published var bootstrapComplete: Bool = false
 
-    func loadFromDisk(for projectId: UUID, store: SafekeepingStore) {
-        let index = store.loadIndex(for: projectId)
-        entriesByProject[projectId] = index.entries
+    func loadFromDisk(for repoId: UUID, store: SafekeepingStore) {
+        let index = store.loadIndex(for: repoId)
+        entriesByRepo[repoId] = index.entries
         // Mirror into the legacy cache so PastSessionRow keeps working
         // unchanged.
         for entry in index.entries {
@@ -44,8 +44,8 @@ final class SessionArchiveCache: ObservableObject {
         }
     }
 
-    func replace(entries: [SessionIndexEntry], for projectId: UUID) {
-        entriesByProject[projectId] = entries
+    func replace(entries: [SessionIndexEntry], for repoId: UUID) {
+        entriesByRepo[repoId] = entries
         for entry in entries {
             ExternalSessionInfoCache.shared.record(
                 sid: entry.sessionId,
@@ -58,18 +58,18 @@ final class SessionArchiveCache: ObservableObject {
         }
     }
 
-    func entries(for projectId: UUID) -> [SessionIndexEntry] {
-        entriesByProject[projectId] ?? []
+    func entries(for repoId: UUID) -> [SessionIndexEntry] {
+        entriesByRepo[repoId] ?? []
     }
 
-    // Split a project's entries into "originating worktree still
+    // Split a repo's entries into "originating worktree still
     // present" vs. "archived worktree". The caller (sidebar) passes
     // the live worktree paths; this is recomputed on every render so
     // it always reflects current state.
     func entriesByPresence(
-        for projectId: UUID, worktreePaths: [String]
+        for repoId: UUID, worktreePaths: [String]
     ) -> (present: [SessionIndexEntry], archived: [SessionIndexEntry]) {
-        let entries = entries(for: projectId)
+        let entries = entries(for: repoId)
         var present: [SessionIndexEntry] = []
         var archived: [SessionIndexEntry] = []
         for entry in entries {

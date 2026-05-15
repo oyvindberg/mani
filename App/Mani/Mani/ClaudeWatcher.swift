@@ -1,7 +1,7 @@
 import Foundation
 import CoreServices
 
-// FSEvents-driven tail-tracker over ~/.claude/projects/. Validated by
+// FSEvents-driven tail-tracker over ~/.claude/repos/. Validated by
 // Spike 6 (docs/spikes.md): kFSEventStreamCreateFlagUseCFTypes is required;
 // anchor the next read offset on bytes-actually-read, not stat size, to
 // avoid double-counting under concurrent writes.
@@ -61,19 +61,19 @@ final class ClaudeWatcher: ObservableObject {
         return f
     }()
 
-    let projectsDir: String
+    let reposDir: String
 
-    init(projectsDir: String) {
-        self.projectsDir = projectsDir
+    init(reposDir: String) {
+        self.reposDir = reposDir
     }
 
     func start() {
         guard stream == nil else { return }
         try? FileManager.default.createDirectory(
-            atPath: projectsDir, withIntermediateDirectories: true
+            atPath: reposDir, withIntermediateDirectories: true
         )
 
-        let paths = [projectsDir] as CFArray
+        let paths = [reposDir] as CFArray
         var context = FSEventStreamContext(
             version: 0,
             info: Unmanaged.passUnretained(self).toOpaque(),

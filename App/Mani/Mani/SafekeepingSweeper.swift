@@ -3,14 +3,14 @@ import ManiCore
 import SwiftUI
 
 // Background process that:
-//   1. Walks ~/.claude/projects/-<slug>/*.jsonl
+//   1. Walks ~/.claude/repos/-<slug>/*.jsonl
 //   2. Matches each session file's recorded cwd to the longest-prefix
-//      worktree across all projects in the live AppState.
+//      worktree across all repos in the live AppState.
 //   3. For settled files (mtime > 5 min) without a safekept copy:
 //      gzip-archive the JSONL and upsert a full index entry.
 //   4. For hot files (mtime <= 5 min): upsert a thin index entry only.
 //      The next sweep that catches the file after it settles archives it.
-//   5. Publishes per-project entries (full set, including archived-
+//   5. Publishes per-repo entries (full set, including archived-
 //      worktree ones) onto SessionArchiveCache so the sidebar can
 //      render PastSessionRow + the "Archived worktrees" group.
 //
@@ -71,11 +71,11 @@ final class SafekeepingSweeper: ObservableObject {
             lastSweepAt = Date()
         }
 
-        // Snapshot the project→worktrees map up-front. The sweep runs
+        // Snapshot the repo→worktrees map up-front. The sweep runs
         // off-main; if state mutates mid-sweep that's fine, but a
         // stable snapshot keeps the matching consistent.
-        let projectsSnapshot: [ProjectMatcher] = store.state.projects.map {
-            ProjectMatcher(
+        let reposSnapshot: [RepoMatcher] = store.state.repos.map {
+            RepoMatcher(
                 id: $0.id,
                 name: $0.name,
                 worktreePaths: $0.worktrees.map { $0.path.resolvingSymlinksInPath().path }
@@ -93,19 +93,19 @@ final class SafekeepingSweeper: ObservableObject {
         }
 
         // The actual filesystem walk + gzip work runs off the main
-        // actor; results come back as a per-project diff to apply to
+        // actor; results come back as a per-repo diff to apply to
         // the cache.
         let diffs = await _Concurrency.Task.detached(priority: .utility) {
             SafekeepingSweepWorker.sweep(
-                projects: projectsSnapshot, archive: archive, progress: progress
+                repos: reposSnapshot, archive: archive, progress: progress
             )
         }.value
 
-        for (projectId, entries) in diffs {
-            cache.replace(entries: entries, for: projectId)
+        for (repoId, entries) in diffs {
+            cache.replace(entries: entries, for: repoId)
         }
-        // Reactive discovery: a project the user just created (or a
-        // claude conversation that pre-existed the project) needs
+        // Reactive discovery: a repo the user just created (or a
+        // claude conversation that pre-existed the repo) needs
         // Jobs dispatched once the cache catches up. Without this
         // call, those sessions would only show up after the next
         // app restart's bootstrap pass.
@@ -113,9 +113,9 @@ final class SafekeepingSweeper: ObservableObject {
     }
 }
 
-// Pure-data view of a project for the off-main sweep — avoids
-// snapshotting Project structs across actor boundaries.
-struct ProjectMatcher {
+// Pure-data view of a repo for the off-main sweep — avoids
+// snapshotting Repo structs across actor boundaries.
+struct RepoMatcher {
     let id: UUID
     let name: String
     let worktreePaths: [String]
@@ -123,21 +123,21 @@ struct ProjectMatcher {
 
 enum SafekeepingSweepWorker {
 
-    // Returns [projectId: full current entries] for any project that
-    // had at least one matched session file. Projects with no matches
+    // Returns [repoId: full current entries] for any repo that
+    // had at least one matched session file. Repos with no matches
     // are omitted (don't touch their cache slot).
     static func sweep(
-        projects: [ProjectMatcher],
+        repos: [RepoMatcher],
         archive: SafekeepingStore,
         progress: (String) -> Void
     ) -> [UUID: [SessionIndexEntry]] {
         let claudeRoot = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects")
+            .appendingPathComponent(".claude/repos")
         guard let slugDirs = try? FileManager.default.contentsOfDirectory(
             at: claudeRoot, includingPropertiesForKeys: nil
         ) else { return [:] }
 
-        // Rebuild each project's index from scratch this pass. We
+        // Rebuild each repo's index from scratch this pass. We
         // seed an "archived metadata" lookup from the prior on-disk
         // index so previously-archived sessions keep their
         // archivedAt + transcriptBytes; entries we don't re-add this
@@ -145,13 +145,13 @@ enum SafekeepingSweepWorker {
         var indexes: [UUID: SessionIndex] = [:]
         var priorArchived: [UUID: [String: SessionIndexEntry]] = [:]
         var changed: Set<UUID> = []
-        for project in projects {
-            let prior = archive.loadIndex(for: project.id)
+        for repo in repos {
+            let prior = archive.loadIndex(for: repo.id)
             var lookup: [String: SessionIndexEntry] = [:]
             for entry in prior.entries { lookup[entry.sessionId] = entry }
-            priorArchived[project.id] = lookup
-            indexes[project.id] = .empty
-            if !prior.entries.isEmpty { changed.insert(project.id) }
+            priorArchived[repo.id] = lookup
+            indexes[repo.id] = .empty
+            if !prior.entries.isEmpty { changed.insert(repo.id) }
         }
 
         let homePath = FileManager.default.homeDirectoryForCurrentUser
@@ -180,23 +180,23 @@ enum SafekeepingSweepWorker {
             else { continue }
 
             for record in parsed.entries {
-                let cwd = record.projectPath
+                let cwd = record.repoPath
                 if cwd == homePath || cwd == "/" { continue }
-                guard let match = bestMatch(cwd: cwd, projects: projects)
+                guard let match = bestMatch(cwd: cwd, repos: repos)
                 else { continue }
-                let projectId = match.id
+                let repoId = match.id
 
                 let fullPath = URL(fileURLWithPath: record.fullPath)
                 let transcriptExists = FileManager.default
                     .fileExists(atPath: fullPath.path)
                 let alreadySafekept = archive.hasTranscript(
-                    sessionId: record.sessionId, for: projectId
+                    sessionId: record.sessionId, for: repoId
                 )
                 // Content-gone (no JSONL, no gzip) → skip; nothing
                 // actionable for the user.
                 if !transcriptExists, !alreadySafekept { continue }
 
-                let prior = priorArchived[projectId]?[record.sessionId]
+                let prior = priorArchived[repoId]?[record.sessionId]
                 var archivedAt: Date? = prior?.archivedAt
                 var transcriptBytes: Int = prior?.transcriptBytes ?? 0
 
@@ -204,7 +204,7 @@ enum SafekeepingSweepWorker {
                     do {
                         let bytes = try archive.archiveTranscript(
                             from: fullPath, sessionId: record.sessionId,
-                            for: projectId
+                            for: repoId
                         )
                         archivedAt = Date()
                         transcriptBytes = bytes
@@ -224,46 +224,46 @@ enum SafekeepingSweepWorker {
                     archivedAt: archivedAt
                 )
 
-                var idx = indexes[projectId] ?? .empty
+                var idx = indexes[repoId] ?? .empty
                 idx.entries.append(entry)
-                indexes[projectId] = idx
-                if prior != entry { changed.insert(projectId) }
+                indexes[repoId] = idx
+                if prior != entry { changed.insert(repoId) }
             }
         }
 
         // Flush changed indexes to disk. Errors here are logged but
         // not propagated — the in-memory result still goes to the
         // cache so the UI updates.
-        for projectId in changed {
-            guard let idx = indexes[projectId] else { continue }
+        for repoId in changed {
+            guard let idx = indexes[repoId] else { continue }
             do {
-                try archive.writeIndex(idx, for: projectId)
+                try archive.writeIndex(idx, for: repoId)
             } catch {
                 NSLog("[mani] safekeeping index write failed: \(error)")
             }
         }
 
-        // Even unchanged projects should be returned so the cache
+        // Even unchanged repos should be returned so the cache
         // reflects the on-disk state on a fresh boot (where the cache
         // starts empty and the index is the source of truth).
         var result: [UUID: [SessionIndexEntry]] = [:]
-        for project in projects {
-            result[project.id] = indexes[project.id]?.entries ?? []
+        for repo in repos {
+            result[repo.id] = indexes[repo.id]?.entries ?? []
         }
         return result
     }
 
     private static func bestMatch(
-        cwd: String, projects: [ProjectMatcher]
-    ) -> ProjectMatcher? {
-        var best: ProjectMatcher?
+        cwd: String, repos: [RepoMatcher]
+    ) -> RepoMatcher? {
+        var best: RepoMatcher?
         var bestLen = 0
-        for project in projects {
-            for wt in project.worktreePaths {
+        for repo in repos {
+            for wt in repo.worktreePaths {
                 if cwd == wt || cwd.hasPrefix(wt + "/") {
                     if wt.count > bestLen {
                         bestLen = wt.count
-                        best = project
+                        best = repo
                     }
                 }
             }
@@ -317,7 +317,7 @@ enum SafekeepingSweepWorker {
 //   { "version": 1, "entries": [
 //       { "sessionId": "...", "fullPath": "...", "firstPrompt": "...",
 //         "summary": "...", "messageCount": 58, "modified": "...",
-//         "projectPath": "...", ... }
+//         "repoPath": "...", ... }
 //   ]}
 // We only pluck the fields we need; missing ones decode as nil.
 enum ClaudeOwnSessionsIndex {
@@ -329,7 +329,7 @@ enum ClaudeOwnSessionsIndex {
         let summary: String?
         let messageCount: Int?
         let modified: Date?
-        let projectPath: String
+        let repoPath: String
     }
 
     struct Parsed {
@@ -349,7 +349,7 @@ enum ClaudeOwnSessionsIndex {
         for raw in entriesRaw {
             guard let sid = raw["sessionId"] as? String,
                   let fullPath = raw["fullPath"] as? String,
-                  let projectPath = raw["projectPath"] as? String
+                  let repoPath = raw["repoPath"] as? String
             else { continue }
             let modified: Date? = (raw["modified"] as? String).flatMap {
                 iso.date(from: $0) ?? isoNoFrac.date(from: $0)
@@ -361,7 +361,7 @@ enum ClaudeOwnSessionsIndex {
                 summary: raw["summary"] as? String,
                 messageCount: raw["messageCount"] as? Int,
                 modified: modified,
-                projectPath: projectPath
+                repoPath: repoPath
             ))
         }
         return Parsed(entries: out)

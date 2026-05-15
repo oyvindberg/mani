@@ -77,8 +77,8 @@ final class WorktreeStatsPoller {
     private func collectWorktrees() async -> [(UUID, URL)] {
         guard let store else { return [] }
         var result: [(UUID, URL)] = []
-        for project in store.state.projects {
-            for worktree in project.worktrees {
+        for repo in store.state.repos {
+            for worktree in repo.worktrees {
                 result.append((worktree.id, worktree.path))
             }
         }

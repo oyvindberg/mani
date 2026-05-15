@@ -25,12 +25,12 @@ final class ClaudeSessionStartTests: XCTestCase {
     func test_route_resume_retargetsMatchingWorktreeTask() {
         let oldSid = "old-session-id"
         let newSid = "new-session-id"
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
         let wtPath = URL(fileURLWithPath: "/Users/me/wt")
         let state = stateWith(
-            projectId: projectId,
+            repoId: repoId,
             worktreeId: worktreeId,
             worktreePath: wtPath,
             tasks: [
@@ -52,18 +52,18 @@ final class ClaudeSessionStartTests: XCTestCase {
             return XCTFail("expected linkClaudeSession, got \(String(describing: action))")
         }
         XCTAssertEqual(sid, newSid)
-        XCTAssertEqual(at.project, projectId)
+        XCTAssertEqual(at.repo, repoId)
         XCTAssertEqual(at.worktree, worktreeId)
         XCTAssertEqual(at.task, taskId)
     }
 
     func test_route_resume_withMultipleMismatches_picksMostRecent() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let oldTask = claudeTask(id: UUID(), sid: "old-1", createdAt: Date(timeIntervalSinceReferenceDate: 1_000))
         let newTask = claudeTask(id: UUID(), sid: "old-2", createdAt: Date(timeIntervalSinceReferenceDate: 9_000))
         let state = stateWith(
-            projectId: projectId,
+            repoId: repoId,
             worktreeId: worktreeId,
             worktreePath: URL(fileURLWithPath: "/wt"),
             tasks: [oldTask, newTask]
@@ -87,7 +87,7 @@ final class ClaudeSessionStartTests: XCTestCase {
     func test_route_clear_retargets() {
         let task = claudeTask(id: UUID(), sid: "old", createdAt: Date())
         let state = stateWith(
-            projectId: UUID(), worktreeId: UUID(),
+            repoId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt"),
             tasks: [task]
         )
@@ -107,7 +107,7 @@ final class ClaudeSessionStartTests: XCTestCase {
     func test_route_compact_retargets() {
         let task = claudeTask(id: UUID(), sid: "old", createdAt: Date())
         let state = stateWith(
-            projectId: UUID(), worktreeId: UUID(),
+            repoId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt"),
             tasks: [task]
         )
@@ -127,11 +127,11 @@ final class ClaudeSessionStartTests: XCTestCase {
     // MARK: - startup links to an unlinked .claude(nil) slot
 
     func test_route_startup_linksToUnlinkedSlot() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let unlinkedId = UUID()
         let state = stateWith(
-            projectId: projectId, worktreeId: worktreeId,
+            repoId: repoId, worktreeId: worktreeId,
             worktreePath: URL(fileURLWithPath: "/wt"),
             tasks: [claudeTask(id: unlinkedId, sid: nil, createdAt: Date())]
         )
@@ -152,7 +152,7 @@ final class ClaudeSessionStartTests: XCTestCase {
 
     func test_route_startup_withNoUnlinkedSlot_discovers() {
         let state = stateWith(
-            projectId: UUID(), worktreeId: UUID(),
+            repoId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt"),
             tasks: []
         )
@@ -176,7 +176,7 @@ final class ClaudeSessionStartTests: XCTestCase {
     func test_route_fork_createsSibling_evenWhenExistingClaudeTaskExists() {
         let existing = claudeTask(id: UUID(), sid: "original", createdAt: Date())
         let state = stateWith(
-            projectId: UUID(), worktreeId: UUID(),
+            repoId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt"),
             tasks: [existing]
         )
@@ -200,7 +200,7 @@ final class ClaudeSessionStartTests: XCTestCase {
         let sid = "live"
         let task = claudeTask(id: UUID(), sid: sid, createdAt: Date())
         let state = stateWith(
-            projectId: UUID(), worktreeId: UUID(),
+            repoId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt"),
             tasks: [task]
         )
@@ -219,7 +219,7 @@ final class ClaudeSessionStartTests: XCTestCase {
 
     func test_route_cwdDoesNotMatchWorktree_returnsNil() {
         let state = stateWith(
-            projectId: UUID(), worktreeId: UUID(),
+            repoId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt-a"),
             tasks: [claudeTask(id: UUID(), sid: "old", createdAt: Date())]
         )
@@ -237,7 +237,7 @@ final class ClaudeSessionStartTests: XCTestCase {
     func test_route_worktreeAtHome_isSkipped_evenIfCwdMatches() {
         let homePath = "/Users/me"
         let state = stateWith(
-            projectId: UUID(), worktreeId: UUID(),
+            repoId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: homePath),
             tasks: [claudeTask(id: UUID(), sid: "old", createdAt: Date())]
         )
@@ -257,7 +257,7 @@ final class ClaudeSessionStartTests: XCTestCase {
 
     func test_route_missingCwd_returnsNil() {
         let state = stateWith(
-            projectId: UUID(), worktreeId: UUID(),
+            repoId: UUID(), worktreeId: UUID(),
             worktreePath: URL(fileURLWithPath: "/wt"),
             tasks: [claudeTask(id: UUID(), sid: "old", createdAt: Date())]
         )
@@ -275,16 +275,16 @@ final class ClaudeSessionStartTests: XCTestCase {
     // MARK: - Test helpers
 
     private func stateWith(
-        projectId: UUID,
+        repoId: UUID,
         worktreeId: UUID,
         worktreePath: URL,
         tasks: [Task]
     ) -> AppState {
         AppState(
             schemaVersion: 2,
-            projects: [
-                Project(
-                    id: projectId, name: "p", color: "#000",
+            repos: [
+                Repo(
+                    id: repoId, name: "p", color: "#000",
                     enabled: true,
                     rootDir: worktreePath,
                     worktrees: [

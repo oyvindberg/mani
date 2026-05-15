@@ -15,11 +15,11 @@ struct NewProjectSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("New project").font(.headline)
+            Text("New repo").font(.headline)
             Form {
                 TextField("Name", text: $name)
                 HStack {
-                    TextField("Project root", text: $rootDir)
+                    TextField("Repo root", text: $rootDir)
                     Button("Choose…") { pickFolder() }
                 }
             }
@@ -27,7 +27,7 @@ struct NewProjectSheet: View {
                 Text("Color").font(.caption).foregroundStyle(.secondary)
                 ColorSwatchPicker(hex: $color)
             }
-            Text("The project root anchors `git worktree add` and shows as the project's main workspace. Additional worktrees can be added after creation.")
+            Text("The repo root anchors `git worktree add` and shows as the repo's main workspace. Additional worktrees can be added after creation.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
@@ -36,13 +36,13 @@ struct NewProjectSheet: View {
                 Button("Create") {
                     let url = URL(fileURLWithPath: rootDir)
                     _Concurrency.Task {
-                        await store.dispatch(.createProject(
+                        await store.dispatch(.createRepo(
                             name: name.isEmpty ? "untitled" : name,
                             color: color,
                             rootDir: url
                         ))
                         // Kick the safekeep sweeper immediately so
-                        // existing ~/.claude/projects sessions for
+                        // existing ~/.claude/repos sessions for
                         // this rootDir get matched + surfaced now,
                         // not on the next 5-min tick.
                         await sweeper.runOnce()
@@ -70,7 +70,7 @@ struct NewProjectSheet: View {
 
 struct NewWorktreeSheet: View {
     let store: Store
-    let projectId: UUID
+    let repoId: UUID
     @Binding var isPresented: Bool
     @EnvironmentObject var sweeper: SafekeepingSweeper
 
@@ -117,20 +117,20 @@ struct NewWorktreeSheet: View {
                         : .folder
                     let pathURL = URL(fileURLWithPath: path)
                     let wantShell = addShellTask
-                    let projectId = projectId
+                    let repoId = repoId
                     _Concurrency.Task {
                         await store.dispatch(.createWorktree(
-                            projectId: projectId,
+                            repoId: repoId,
                             kind: worktreeKind,
                             path: pathURL
                         ))
-                        guard let project = store.state.projects.first(where: { $0.id == projectId }),
-                              let worktree = project.worktrees.last else {
+                        guard let repo = store.state.repos.first(where: { $0.id == repoId }),
+                              let worktree = repo.worktrees.last else {
                             isPresented = false
                             return
                         }
                         let wtPath = WorktreePath(
-                            project: projectId, worktree: worktree.id
+                            repo: repoId, worktree: worktree.id
                         )
                         if wantShell {
                             let spec = ProcessSpec(
@@ -229,14 +229,14 @@ struct ResumeClaudeSheet: View {
     var onCreated: ((UUID) -> Void)?
     @EnvironmentObject var archiveCache: SessionArchiveCache
 
-    // Filter the project-wide cache down to sessions whose
+    // Filter the repo-wide cache down to sessions whose
     // originating cwd matches this worktree. Cheap — the cache is
     // already in memory after boot's bootstrap + first sweep, so no
     // disk scan on open.
     private var sessions: [SessionIndexEntry] {
         let cwdPath = cwd.path
         let cwdPrefix = cwdPath + "/"
-        return archiveCache.entries(for: worktreePath.project)
+        return archiveCache.entries(for: worktreePath.repo)
             .filter { entry in
                 entry.originatingCwd == cwdPath
                     || entry.originatingCwd.hasPrefix(cwdPrefix)
@@ -304,9 +304,9 @@ struct ResumeClaudeSheet: View {
     }
 
     private func resume(sessionId: String) {
-        let project = store.state.projects.first(where: { $0.id == worktreePath.project })
+        let repo = store.state.repos.first(where: { $0.id == worktreePath.repo })
         let invocation = ClaudeTaskSpec.resolveInvocation(
-            project: project, settings: store.state.settings
+            repo: repo, settings: store.state.settings
         )
         let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: sessionId, invocation: invocation)
         _Concurrency.Task {
@@ -317,8 +317,8 @@ struct ResumeClaudeSheet: View {
                 spec: spec,
                 autoSelect: true
             ))
-            if let id = store.state.projects
-                .first(where: { $0.id == worktreePath.project })?
+            if let id = store.state.repos
+                .first(where: { $0.id == worktreePath.repo })?
                 .worktrees.first(where: { $0.id == worktreePath.worktree })?
                 .tasks.last?.id
             {
@@ -329,9 +329,9 @@ struct ResumeClaudeSheet: View {
     }
 
     private func startFresh() {
-        let project = store.state.projects.first(where: { $0.id == worktreePath.project })
+        let repo = store.state.repos.first(where: { $0.id == worktreePath.repo })
         let invocation = ClaudeTaskSpec.resolveInvocation(
-            project: project, settings: store.state.settings
+            repo: repo, settings: store.state.settings
         )
         let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: nil, invocation: invocation)
         _Concurrency.Task {
@@ -341,8 +341,8 @@ struct ResumeClaudeSheet: View {
                 spec: spec,
                 autoSelect: true
             ))
-            if let id = store.state.projects
-                .first(where: { $0.id == worktreePath.project })?
+            if let id = store.state.repos
+                .first(where: { $0.id == worktreePath.repo })?
                 .worktrees.first(where: { $0.id == worktreePath.worktree })?
                 .tasks.last?.id
             {
@@ -414,9 +414,9 @@ struct NewTaskSheet: View {
                     let args = argsString
                         .split(whereSeparator: { $0.isWhitespace })
                         .map(String.init)
-                    let claudeProject = store.state.projects.first(where: { $0.id == worktreePath.project })
+                    let claudeRepo = store.state.repos.first(where: { $0.id == worktreePath.repo })
                     let claudeInvocation = ClaudeTaskSpec.resolveInvocation(
-                        project: claudeProject, settings: store.state.settings
+                        repo: claudeRepo, settings: store.state.settings
                     )
                     let spec: ProcessSpec = (kind == .claude)
                         ? ClaudeTaskSpec.make(cwd: cwd, sessionId: nil, invocation: claudeInvocation)
@@ -437,8 +437,8 @@ struct NewTaskSheet: View {
                             spec: spec,
                             autoSelect: true
                         ))
-                        if let id = store.state.projects
-                            .first(where: { $0.id == worktreePath.project })?
+                        if let id = store.state.repos
+                            .first(where: { $0.id == worktreePath.repo })?
                             .worktrees.first(where: { $0.id == worktreePath.worktree })?
                             .tasks.last?.id
                         {

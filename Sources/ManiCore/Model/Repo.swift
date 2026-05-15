@@ -1,19 +1,19 @@
 import Foundation
 
-public struct Project: Codable, Equatable, Identifiable {
+public struct Repo: Codable, Equatable, Identifiable {
     public let id: UUID
     public var name: String
     public var color: String
     public var enabled: Bool
-    // The project's main path. `git worktree add` and any "where
-    // does this project live" question resolve from here. The
+    // The repo's main path. `git worktree add` and any "where
+    // does this repo live" question resolve from here. The
     // primary workspace (rendered like any other worktree row in the
     // sidebar) is the worktree whose `path` equals this rootDir.
     public var rootDir: URL
     public var worktrees: [Worktree]
     public var createdAt: Date
     // Optional override for the claude binary invocation used by this
-    // project's tasks. nil = inherit Settings.claudeInvocation.
+    // repo's tasks. nil = inherit Settings.claudeInvocation.
     public var claudeInvocation: String?
 
     public init(
@@ -41,12 +41,12 @@ public struct Project: Codable, Equatable, Identifiable {
     }
 
     // Backward-compat decode for two historical shapes:
-    //   1. Pre-rootDir-removal: Project had `rootDir` (this is what
+    //   1. Pre-rootDir-removal: Repo had `rootDir` (this is what
     //      we're now re-adding) — round-trips cleanly.
-    //   2. Post-rootDir-removal: Project had no rootDir but each
+    //   2. Post-rootDir-removal: Repo had no rootDir but each
     //      Worktree carried a `primary: Bool`. The migration here
     //      digs that bool out of the raw worktree JSON and uses the
-    //      primary worktree's path as the project rootDir. If no
+    //      primary worktree's path as the repo rootDir. If no
     //      worktree had primary=true, we fall back to the first
     //      worktree's path. Last resort (no worktrees at all):
     //      ~/Mani so the field is at least non-empty.

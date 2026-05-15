@@ -60,23 +60,23 @@ final class ClaudeTaskSpecTests: XCTestCase {
     func test_resolveInvocation_projectNil_usesSettings() {
         var s = anySettings()
         s.claudeInvocation = "claude --dangerously-skip-permissions"
-        let resolved = ClaudeTaskSpec.resolveInvocation(project: nil, settings: s)
+        let resolved = ClaudeTaskSpec.resolveInvocation(repo: nil, settings: s)
         XCTAssertEqual(resolved, "claude --dangerously-skip-permissions")
     }
 
     func test_resolveInvocation_projectOverride_takesPrecedence() {
-        var project = makeProject(tasks: [])
-        project.claudeInvocation = "claude --my-flag"
+        var repo = makeRepo(tasks: [])
+        repo.claudeInvocation = "claude --my-flag"
         var s = anySettings()
         s.claudeInvocation = "claude"
-        let resolved = ClaudeTaskSpec.resolveInvocation(project: project, settings: s)
+        let resolved = ClaudeTaskSpec.resolveInvocation(repo: repo, settings: s)
         XCTAssertEqual(resolved, "claude --my-flag")
     }
 
     func test_resolveInvocation_projectEmpty_fallsBackToClaude() {
-        var project = makeProject(tasks: [])
-        project.claudeInvocation = "   "
-        let resolved = ClaudeTaskSpec.resolveInvocation(project: project, settings: anySettings())
+        var repo = makeRepo(tasks: [])
+        repo.claudeInvocation = "   "
+        let resolved = ClaudeTaskSpec.resolveInvocation(repo: repo, settings: anySettings())
         XCTAssertEqual(resolved, "claude")
     }
 
@@ -138,9 +138,9 @@ final class ClaudeTaskSpecTests: XCTestCase {
         let shell = makeTask(kind: .shell, spec: anySpec())
         let state = AppState(
             schemaVersion: 2,
-            projects: [
-                makeProject(tasks: [c1, shell]),
-                makeProject(tasks: [c2]),
+            repos: [
+                makeRepo(tasks: [c1, shell]),
+                makeRepo(tasks: [c2]),
             ],
             settings: anySettings(),
             selectedTaskPath: nil
@@ -168,8 +168,8 @@ final class ClaudeTaskSpecTests: XCTestCase {
         )
     }
 
-    private func makeProject(tasks: [Task]) -> Project {
-        Project(
+    private func makeRepo(tasks: [Task]) -> Repo {
+        Repo(
             id: UUID(),
             name: "p",
             color: "#000",

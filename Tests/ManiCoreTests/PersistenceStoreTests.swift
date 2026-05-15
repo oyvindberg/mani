@@ -27,7 +27,7 @@ final class PersistenceStoreTests: XCTestCase {
 
     private func sampleState(name: String) -> AppState {
         var s = AppState.empty
-        s.projects.append(Project(
+        s.repos.append(Repo(
             id: UUID(),
             name: name,
             color: "#abcdef",
@@ -45,7 +45,7 @@ final class PersistenceStoreTests: XCTestCase {
         try writeJSON(sampleState(name: "primary"), to: store.stateURL)
         let (recovered, report) = try store.recover()
         XCTAssertEqual(report.snapshotSource, "state.json")
-        XCTAssertEqual(recovered.projects.first?.name, "primary")
+        XCTAssertEqual(recovered.repos.first?.name, "primary")
     }
 
     func test_recover_fallsBackToBakWhenStateJsonMissing() throws {
@@ -53,7 +53,7 @@ final class PersistenceStoreTests: XCTestCase {
         try writeJSON(sampleState(name: "from-bak"), to: store.stateBakURL)
         let (recovered, report) = try store.recover()
         XCTAssertTrue(report.snapshotSource.contains("bak"))
-        XCTAssertEqual(recovered.projects.first?.name, "from-bak")
+        XCTAssertEqual(recovered.repos.first?.name, "from-bak")
     }
 
     func test_recover_promotesNewWhenStateJsonMissingAndNewExists() throws {
@@ -62,20 +62,20 @@ final class PersistenceStoreTests: XCTestCase {
         try writeJSON(sampleState(name: "from-new"), to: store.stateNewURL)
         let (recovered, report) = try store.recover()
         XCTAssertTrue(report.snapshotSource.contains("new"))
-        XCTAssertEqual(recovered.projects.first?.name, "from-new")
+        XCTAssertEqual(recovered.repos.first?.name, "from-new")
     }
 
     func test_recover_returnsEmptyWhenNothingExists() throws {
         let store = try PersistenceStore(rootDir: root)
         let (recovered, report) = try store.recover()
         XCTAssertEqual(report.snapshotSource, "empty")
-        XCTAssertTrue(recovered.projects.isEmpty)
+        XCTAssertTrue(recovered.repos.isEmpty)
     }
 
     func test_compact_thenRecover_roundtripsStateAndTruncatesEvents() throws {
         let store = try PersistenceStore(rootDir: root)
         let state = sampleState(name: "persisted")
-        try store.appendEvent(.projectCreated(state.projects[0]))
+        try store.appendEvent(.repoCreated(state.repos[0]))
         try store.compact(state)
         // events.jsonl should be truncated.
         let evSize = (try? FileManager.default.attributesOfItem(atPath: store.eventsURL.path))?[.size] as? Int
@@ -83,8 +83,8 @@ final class PersistenceStoreTests: XCTestCase {
         // state.json should round-trip.
         let (recovered, report) = try store.recover()
         XCTAssertEqual(report.snapshotSource, "state.json")
-        XCTAssertEqual(recovered.projects.first?.name, "persisted")
+        XCTAssertEqual(recovered.repos.first?.name, "persisted")
         // Persist + apply should be idempotent across recovery — no duplicate.
-        XCTAssertEqual(recovered.projects.count, 1)
+        XCTAssertEqual(recovered.repos.count, 1)
     }
 }

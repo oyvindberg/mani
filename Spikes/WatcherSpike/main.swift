@@ -2,7 +2,7 @@ import Foundation
 import CoreServices
 import Darwin
 
-// Spike 6: FSEvents on a sandboxed ~/.claude/projects directory.
+// Spike 6: FSEvents on a sandboxed ~/.claude/repos directory.
 // Goal per docs/spikes.md: validate that an FSEventStream sees every line
 // claude writes, with no duplicates and no decode failures.
 //
@@ -12,7 +12,7 @@ import Darwin
 // what's actually on disk.
 
 let spikeHome = "/tmp/mani-watcher-spike-home"
-let projectsDir = "\(spikeHome)/.claude/projects"
+let reposDir = "\(spikeHome)/.claude/repos"
 
 // MARK: - File-tail tracker
 
@@ -145,7 +145,7 @@ final class FSWatcher {
 // MARK: - Synthetic streaming writer (mimics rapid JSONL append)
 
 func writeSyntheticSession(slug: String, sessionId: String, lineCount: Int) {
-    let dir = "\(projectsDir)/\(slug)"
+    let dir = "\(reposDir)/\(slug)"
     try? FileManager.default.createDirectory(
         atPath: dir, withIntermediateDirectories: true
     )
@@ -226,16 +226,16 @@ setbuf(stdout, nil)
 
 print("=== WatcherSpike (Spike 6) ===")
 print("spikeHome=\(spikeHome)")
-print("projectsDir=\(projectsDir)")
+print("reposDir=\(reposDir)")
 
 try? FileManager.default.removeItem(at: URL(fileURLWithPath: spikeHome))
 try FileManager.default.createDirectory(
-    at: URL(fileURLWithPath: projectsDir),
+    at: URL(fileURLWithPath: reposDir),
     withIntermediateDirectories: true
 )
 
 let tracker = TailTracker()
-let watcher = FSWatcher(path: projectsDir, tracker: tracker)
+let watcher = FSWatcher(path: reposDir, tracker: tracker)
 guard watcher.start() else {
     print("Failed to start FSEventStream")
     exit(1)
@@ -270,7 +270,7 @@ watcher.stop()
 
 // Compare
 let observed = tracker.files
-let actual = walkActual(projectsDir)
+let actual = walkActual(reposDir)
 
 print("")
 print("--- Per-file comparison ---")

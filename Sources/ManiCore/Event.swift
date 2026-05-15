@@ -1,17 +1,17 @@
 import Foundation
 
 public enum Event: Codable, Equatable {
-    // MARK: Project
-    case projectCreated(Project)
-    case projectRenamed(id: UUID, name: String)
-    case projectEnabledChanged(id: UUID, enabled: Bool)
-    case projectColorChanged(id: UUID, color: String)
-    case projectClaudeInvocationChanged(id: UUID, invocation: String?)
-    case projectRootDirChanged(id: UUID, rootDir: URL)
-    case projectDeleted(id: UUID)
+    // MARK: Repo
+    case repoCreated(Repo)
+    case repoRenamed(id: UUID, name: String)
+    case repoEnabledChanged(id: UUID, enabled: Bool)
+    case repoColorChanged(id: UUID, color: String)
+    case repoClaudeInvocationChanged(id: UUID, invocation: String?)
+    case repoRootDirChanged(id: UUID, rootDir: URL)
+    case repoDeleted(id: UUID)
 
     // MARK: Worktree
-    case worktreeCreated(projectId: UUID, Worktree)
+    case worktreeCreated(repoId: UUID, Worktree)
     case worktreeEnabledChanged(at: WorktreePath, enabled: Bool)
     case worktreeMarkedMissing(at: WorktreePath)
     case worktreeDeleted(at: WorktreePath)

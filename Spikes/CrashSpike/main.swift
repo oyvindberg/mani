@@ -26,28 +26,28 @@ struct LCG: RandomNumberGenerator {
 func randomAction(state: AppState, rng: inout LCG) -> Action? {
     let r = Int(rng.next() % 100)
 
-    if state.projects.isEmpty || r < 25 {
+    if state.repos.isEmpty || r < 25 {
         let id = rng.next() % 100_000
-        return .createProject(
+        return .createRepo(
             name: "p\(id)",
             color: "#ff5500",
             rootDir: URL(fileURLWithPath: "/tmp/p\(id)")
         )
     }
 
-    let project = state.projects[Int(rng.next() % UInt64(state.projects.count))]
+    let repo = state.repos[Int(rng.next() % UInt64(state.repos.count))]
 
-    if project.worktrees.isEmpty || r < 45 {
+    if repo.worktrees.isEmpty || r < 45 {
         let id = rng.next() % 100_000
         return .createWorktree(
-            projectId: project.id,
+            repoId: repo.id,
             kind: .folder,
             path: URL(fileURLWithPath: "/tmp/w\(id)")
         )
     }
 
-    let worktree = project.worktrees[Int(rng.next() % UInt64(project.worktrees.count))]
-    let wtPath = WorktreePath(project: project.id, worktree: worktree.id)
+    let worktree = repo.worktrees[Int(rng.next() % UInt64(repo.worktrees.count))]
+    let wtPath = WorktreePath(repo: repo.id, worktree: worktree.id)
 
     if worktree.tasks.isEmpty || r < 70 {
         let spec = ProcessSpec(
@@ -59,13 +59,13 @@ func randomAction(state: AppState, rng: inout LCG) -> Action? {
     }
 
     let task = worktree.tasks[Int(rng.next() % UInt64(worktree.tasks.count))]
-    let taskPath = TaskPath(project: project.id, worktree: worktree.id, task: task.id)
+    let taskPath = TaskPath(repo: repo.id, worktree: worktree.id, task: task.id)
 
     if r < 78 { return .completeTask(at: taskPath) }
-    if r < 84 { return .renameProject(id: project.id, name: "renamed-\(rng.next() % 1000)") }
+    if r < 84 { return .renameRepo(id: repo.id, name: "renamed-\(rng.next() % 1000)") }
     if r < 89 { return .markWorktreeMissing(at: wtPath) }
     if r < 94 { return .deleteWorktree(at: wtPath) }
-    return .deleteProject(id: project.id)
+    return .deleteRepo(id: repo.id)
 }
 
 // MARK: - Validation: invariants the recovered state must hold.
@@ -76,14 +76,14 @@ func validate(_ state: AppState) -> [String] {
         errors.append("schemaVersion=\(state.schemaVersion) (want 2)")
     }
     var ids = Set<UUID>()
-    for project in state.projects {
-        if !ids.insert(project.id).inserted {
-            errors.append("dup project id \(project.id)")
+    for repo in state.repos {
+        if !ids.insert(repo.id).inserted {
+            errors.append("dup repo id \(repo.id)")
         }
-        if !project.createdAt.timeIntervalSince1970.isFinite {
-            errors.append("project \(project.id) createdAt non-finite")
+        if !repo.createdAt.timeIntervalSince1970.isFinite {
+            errors.append("repo \(repo.id) createdAt non-finite")
         }
-        for worktree in project.worktrees {
+        for worktree in repo.worktrees {
             if !ids.insert(worktree.id).inserted {
                 errors.append("dup worktree id \(worktree.id)")
             }
@@ -112,7 +112,7 @@ func runChild(seed: UInt64, mutations: Int) -> Never {
         var rng = LCG(state: seed)
 
         // Occasional fresh compact at start of cycle.
-        if !state.projects.isEmpty && (rng.next() % 4) == 0 {
+        if !state.repos.isEmpty && (rng.next() % 4) == 0 {
             try store.compact(state)
         }
 

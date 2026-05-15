@@ -3,11 +3,11 @@ import XCTest
 
 final class ReducerTests: XCTestCase {
 
-    // MARK: - createProject
+    // MARK: - createRepo
 
     func test_createProject_emitsEventAndPersistEffect() {
         let state = AppState.empty
-        let action = Action.createProject(
+        let action = Action.createRepo(
             name: "atlas",
             color: "#ff5500",
             rootDir: URL(fileURLWithPath: "/Users/me/atlas")
@@ -17,44 +17,44 @@ final class ReducerTests: XCTestCase {
 
         XCTAssertEqual(events.count, 1)
         XCTAssertEqual(effects.count, 1)
-        guard case let .projectCreated(project) = events[0] else {
-            return XCTFail("expected projectCreated, got \(events[0])")
+        guard case let .repoCreated(repo) = events[0] else {
+            return XCTFail("expected repoCreated, got \(events[0])")
         }
-        XCTAssertEqual(project.name, "atlas")
-        XCTAssertEqual(project.color, "#ff5500")
-        XCTAssertTrue(project.enabled)
-        XCTAssertEqual(project.rootDir.path, "/Users/me/atlas")
-        XCTAssertEqual(project.worktrees.count, 1)
-        XCTAssertEqual(project.worktrees[0].path.path, "/Users/me/atlas")
+        XCTAssertEqual(repo.name, "atlas")
+        XCTAssertEqual(repo.color, "#ff5500")
+        XCTAssertTrue(repo.enabled)
+        XCTAssertEqual(repo.rootDir.path, "/Users/me/atlas")
+        XCTAssertEqual(repo.worktrees.count, 1)
+        XCTAssertEqual(repo.worktrees[0].path.path, "/Users/me/atlas")
     }
 
     func test_apply_projectCreated_appendsToState() {
         var state = AppState.empty
-        let project = makeProject(id: UUID(), worktrees: [])
+        let repo = makeRepo(id: UUID(), worktrees: [])
 
-        apply(&state, .projectCreated(project))
+        apply(&state, .repoCreated(repo))
 
-        XCTAssertEqual(state.projects.count, 1)
-        XCTAssertEqual(state.projects[0].id, project.id)
+        XCTAssertEqual(state.repos.count, 1)
+        XCTAssertEqual(state.repos[0].id, repo.id)
     }
 
-    // MARK: - renameProject
+    // MARK: - renameRepo
 
     func test_renameProject_known_emitsEventAndApplies() {
         let id = UUID()
-        var state = stateWith(projects: [makeProject(id: id, worktrees: [])])
+        var state = stateWith(repos: [makeRepo(id: id, worktrees: [])])
 
-        let (events, effects) = reduce(state, .renameProject(id: id, name: "renamed"))
+        let (events, effects) = reduce(state, .renameRepo(id: id, name: "renamed"))
 
-        XCTAssertEqual(events, [.projectRenamed(id: id, name: "renamed")])
+        XCTAssertEqual(events, [.repoRenamed(id: id, name: "renamed")])
         XCTAssertEqual(effects.count, 1)
         for e in events { apply(&state, e) }
-        XCTAssertEqual(state.projects[0].name, "renamed")
+        XCTAssertEqual(state.repos[0].name, "renamed")
     }
 
     func test_renameProject_unknownProject_isNoop() {
         let state = AppState.empty
-        let (events, effects) = reduce(state, .renameProject(id: UUID(), name: "x"))
+        let (events, effects) = reduce(state, .renameRepo(id: UUID(), name: "x"))
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(effects.isEmpty)
     }
@@ -62,21 +62,21 @@ final class ReducerTests: XCTestCase {
     // MARK: - setProjectEnabled
 
     func test_setProjectEnabled_disabled_cascadesTerminations() {
-        let projectId = UUID()
+        let repoId = UUID()
         let taskId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: UUID(), tasks: [
                     makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
 
-        let (events, effects) = reduce(state, .setProjectEnabled(id: projectId, enabled: false))
+        let (events, effects) = reduce(state, .setProjectEnabled(id: repoId, enabled: false))
 
         XCTAssertEqual(Set(terminatedTaskIds(in: effects)), [taskId])
         for e in events { apply(&state, e) }
-        XCTAssertFalse(state.projects[0].enabled)
+        XCTAssertFalse(state.repos[0].enabled)
     }
 
     func test_setProjectEnabled_unknownProject_isNoop() {
@@ -86,14 +86,14 @@ final class ReducerTests: XCTestCase {
         XCTAssertTrue(effects.isEmpty)
     }
 
-    // MARK: - deleteProject
+    // MARK: - deleteRepo
 
-    func test_deleteProject_cascadesTerminationsAndRemovesProject() {
-        let projectId = UUID()
+    func test_deleteProject_cascadesTerminationsAndRemovesRepo() {
+        let repoId = UUID()
         let t1 = UUID()
         let t2 = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: UUID(), tasks: [
                     makeTask(id: t1, runtime: .running(spawnedAt: Date())),
                     makeTask(id: t2, runtime: .exited(at: Date(), code: 0)),
@@ -101,19 +101,19 @@ final class ReducerTests: XCTestCase {
             ])
         ])
 
-        let (events, effects) = reduce(state, .deleteProject(id: projectId))
+        let (events, effects) = reduce(state, .deleteRepo(id: repoId))
 
-        XCTAssertEqual(events, [.projectDeleted(id: projectId)])
+        XCTAssertEqual(events, [.repoDeleted(id: repoId)])
         // terminate fires for all tasks; host resolves whether anything's
         // actually alive. Reducer doesn't filter on runtime.
         XCTAssertEqual(Set(terminatedTaskIds(in: effects)), [t1, t2])
         for e in events { apply(&state, e) }
-        XCTAssertTrue(state.projects.isEmpty)
+        XCTAssertTrue(state.repos.isEmpty)
     }
 
     func test_deleteProject_unknownProject_isNoop() {
         let state = AppState.empty
-        let (events, effects) = reduce(state, .deleteProject(id: UUID()))
+        let (events, effects) = reduce(state, .deleteRepo(id: UUID()))
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(effects.isEmpty)
     }
@@ -121,11 +121,11 @@ final class ReducerTests: XCTestCase {
     // MARK: - createWorktree
 
     func test_createWorktree_folder_emitsEventOnly() {
-        let projectId = UUID()
-        var state = stateWith(projects: [makeProject(id: projectId, worktrees: [])])
+        let repoId = UUID()
+        var state = stateWith(repos: [makeRepo(id: repoId, worktrees: [])])
 
         let (events, effects) = reduce(state, .createWorktree(
-            projectId: projectId,
+            repoId: repoId,
             kind: .folder,
             path: URL(fileURLWithPath: "/wt/main")
         ))
@@ -133,20 +133,20 @@ final class ReducerTests: XCTestCase {
         XCTAssertEqual(events.count, 1)
         XCTAssertEqual(effects.count, 1)
         for e in events { apply(&state, e) }
-        XCTAssertEqual(state.projects[0].worktrees.count, 1)
-        XCTAssertEqual(state.projects[0].worktrees[0].path.lastPathComponent, "main")
-        XCTAssertEqual(state.projects[0].worktrees[0].kind, .folder)
-        XCTAssertFalse(state.projects[0].worktrees[0].missing)
+        XCTAssertEqual(state.repos[0].worktrees.count, 1)
+        XCTAssertEqual(state.repos[0].worktrees[0].path.lastPathComponent, "main")
+        XCTAssertEqual(state.repos[0].worktrees[0].kind, .folder)
+        XCTAssertFalse(state.repos[0].worktrees[0].missing)
     }
 
     func test_createWorktree_git_usesProjectRootDirAsRepoRoot() {
-        let projectId = UUID()
-        let state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [])
+        let repoId = UUID()
+        let state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [])
         ])
 
         let (_, effects) = reduce(state, .createWorktree(
-            projectId: projectId,
+            repoId: repoId,
             kind: .git(branch: "feat/auth", baseRef: "main"),
             path: URL(fileURLWithPath: "/wt/feat")
         ))
@@ -158,7 +158,7 @@ final class ReducerTests: XCTestCase {
         guard case let .createGitWorktree(pid, repoRoot, branch, path, baseRef) = createEffect else {
             return XCTFail("expected createGitWorktree effect")
         }
-        XCTAssertEqual(pid, projectId)
+        XCTAssertEqual(pid, repoId)
         XCTAssertEqual(repoRoot, URL(fileURLWithPath: "/wt/main"))
         XCTAssertEqual(branch, "feat/auth")
         XCTAssertEqual(path, URL(fileURLWithPath: "/wt/feat"))
@@ -168,7 +168,7 @@ final class ReducerTests: XCTestCase {
     func test_createWorktree_unknownProject_isNoop() {
         let state = AppState.empty
         let (events, effects) = reduce(state, .createWorktree(
-            projectId: UUID(),
+            repoId: UUID(),
             kind: .folder,
             path: URL(fileURLWithPath: "/wt/main")
         ))
@@ -179,28 +179,28 @@ final class ReducerTests: XCTestCase {
     // MARK: - setWorktreeEnabled
 
     func test_setWorktreeEnabled_disabled_cascadesTerminations() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
-        let path = WorktreePath(project: projectId, worktree: worktreeId)
+        let path = WorktreePath(repo: repoId, worktree: worktreeId)
 
         let (events, effects) = reduce(state, .setWorktreeEnabled(at: path, enabled: false))
 
         XCTAssertEqual(terminatedTaskIds(in: effects), [taskId])
         for e in events { apply(&state, e) }
-        XCTAssertFalse(state.projects[0].worktrees[0].enabled)
+        XCTAssertFalse(state.repos[0].worktrees[0].enabled)
     }
 
     func test_setWorktreeEnabled_unknownPath_isNoop() {
         let state = AppState.empty
-        let path = WorktreePath(project: UUID(), worktree: UUID())
+        let path = WorktreePath(repo: UUID(), worktree: UUID())
         let (events, effects) = reduce(state, .setWorktreeEnabled(at: path, enabled: false))
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(effects.isEmpty)
@@ -209,56 +209,56 @@ final class ReducerTests: XCTestCase {
     // MARK: - markWorktreeMissing
 
     func test_markWorktreeMissing_setsMissingFlag() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [])
             ])
         ])
-        let path = WorktreePath(project: projectId, worktree: worktreeId)
+        let path = WorktreePath(repo: repoId, worktree: worktreeId)
 
         let (events, _) = reduce(state, .markWorktreeMissing(at: path))
 
         XCTAssertEqual(events, [.worktreeMarkedMissing(at: path)])
         for e in events { apply(&state, e) }
-        XCTAssertTrue(state.projects[0].worktrees[0].missing)
+        XCTAssertTrue(state.repos[0].worktrees[0].missing)
     }
 
     // MARK: - deleteWorktree
 
     func test_deleteWorktree_cascadesTerminationsAndRemoves() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
-        let path = WorktreePath(project: projectId, worktree: worktreeId)
+        let path = WorktreePath(repo: repoId, worktree: worktreeId)
 
         let (events, effects) = reduce(state, .deleteWorktree(at: path))
 
         XCTAssertEqual(events, [.worktreeDeleted(at: path)])
         XCTAssertEqual(terminatedTaskIds(in: effects), [taskId])
         for e in events { apply(&state, e) }
-        XCTAssertTrue(state.projects[0].worktrees.isEmpty)
+        XCTAssertTrue(state.repos[0].worktrees.isEmpty)
     }
 
     // MARK: - createTask
 
     func test_createTask_emitsTaskCreatedSpawnAndAutoSelection() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [])
             ])
         ])
-        let path = WorktreePath(project: projectId, worktree: worktreeId)
+        let path = WorktreePath(repo: repoId, worktree: worktreeId)
         let spec = ProcessSpec(
             command: "/bin/zsh", args: [], env: [:],
             cwd: URL(fileURLWithPath: "/wt"),
@@ -281,7 +281,7 @@ final class ReducerTests: XCTestCase {
 
         // Second event is the auto-selection — that's why the user
         // sees the new task immediately on creation.
-        let expectedPath = TaskPath(project: projectId, worktree: worktreeId, task: task.id)
+        let expectedPath = TaskPath(repo: repoId, worktree: worktreeId, task: task.id)
         XCTAssertEqual(events.count, 2)
         if case let .taskSelectionChanged(p) = events[1] {
             XCTAssertEqual(p, expectedPath)
@@ -297,14 +297,14 @@ final class ReducerTests: XCTestCase {
         XCTAssertEqual(spawnIds, [task.id])
 
         for e in events { apply(&state, e) }
-        XCTAssertEqual(state.projects[0].worktrees[0].tasks.count, 1)
-        XCTAssertEqual(state.projects[0].worktrees[0].tasks[0].id, task.id)
+        XCTAssertEqual(state.repos[0].worktrees[0].tasks.count, 1)
+        XCTAssertEqual(state.repos[0].worktrees[0].tasks[0].id, task.id)
         XCTAssertEqual(state.selectedTaskPath, expectedPath)
     }
 
     func test_createTask_unknownWorktree_isNoop() {
         let state = AppState.empty
-        let path = WorktreePath(project: UUID(), worktree: UUID())
+        let path = WorktreePath(repo: UUID(), worktree: UUID())
         let spec = ProcessSpec(
             command: "/bin/zsh", args: [], env: [:],
             cwd: URL(fileURLWithPath: "/p"),
@@ -318,14 +318,14 @@ final class ReducerTests: XCTestCase {
     }
 
     func test_createTask_autoSelectFalse_doesNotChangeSelection() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let priorSelected = TaskPath(
-            project: projectId, worktree: worktreeId, task: UUID()
+            repo: repoId, worktree: worktreeId, task: UUID()
         )
         let state = stateWith(
-            projects: [
-                makeProject(id: projectId, worktrees: [
+            repos: [
+                makeRepo(id: repoId, worktrees: [
                     makeWorktree(id: worktreeId, tasks: [
                         makeTask(id: priorSelected.task, runtime: .running(spawnedAt: Date()))
                     ])
@@ -333,7 +333,7 @@ final class ReducerTests: XCTestCase {
             ],
             selectedTaskPath: priorSelected
         )
-        let path = WorktreePath(project: projectId, worktree: worktreeId)
+        let path = WorktreePath(repo: repoId, worktree: worktreeId)
         let spec = ProcessSpec(
             command: "/bin/zsh", args: [], env: [:],
             cwd: URL(fileURLWithPath: "/p"),
@@ -353,62 +353,62 @@ final class ReducerTests: XCTestCase {
     // MARK: - setTaskEnabled
 
     func test_setTaskEnabled_disabled_emitsTerminate() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
 
         let (events, effects) = reduce(state, .setTaskEnabled(at: path, enabled: false))
 
         XCTAssertEqual(terminatedTaskIds(in: effects), [taskId])
         for e in events { apply(&state, e) }
-        XCTAssertFalse(state.projects[0].worktrees[0].tasks[0].enabled)
+        XCTAssertFalse(state.repos[0].worktrees[0].tasks[0].enabled)
     }
 
     // MARK: - linkClaudeSession
 
     func test_linkClaudeSession_claudeTask_appliesSessionId() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, kind: .claude(sessionId: nil), runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
 
         let (events, _) = reduce(state, .linkClaudeSession(at: path, sessionId: "abc123"))
 
         XCTAssertEqual(events, [.claudeSessionLinked(at: path, sessionId: "abc123")])
         for e in events { apply(&state, e) }
-        guard case let .claude(sessionId) = state.projects[0].worktrees[0].tasks[0].kind else {
+        guard case let .claude(sessionId) = state.repos[0].worktrees[0].tasks[0].kind else {
             return XCTFail("expected claude kind")
         }
         XCTAssertEqual(sessionId, "abc123")
     }
 
     func test_linkClaudeSession_shellTask_isNoop() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        let state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        let state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, runtime: .neverStarted)
                 ])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
 
         let (events, effects) = reduce(state, .linkClaudeSession(at: path, sessionId: "x"))
 
@@ -419,17 +419,17 @@ final class ReducerTests: XCTestCase {
     // MARK: - completeTask
 
     func test_completeTask_setsRuntimeToCompletedAndTerminates() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
 
         let (events, effects) = reduce(state, .completeTask(at: path))
 
@@ -440,7 +440,7 @@ final class ReducerTests: XCTestCase {
         XCTAssertEqual(terminatedTaskIds(in: effects), [taskId])
 
         for e in events { apply(&state, e) }
-        if case let .completed(when) = state.projects[0].worktrees[0].tasks[0].runtime {
+        if case let .completed(when) = state.repos[0].worktrees[0].tasks[0].runtime {
             XCTAssertEqual(when, completedAt)
         } else {
             XCTFail("expected runtime = .completed")
@@ -450,23 +450,23 @@ final class ReducerTests: XCTestCase {
     // MARK: - taskSpawned / taskExited
 
     func test_taskSpawned_setsRunningRuntime() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, runtime: .exited(at: Date(), code: 1))
                 ])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
         let now = Date()
 
         let (events, _) = reduce(state, .taskSpawned(at: path, when: now))
         for e in events { apply(&state, e) }
 
-        if case let .running(when) = state.projects[0].worktrees[0].tasks[0].runtime {
+        if case let .running(when) = state.repos[0].worktrees[0].tasks[0].runtime {
             XCTAssertEqual(when, now)
         } else {
             XCTFail("expected runtime = .running")
@@ -474,23 +474,23 @@ final class ReducerTests: XCTestCase {
     }
 
     func test_taskExited_flipsRunningToExited() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
         let when = Date()
 
         let (events, _) = reduce(state, .taskExited(at: path, when: when, code: 42))
         for e in events { apply(&state, e) }
 
-        if case let .exited(receivedAt, code) = state.projects[0].worktrees[0].tasks[0].runtime {
+        if case let .exited(receivedAt, code) = state.repos[0].worktrees[0].tasks[0].runtime {
             XCTAssertEqual(receivedAt, when)
             XCTAssertEqual(code, 42)
         } else {
@@ -503,23 +503,23 @@ final class ReducerTests: XCTestCase {
         // agent must not stomp on it. Tested because the order is racy
         // in practice: completeTask fires a terminate effect which yields
         // an exit code shortly after.
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
         let completedAt = Date()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, runtime: .completed(at: completedAt))
                 ])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
 
         let (events, _) = reduce(state, .taskExited(at: path, when: Date(), code: -1))
         for e in events { apply(&state, e) }
 
-        if case let .completed(when) = state.projects[0].worktrees[0].tasks[0].runtime {
+        if case let .completed(when) = state.repos[0].worktrees[0].tasks[0].runtime {
             XCTAssertEqual(when, completedAt, "completion timestamp must be preserved")
         } else {
             XCTFail("completed runtime must not be downgraded by taskExited")
@@ -529,39 +529,39 @@ final class ReducerTests: XCTestCase {
     // MARK: - renameTask
 
     func test_renameTask_known_emitsEventAndApplies() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
 
         let (events, effects) = reduce(state, .renameTask(at: path, name: "  api server  "))
 
         XCTAssertEqual(events, [.taskRenamed(at: path, name: "api server")])
         XCTAssertEqual(effects.count, 1)
         for e in events { apply(&state, e) }
-        XCTAssertEqual(state.projects[0].worktrees[0].tasks[0].name, "api server")
-        XCTAssertTrue(state.projects[0].worktrees[0].tasks[0].renamed)
+        XCTAssertEqual(state.repos[0].worktrees[0].tasks[0].name, "api server")
+        XCTAssertTrue(state.repos[0].worktrees[0].tasks[0].renamed)
     }
 
     func test_renameTask_emptyAfterTrim_isNoop() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        let state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        let state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, runtime: .neverStarted)
                 ])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
 
         let (events, effects) = reduce(state, .renameTask(at: path, name: "   "))
 
@@ -571,7 +571,7 @@ final class ReducerTests: XCTestCase {
 
     func test_renameTask_unknownPath_isNoop() {
         let state = AppState.empty
-        let path = TaskPath(project: UUID(), worktree: UUID(), task: UUID())
+        let path = TaskPath(repo: UUID(), worktree: UUID(), task: UUID())
         let (events, effects) = reduce(state, .renameTask(at: path, name: "x"))
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(effects.isEmpty)
@@ -580,34 +580,34 @@ final class ReducerTests: XCTestCase {
     // MARK: - deleteTask
 
     func test_deleteTask_unselected_emitsTaskDeletedAndTerminate() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
 
         let (events, effects) = reduce(state, .deleteTask(at: path))
 
         XCTAssertEqual(events, [.taskDeleted(at: path)])
         XCTAssertEqual(terminatedTaskIds(in: effects), [taskId])
         for e in events { apply(&state, e) }
-        XCTAssertTrue(state.projects[0].worktrees[0].tasks.isEmpty)
+        XCTAssertTrue(state.repos[0].worktrees[0].tasks.isEmpty)
     }
 
     func test_deleteTask_currentlySelected_alsoEmitsTaskSelectionChangedNil() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
         var state = stateWith(
-            projects: [
-                makeProject(id: projectId, worktrees: [
+            repos: [
+                makeRepo(id: repoId, worktrees: [
                     makeWorktree(id: worktreeId, tasks: [
                         makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                     ])
@@ -630,7 +630,7 @@ final class ReducerTests: XCTestCase {
         let state = AppState.empty
         let (events, effects) = reduce(
             state,
-            .deleteTask(at: TaskPath(project: UUID(), worktree: UUID(), task: UUID()))
+            .deleteTask(at: TaskPath(repo: UUID(), worktree: UUID(), task: UUID()))
         )
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(effects.isEmpty)
@@ -644,17 +644,17 @@ final class ReducerTests: XCTestCase {
         // agent before launching the replacement — emitting both as
         // independent effects races and produced the "code -1 on
         // Restart" bug.
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, runtime: .exited(at: Date(), code: 1))
                 ])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
 
         let (events, effects) = reduce(state, .restartTask(at: path))
 
@@ -671,7 +671,7 @@ final class ReducerTests: XCTestCase {
         }))
 
         for e in events { apply(&state, e) }
-        if case .running = state.projects[0].worktrees[0].tasks[0].runtime { /* ok */ } else {
+        if case .running = state.repos[0].worktrees[0].tasks[0].runtime { /* ok */ } else {
             XCTFail("expected runtime to flip back to .running after restartTask")
         }
     }
@@ -679,7 +679,7 @@ final class ReducerTests: XCTestCase {
     func test_restartTask_externalClaude_isNoop() {
         // External claudes (discovered via FSEvents) have no agent we own;
         // Restart on them is a UX-level no-op, not a spawn.
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
         var externalTask = makeTask(
@@ -689,12 +689,12 @@ final class ReducerTests: XCTestCase {
             command: "(external claude)", args: [], env: [:],
             cwd: URL(fileURLWithPath: "/somewhere"), initialInput: nil
         )
-        let state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        let state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [externalTask])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
 
         let (events, effects) = reduce(state, .restartTask(at: path))
 
@@ -706,7 +706,7 @@ final class ReducerTests: XCTestCase {
 
     func test_duplicateClaudeTasksToRemove_prefersLiveRuntime() {
         let dupSid = "shared-sid"
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let live = makeTask(
             id: UUID(), kind: .claude(sessionId: dupSid),
@@ -716,8 +716,8 @@ final class ReducerTests: XCTestCase {
             id: UUID(), kind: .claude(sessionId: dupSid),
             runtime: .exited(at: Date(), code: 0)
         )
-        let state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        let state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [dead, live])
             ])
         ])
@@ -737,8 +737,8 @@ final class ReducerTests: XCTestCase {
         let low = makeTask(
             id: UUID(), kind: .claude(sessionId: sid), runtime: .exited(at: Date(), code: 0)
         )
-        let state = stateWith(projects: [
-            makeProject(id: UUID(), worktrees: [
+        let state = stateWith(repos: [
+            makeRepo(id: UUID(), worktrees: [
                 makeWorktree(id: UUID(), tasks: [low, high])
             ])
         ])
@@ -761,8 +761,8 @@ final class ReducerTests: XCTestCase {
         let liveTask = makeTask(
             id: liveId, kind: .claude(sessionId: sid), runtime: .running(spawnedAt: Date())
         )
-        let state = stateWith(projects: [
-            makeProject(id: UUID(), worktrees: [
+        let state = stateWith(repos: [
+            makeRepo(id: UUID(), worktrees: [
                 makeWorktree(id: UUID(), tasks: [liveTask, renamedTask])
             ])
         ])
@@ -778,8 +778,8 @@ final class ReducerTests: XCTestCase {
         let aId = UUID()
         let bId = UUID()
         let unlinkedId = UUID()
-        let state = stateWith(projects: [
-            makeProject(id: UUID(), worktrees: [
+        let state = stateWith(repos: [
+            makeRepo(id: UUID(), worktrees: [
                 makeWorktree(id: UUID(), tasks: [
                     makeTask(id: aId, kind: .claude(sessionId: "A"), runtime: .neverStarted),
                     makeTask(id: bId, kind: .claude(sessionId: "B"), runtime: .neverStarted),
@@ -794,12 +794,12 @@ final class ReducerTests: XCTestCase {
     // MARK: - selectTask
 
     func test_selectTask_validPath_emitsAndApplies() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
-        var state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [
                     makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                 ])
@@ -817,20 +817,20 @@ final class ReducerTests: XCTestCase {
         // Guarding against dangling selections at the reducer layer
         // means the UI never has to defend against them.
         let state = AppState.empty
-        let bogus = TaskPath(project: UUID(), worktree: UUID(), task: UUID())
+        let bogus = TaskPath(repo: UUID(), worktree: UUID(), task: UUID())
         let (events, effects) = reduce(state, .selectTask(at: bogus))
         XCTAssertTrue(events.isEmpty)
         XCTAssertTrue(effects.isEmpty)
     }
 
     func test_selectTask_alreadySelected_isNoop() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
         let state = stateWith(
-            projects: [
-                makeProject(id: projectId, worktrees: [
+            repos: [
+                makeRepo(id: repoId, worktrees: [
                     makeWorktree(id: worktreeId, tasks: [
                         makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                     ])
@@ -844,13 +844,13 @@ final class ReducerTests: XCTestCase {
     }
 
     func test_selectTask_nil_deselects() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
         var state = stateWith(
-            projects: [
-                makeProject(id: projectId, worktrees: [
+            repos: [
+                makeRepo(id: repoId, worktrees: [
                     makeWorktree(id: worktreeId, tasks: [
                         makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                     ])
@@ -866,14 +866,14 @@ final class ReducerTests: XCTestCase {
     }
 
     func test_deleteWorktree_deselectsIfSelectionWasInside() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        let wtPath = WorktreePath(project: projectId, worktree: worktreeId)
-        let selected = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let wtPath = WorktreePath(repo: repoId, worktree: worktreeId)
+        let selected = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
         var state = stateWith(
-            projects: [
-                makeProject(id: projectId, worktrees: [
+            repos: [
+                makeRepo(id: repoId, worktrees: [
                     makeWorktree(id: worktreeId, tasks: [
                         makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                     ])
@@ -890,13 +890,13 @@ final class ReducerTests: XCTestCase {
     }
 
     func test_deleteProject_deselectsIfSelectionWasInside() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
-        let selected = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let selected = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
         var state = stateWith(
-            projects: [
-                makeProject(id: projectId, worktrees: [
+            repos: [
+                makeRepo(id: repoId, worktrees: [
                     makeWorktree(id: worktreeId, tasks: [
                         makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
                     ])
@@ -905,7 +905,7 @@ final class ReducerTests: XCTestCase {
             selectedTaskPath: selected
         )
 
-        let (events, _) = reduce(state, .deleteProject(id: projectId))
+        let (events, _) = reduce(state, .deleteRepo(id: repoId))
 
         XCTAssertTrue(events.contains(.taskSelectionChanged(nil)))
         for e in events { apply(&state, e) }
@@ -915,7 +915,7 @@ final class ReducerTests: XCTestCase {
     // MARK: - claude session-id uniqueness
 
     func test_linkClaudeSession_otherTaskOwnsTheSid_isNoop() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let ownerId = UUID()
         let targetId = UUID()
@@ -925,12 +925,12 @@ final class ReducerTests: XCTestCase {
         let target = makeTask(
             id: targetId, kind: .claude(sessionId: nil), runtime: .running(spawnedAt: Date())
         )
-        let state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        let state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [owner, target])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: targetId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: targetId)
 
         let (events, effects) = reduce(state, .linkClaudeSession(at: path, sessionId: "shared"))
 
@@ -939,18 +939,18 @@ final class ReducerTests: XCTestCase {
     }
 
     func test_linkClaudeSession_sameTaskReLinkingItsOwnSid_isAllowed() {
-        let projectId = UUID()
+        let repoId = UUID()
         let worktreeId = UUID()
         let taskId = UUID()
         let task = makeTask(
             id: taskId, kind: .claude(sessionId: "live"), runtime: .running(spawnedAt: Date())
         )
-        let state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        let state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: worktreeId, tasks: [task])
             ])
         ])
-        let path = TaskPath(project: projectId, worktree: worktreeId, task: taskId)
+        let path = TaskPath(repo: repoId, worktree: worktreeId, task: taskId)
 
         let (events, effects) = reduce(state, .linkClaudeSession(at: path, sessionId: "live"))
 
@@ -959,21 +959,21 @@ final class ReducerTests: XCTestCase {
     }
 
     func test_discoverClaudeSession_sidTrackedInOtherWorktree_isNoop() {
-        let projectId = UUID()
+        let repoId = UUID()
         let wtA = UUID()
         let wtB = UUID()
         let existing = makeTask(
             id: UUID(), kind: .claude(sessionId: "live"), runtime: .running(spawnedAt: Date())
         )
-        let state = stateWith(projects: [
-            makeProject(id: projectId, worktrees: [
+        let state = stateWith(repos: [
+            makeRepo(id: repoId, worktrees: [
                 makeWorktree(id: wtA, tasks: [existing]),
                 makeWorktree(id: wtB, tasks: [])
             ])
         ])
 
         let (events, effects) = reduce(state, .discoverClaudeSession(
-            at: WorktreePath(project: projectId, worktree: wtB),
+            at: WorktreePath(repo: repoId, worktree: wtB),
             sessionId: "live",
             cwd: URL(fileURLWithPath: "/somewhere")
         ))
@@ -985,10 +985,10 @@ final class ReducerTests: XCTestCase {
 
 // MARK: - Helpers
 
-private func stateWith(projects: [Project]) -> AppState {
+private func stateWith(repos: [Repo]) -> AppState {
     AppState(
         schemaVersion: 2,
-        projects: projects,
+        repos: repos,
         settings: Settings(
             scrollbackCapBytes: 1024,
             snapshotIntervalSeconds: 30,
@@ -1001,10 +1001,10 @@ private func stateWith(projects: [Project]) -> AppState {
     )
 }
 
-private func stateWith(projects: [Project], selectedTaskPath: TaskPath?) -> AppState {
+private func stateWith(repos: [Repo], selectedTaskPath: TaskPath?) -> AppState {
     AppState(
         schemaVersion: 2,
-        projects: projects,
+        repos: repos,
         settings: Settings(
             scrollbackCapBytes: 1024,
             snapshotIntervalSeconds: 30,
@@ -1017,8 +1017,8 @@ private func stateWith(projects: [Project], selectedTaskPath: TaskPath?) -> AppS
     )
 }
 
-private func makeProject(id: UUID, worktrees: [Worktree]) -> Project {
-    Project(
+private func makeRepo(id: UUID, worktrees: [Worktree]) -> Repo {
+    Repo(
         id: id,
         name: "atlas",
         color: "#ff5500",

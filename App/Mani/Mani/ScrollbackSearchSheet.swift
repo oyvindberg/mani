@@ -8,7 +8,7 @@ import ManiCore
 // Click → copy the line to the pasteboard. Useful for "find the thing I
 // remember was 3000 lines back" without rolling a wheel.
 struct ScrollbackSearchSheet: View {
-    // One source per Mani task — its display label (project › worktree › name),
+    // One source per Mani task — its display label (repo › worktree › name),
     // the on-disk scrollback file path, and the TaskPath that identifies it
     // in Store state (so clicking a match can navigate to that task).
     struct Source {
@@ -105,7 +105,7 @@ struct ScrollbackSearchSheet: View {
     }
 
     // Each match is a three-line card:
-    //   1. project › worktree › task (with line number prefix)
+    //   1. repo › worktree › task (with line number prefix)
     //   2. matched line, starting at column 0, highlight if visible
     //   3. next line, if there is one
     // Card has a subtle background + border so a list of matches reads

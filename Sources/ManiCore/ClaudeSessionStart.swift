@@ -62,14 +62,14 @@ public func routeSessionStart(
     let cwdURL = URL(fileURLWithPath: cwd).resolvingSymlinksInPath()
     let tooBroad: Set<String> = [homePathToExclude, "/"]
 
-    for project in state.projects {
-        for worktree in project.worktrees {
+    for repo in state.repos {
+        for worktree in repo.worktrees {
             let wtPath = worktree.path.resolvingSymlinksInPath().path
             if tooBroad.contains(wtPath) { continue }
             guard cwdURL.path == wtPath || cwdURL.path.hasPrefix(wtPath + "/") else {
                 continue
             }
-            let wtPathStruct = WorktreePath(project: project.id, worktree: worktree.id)
+            let wtPathStruct = WorktreePath(repo: repo.id, worktree: worktree.id)
 
             let alreadyTracked = worktree.tasks.contains { task in
                 if case let .claude(sid) = task.kind, sid == payload.sessionId {
@@ -90,7 +90,7 @@ public func routeSessionStart(
                     in: claudeTasks, sessionId: payload.sessionId
                 ) {
                     let taskPath = TaskPath(
-                        project: project.id, worktree: worktree.id, task: target.id
+                        repo: repo.id, worktree: worktree.id, task: target.id
                     )
                     return .linkClaudeSession(at: taskPath, sessionId: payload.sessionId)
                 }
@@ -101,7 +101,7 @@ public func routeSessionStart(
                     return false
                 }) {
                     let taskPath = TaskPath(
-                        project: project.id, worktree: worktree.id, task: unlinked.id
+                        repo: repo.id, worktree: worktree.id, task: unlinked.id
                     )
                     return .linkClaudeSession(at: taskPath, sessionId: payload.sessionId)
                 }

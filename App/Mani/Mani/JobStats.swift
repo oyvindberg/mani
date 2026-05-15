@@ -69,8 +69,8 @@ final class TaskStatsPoller {
     private func collectSnapshots() async -> [Snapshot] {
         guard let store else { return [] }
         var out: [Snapshot] = []
-        for project in store.state.projects {
-            for worktree in project.worktrees {
+        for repo in store.state.repos {
+            for worktree in repo.worktrees {
                 for task in worktree.tasks {
                     if case let .claude(sid) = task.kind {
                         out.append(Snapshot(
@@ -110,7 +110,7 @@ final class TaskStatsPoller {
             .split(separator: "/", omittingEmptySubsequences: true)
             .joined(separator: "-")
         return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects")
+            .appendingPathComponent(".claude/repos")
             .appendingPathComponent(slug)
             .appendingPathComponent("\(sid).jsonl")
     }

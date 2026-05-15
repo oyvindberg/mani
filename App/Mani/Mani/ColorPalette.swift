@@ -6,7 +6,7 @@ import SwiftUI
 enum ColorPalette {
     // Picked for distinguishability on both light and dark macOS chrome,
     // accessible across common red/green colorblindness types (verified in
-    // Sim Daltonism). Values stored as the same hex format that Project.color
+    // Sim Daltonism). Values stored as the same hex format that Repo.color
     // uses on disk.
     static let swatches: [String] = [
         "#e74c3c", // red

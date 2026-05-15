@@ -18,7 +18,7 @@ public enum PersistenceError: Error {
 // lets recovery skip events already folded into a snapshot taken at a
 // later mtime — guarding the window between snapshot rename and
 // events.jsonl truncation, which could otherwise re-apply non-idempotent
-// events (e.g. projectCreated would duplicate).
+// events (e.g. repoCreated would duplicate).
 struct StoredEvent: Codable {
     let t: Date
     let event: Event

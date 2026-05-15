@@ -32,7 +32,7 @@ final class TerminalRendererCache {
     private var entries: [TaskPath: Entry] = [:]
 
     // `themeKey` is an opaque string the caller picks (e.g. a serialised
-    // representation of the project color the theme was generated from).
+    // representation of the repo color the theme was generated from).
     // When it changes the cached entry is invalidated and a fresh renderer
     // is built with the supplied `theme`.
     func renderer(

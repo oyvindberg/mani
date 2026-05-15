@@ -3,17 +3,17 @@ import ManiCore
 
 // Top-of-window strip that surfaces every Claude session currently
 // awaiting user attention. The intended flow is: glance up → see a
-// row of project-colored pills → click the freshest one → respond →
+// row of repo-colored pills → click the freshest one → respond →
 // repeat.
 //
 // Layout (left → right):
 //   [thinking dot · N]   [ pill ][ pill ][ pill ]   [ N ready ]
 //
-// `thinking dot · N`     small pulsing project-neutral indicator
+// `thinking dot · N`     small pulsing repo-neutral indicator
 //                         with the count of sessions that have
 //                         streamed bytes in the last 1.5 s.
 // pills                   one per ready claude, sorted newest-first.
-//                         Fill is the originating project color so
+//                         Fill is the originating repo color so
 //                         the user pattern-matches identity without
 //                         reading text.
 // `N ready`               compact counter; tooltip lists all ready
@@ -35,18 +35,18 @@ struct ReadyClaudesBar: View {
     }
 
     // Aggregate signals across the whole AppState. Recomputed on
-    // every body invocation; cheap (O(projects × worktrees × tasks))
+    // every body invocation; cheap (O(repos × worktrees × tasks))
     // and SwiftUI only invokes body when its observed sources change.
     private var readyEntries: [ReadyEntry] {
         var out: [ReadyEntry] = []
-        for project in store.state.projects {
-            for worktree in project.worktrees {
+        for repo in store.state.repos {
+            for worktree in repo.worktrees {
                 for task in worktree.tasks {
                     guard case let .claude(sid) = task.kind, let sid else { continue }
                     if activityTracker.isThinking(sid: sid) { continue }
                     guard task.unread > 0 else { continue }
                     out.append(ReadyEntry(
-                        project: project,
+                        repo: repo,
                         worktree: worktree,
                         task: task,
                         sessionId: sid,
@@ -67,8 +67,8 @@ struct ReadyClaudesBar: View {
 
     private var thinkingCount: Int {
         var n = 0
-        for project in store.state.projects {
-            for worktree in project.worktrees {
+        for repo in store.state.repos {
+            for worktree in repo.worktrees {
                 for task in worktree.tasks {
                     guard case let .claude(sid) = task.kind, let sid else { continue }
                     if activityTracker.isThinking(sid: sid) { n += 1 }
@@ -114,7 +114,7 @@ struct ReadyClaudesBar: View {
         let entries = readyEntries
         if !entries.isEmpty {
             let tip = entries
-                .map { "\($0.project.name) › \($0.worktree.displayName) › \($0.task.name)" }
+                .map { "\($0.repo.name) › \($0.worktree.displayName) › \($0.task.name)" }
                 .joined(separator: "\n")
             HStack(spacing: 3) {
                 Image(systemName: "bell.badge.fill")
@@ -132,7 +132,7 @@ struct ReadyClaudesBar: View {
 // One row in the ReadyClaudesBar. Kept out-of-line so the view is
 // composable: ReadyPill stays a pure renderer with no env deps.
 struct ReadyEntry {
-    let project: Project
+    let repo: Repo
     let worktree: Worktree
     let task: Task
     let sessionId: String
@@ -140,7 +140,7 @@ struct ReadyEntry {
     let isJustReady: Bool
 }
 
-// Capsule rendered in the originating project color. Pulses briefly
+// Capsule rendered in the originating repo color. Pulses briefly
 // when this session has just become ready (so the user can spot the
 // transition out of the corner of their eye), then settles into a
 // steady fill.
@@ -152,7 +152,7 @@ private struct ReadyPill: View {
     @State private var animatePulse = false
 
     var body: some View {
-        let baseColor = SwiftUI.Color(hex: entry.project.color)
+        let baseColor = SwiftUI.Color(hex: entry.repo.color)
         Button(action: { onSelect(entry.task.id) }) {
             Capsule()
                 .fill(baseColor)
@@ -182,7 +182,7 @@ private struct ReadyPill: View {
         .onChange(of: entry.isJustReady) { _, newValue in
             animatePulse = newValue
         }
-        .help("\(entry.project.name) › \(entry.worktree.displayName) › \(entry.task.name)")
+        .help("\(entry.repo.name) › \(entry.worktree.displayName) › \(entry.task.name)")
     }
 }
 

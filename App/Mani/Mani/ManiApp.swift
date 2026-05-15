@@ -42,9 +42,9 @@ struct ManiApp: App {
         _store = StateObject(wrappedValue: store)
 
         let claudeProjects = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects")
+            .appendingPathComponent(".claude/repos")
             .path
-        _watcher = StateObject(wrappedValue: ClaudeWatcher(projectsDir: claudeProjects))
+        _watcher = StateObject(wrappedValue: ClaudeWatcher(reposDir: claudeProjects))
 
         let socketPath = storeRoot.appendingPathComponent("hook.sock").path
         _hookListener = StateObject(wrappedValue: HookListenerService(socketPath: socketPath))
@@ -194,7 +194,7 @@ struct ManiApp: App {
         HookRegistration.register(shimPath: shimPath)
     }
 
-    // Boot: load each project's sessions-index.json into the
+    // Boot: load each repo's sessions-index.json into the
     // SessionArchiveCache so the sidebar paints immediately with
     // last-known state. No JSONL parsing here — the index is a
     // pre-summarized JSON file maintained by SafekeepingSweeper. The
@@ -211,21 +211,21 @@ struct ManiApp: App {
         cache: SessionArchiveCache,
         archive: SafekeepingStore
     ) async {
-        for project in store.state.projects {
-            cache.loadFromDisk(for: project.id, store: archive)
+        for repo in store.state.repos {
+            cache.loadFromDisk(for: repo.id, store: archive)
         }
         cache.bootstrapComplete = true
         await reconcileJobsForArchivedSessions(store: store, cache: cache)
     }
 
     // For each cached session whose originating worktree is still in
-    // the project AND no Task currently tracks it, dispatch
+    // the repo AND no Task currently tracks it, dispatch
     // discoverClaudeSession so PastSessionRow appears under that
     // worktree. The reducer is globally idempotent on sessionId so
     // re-firing is safe.
     //
     // Called from: bootstrap (once at launch) and SafekeepingSweeper
-    // after each sweep — so a project added at runtime picks up its
+    // after each sweep — so a repo added at runtime picks up its
     // past conversations on the next tick instead of waiting for an
     // app restart.
     @MainActor
@@ -234,11 +234,11 @@ struct ManiApp: App {
     ) async {
         let homePath = FileManager.default.homeDirectoryForCurrentUser
             .resolvingSymlinksInPath().path
-        for project in store.state.projects {
-            let pairs = project.worktrees.map {
+        for repo in store.state.repos {
+            let pairs = repo.worktrees.map {
                 ($0.id, $0.path.resolvingSymlinksInPath().path)
             }
-            for entry in cache.entries(for: project.id) {
+            for entry in cache.entries(for: repo.id) {
                 guard let (worktreeId, _) = pairs.first(where: { id, wt in
                     if wt == homePath || wt == "/" { return false }
                     return entry.originatingCwd == wt
@@ -248,7 +248,7 @@ struct ManiApp: App {
                     continue
                 }
                 await store.dispatch(.discoverClaudeSession(
-                    at: WorktreePath(project: project.id, worktree: worktreeId),
+                    at: WorktreePath(repo: repo.id, worktree: worktreeId),
                     sessionId: entry.sessionId,
                     cwd: URL(fileURLWithPath: entry.originatingCwd)
                 ))
@@ -264,13 +264,13 @@ struct ManiApp: App {
     // true OR whose name matches the default pattern are skipped.
     @MainActor
     private static func migrateRenamedFlags(store: Store) async {
-        for project in store.state.projects {
-            for worktree in project.worktrees {
+        for repo in store.state.repos {
+            for worktree in repo.worktrees {
                 for task in worktree.tasks {
                     if task.renamed { continue }
                     if isDefaultJobName(task.name, kind: task.kind) { continue }
                     let path = TaskPath(
-                        project: project.id, worktree: worktree.id, task: task.id
+                        repo: repo.id, worktree: worktree.id, task: task.id
                     )
                     await store.dispatch(.renameTask(at: path, name: task.name))
                 }
@@ -303,15 +303,15 @@ struct ManiApp: App {
     // a normal clone, a file for a `git worktree`-style linked checkout).
     @MainActor
     private static func ensureDiffJobsForGitWorktrees(store: Store) async {
-        for project in store.state.projects {
-            for worktree in project.worktrees {
+        for repo in store.state.repos {
+            for worktree in repo.worktrees {
                 guard isGitCheckout(at: worktree.path) else { continue }
                 let hasDiff = worktree.tasks.contains { task in
                     if case .diff = task.kind { return true }
                     return false
                 }
                 if !hasDiff {
-                    let path = WorktreePath(project: project.id, worktree: worktree.id)
+                    let path = WorktreePath(repo: repo.id, worktree: worktree.id)
                     await SidebarView.spawnDiff(at: path, cwd: worktree.path, store: store)
                 }
             }
@@ -344,23 +344,23 @@ struct ManiApp: App {
     // any task whose agent is gone gets a synthetic .taskExited.
 
     private static func taskExists(_ path: TaskPath, in state: AppState) -> Bool {
-        state.projects
-            .first(where: { $0.id == path.project })?
+        state.repos
+            .first(where: { $0.id == path.repo })?
             .worktrees.first(where: { $0.id == path.worktree })?
             .tasks.first(where: { $0.id == path.task }) != nil
     }
 
     private static func seedDefaults(store: Store) async {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        await store.dispatch(.createProject(
+        await store.dispatch(.createRepo(
             name: "scratch",
             color: "#ff5500",
             rootDir: home
         ))
-        guard let project = store.state.projects.first,
-              let worktree = project.worktrees.first
+        guard let repo = store.state.repos.first,
+              let worktree = repo.worktrees.first
         else { return }
-        let path = WorktreePath(project: project.id, worktree: worktree.id)
+        let path = WorktreePath(repo: repo.id, worktree: worktree.id)
         let spec = ProcessSpec(
             command: "/bin/zsh",
             args: ["-l"],
@@ -394,14 +394,14 @@ struct ManiApp: App {
         let homePath = FileManager.default.homeDirectoryForCurrentUser
             .resolvingSymlinksInPath().path
         let tooBroad: Set<String> = [homePath, "/"]
-        for project in store.state.projects {
-            for worktree in project.worktrees {
+        for repo in store.state.repos {
+            for worktree in repo.worktrees {
                 let wtPath = worktree.path.resolvingSymlinksInPath().path
                 if tooBroad.contains(wtPath) { continue }
                 guard cwdURL.path == wtPath || cwdURL.path.hasPrefix(wtPath + "/") else {
                     continue
                 }
-                let path = WorktreePath(project: project.id, worktree: worktree.id)
+                let path = WorktreePath(repo: repo.id, worktree: worktree.id)
 
                 // Prefer linking into an existing claude(nil) task in this
                 // worktree (created by NewTaskSheet's "Claude" option) — the
@@ -412,7 +412,7 @@ struct ManiApp: App {
                     return false
                 }) {
                     let taskPath = TaskPath(
-                        project: project.id, worktree: worktree.id, task: unlinked.id
+                        repo: repo.id, worktree: worktree.id, task: unlinked.id
                     )
                     await store.dispatch(.linkClaudeSession(
                         at: taskPath, sessionId: detected.sessionId
@@ -460,12 +460,12 @@ struct ManiApp: App {
                 messageCount: detected.messageCount
             )
         }
-        for project in store.state.projects {
-            for worktree in project.worktrees {
+        for repo in store.state.repos {
+            for worktree in repo.worktrees {
                 for task in worktree.tasks {
                     if case let .claude(sid) = task.kind, sid == detected.sessionId {
                         let path = TaskPath(
-                            project: project.id, worktree: worktree.id, task: task.id
+                            repo: repo.id, worktree: worktree.id, task: task.id
                         )
                         await store.dispatch(.bumpUnread(at: path, by: delta))
                         return
@@ -475,16 +475,16 @@ struct ManiApp: App {
         }
         // No Task tracks this session id. Treat the message arrival
         // as a fresh discovery opportunity — covers the case where
-        // the session's onNewSession fired against an empty project
+        // the session's onNewSession fired against an empty repo
         // list (claude was already running when the user added the
-        // project, or FSEvents missed the initial create). The
+        // repo, or FSEvents missed the initial create). The
         // discoverClaudeSession reducer is globally idempotent so
         // re-firing is safe.
         await handleDiscoveredSession(detected, store: store)
     }
 
     // Walk all .claude(sid) tasks and delete any whose <sid>.jsonl is
-    // missing under ~/.claude/projects/<slug>/. Covers:
+    // missing under ~/.claude/repos/<slug>/. Covers:
     //   - External claude tasks whose transcript was pruned by claude's
     //     retention (and we can no longer adopt them).
     //   - Mani-spawned claude tasks whose `claude --resume <sid>` failed

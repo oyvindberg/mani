@@ -1,14 +1,14 @@
 import Foundation
 
-// One row in a project's sessions-index.json. Captures the metadata we
+// One row in a repo's sessions-index.json. Captures the metadata we
 // need to render PastSessionRow without reading the (potentially huge)
 // JSONL transcript. The transcript itself is gzipped alongside under
-// projects/<project-uuid>/sessions/<sessionId>.jsonl.gz.
+// repos/<repo-uuid>/sessions/<sessionId>.jsonl.gz.
 //
 // `originatingCwd` is the cwd recorded inside the JSONL — used at boot
 // to decide whether the originating worktree still exists in the
-// project (`worktreeStillPresent` is computed at boot, not persisted,
-// so renames of project state don't leave a stale flag behind).
+// repo (`worktreeStillPresent` is computed at boot, not persisted,
+// so renames of repo state don't leave a stale flag behind).
 //
 // `archivedAt == nil` means: we know the session exists and have its
 // summary metadata, but the transcript hasn't been copied yet (the

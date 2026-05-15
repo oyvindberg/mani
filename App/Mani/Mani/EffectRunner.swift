@@ -68,11 +68,11 @@ actor EffectRunner {
         state: AppState,
         dispatch: @escaping (Action) async -> Void
     ) async {
-        for project in state.projects {
-            for worktree in project.worktrees {
+        for repo in state.repos {
+            for worktree in repo.worktrees {
                 for task in worktree.tasks {
                     let path = TaskPath(
-                        project: project.id, worktree: worktree.id, task: task.id
+                        repo: repo.id, worktree: worktree.id, task: task.id
                     )
                     switch task.runtime {
                     case .running:

@@ -2,7 +2,7 @@ import SwiftUI
 
 extension SwiftUI.Color {
     // Lenient: accepts "#rgb", "#rrggbb", "rgb", "rrggbb", with or without #.
-    // Falls back to Color.gray for malformed input — Mani's per-project color
+    // Falls back to Color.gray for malformed input — Mani's per-repo color
     // string is opaque to ManiCore (just a String), so the renderer must not
     // crash on bad data.
     init(hex: String) {

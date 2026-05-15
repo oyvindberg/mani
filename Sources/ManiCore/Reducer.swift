@@ -3,10 +3,10 @@ import Foundation
 public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], effects: [Effect]) {
     switch action {
 
-    case let .createProject(name, color, rootDir):
-        // The project's primary workspace is implicit: a Worktree is
+    case let .createRepo(name, color, rootDir):
+        // The repo's primary workspace is implicit: a Worktree is
         // materialized at the rootDir so the sidebar has a row and tasks
-        // spawned at the project root have somewhere to attach.
+        // spawned at the repo root have somewhere to attach.
         let initialWorktree = Worktree(
             id: UUID(),
             path: rootDir,
@@ -16,7 +16,7 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             tasks: [],
             createdAt: Date()
         )
-        let project = Project(
+        let repo = Repo(
             id: UUID(),
             name: name,
             color: color,
@@ -26,54 +26,54 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             createdAt: Date(),
             claudeInvocation: nil
         )
-        let event = Event.projectCreated(project)
+        let event = Event.repoCreated(repo)
         return ([event], [.persistEvents([event])])
 
-    case let .renameProject(id, name):
-        guard state.projects.contains(where: { $0.id == id }) else { return ([], []) }
-        let event = Event.projectRenamed(id: id, name: name)
+    case let .renameRepo(id, name):
+        guard state.repos.contains(where: { $0.id == id }) else { return ([], []) }
+        let event = Event.repoRenamed(id: id, name: name)
         return ([event], [.persistEvents([event])])
 
     case let .setProjectEnabled(id, enabled):
-        guard let project = state.projects.first(where: { $0.id == id }) else {
+        guard let repo = state.repos.first(where: { $0.id == id }) else {
             return ([], [])
         }
-        let event = Event.projectEnabledChanged(id: id, enabled: enabled)
+        let event = Event.repoEnabledChanged(id: id, enabled: enabled)
         var effects: [Effect] = [.persistEvents([event])]
         if !enabled {
-            effects.append(contentsOf: terminationEffects(forProject: project))
+            effects.append(contentsOf: terminationEffects(forRepo: repo))
         }
         return ([event], effects)
 
     case let .setProjectColor(id, color):
-        guard state.projects.contains(where: { $0.id == id }) else { return ([], []) }
-        let event = Event.projectColorChanged(id: id, color: color)
+        guard state.repos.contains(where: { $0.id == id }) else { return ([], []) }
+        let event = Event.repoColorChanged(id: id, color: color)
         return ([event], [.persistEvents([event])])
 
     case let .setProjectClaudeInvocation(id, invocation):
-        guard state.projects.contains(where: { $0.id == id }) else { return ([], []) }
-        let event = Event.projectClaudeInvocationChanged(id: id, invocation: invocation)
+        guard state.repos.contains(where: { $0.id == id }) else { return ([], []) }
+        let event = Event.repoClaudeInvocationChanged(id: id, invocation: invocation)
         return ([event], [.persistEvents([event])])
 
     case let .setProjectRootDir(at):
         guard let worktree = findWorktree(state, at) else { return ([], []) }
-        let event = Event.projectRootDirChanged(id: at.project, rootDir: worktree.path)
+        let event = Event.repoRootDirChanged(id: at.repo, rootDir: worktree.path)
         return ([event], [.persistEvents([event])])
 
-    case let .deleteProject(id):
-        guard let project = state.projects.first(where: { $0.id == id }) else {
+    case let .deleteRepo(id):
+        guard let repo = state.repos.first(where: { $0.id == id }) else {
             return ([], [])
         }
-        var events: [Event] = [.projectDeleted(id: id)]
-        if let sel = state.selectedTaskPath, sel.project == id {
+        var events: [Event] = [.repoDeleted(id: id)]
+        if let sel = state.selectedTaskPath, sel.repo == id {
             events.append(.taskSelectionChanged(nil))
         }
         var effects: [Effect] = [.persistEvents(events)]
-        effects.append(contentsOf: terminationEffects(forProject: project))
+        effects.append(contentsOf: terminationEffects(forRepo: repo))
         return (events, effects)
 
-    case let .createWorktree(projectId, kind, path):
-        guard let project = state.projects.first(where: { $0.id == projectId }) else {
+    case let .createWorktree(repoId, kind, path):
+        guard let repo = state.repos.first(where: { $0.id == repoId }) else {
             return ([], [])
         }
         let worktree = Worktree(
@@ -85,12 +85,12 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             tasks: [],
             createdAt: Date()
         )
-        let event = Event.worktreeCreated(projectId: projectId, worktree)
+        let event = Event.worktreeCreated(repoId: repoId, worktree)
         var effects: [Effect] = [.persistEvents([event])]
         if case let .git(branch, baseRef) = kind {
             effects.append(.createGitWorktree(
-                projectId: projectId,
-                repoRoot: project.rootDir,
+                repoId: repoId,
+                repoRoot: repo.rootDir,
                 branch: branch,
                 path: path,
                 baseRef: baseRef
@@ -139,7 +139,7 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             createdAt: Date(),
             renamed: false
         )
-        let taskPath = TaskPath(project: at.project, worktree: at.worktree, task: task.id)
+        let taskPath = TaskPath(repo: at.repo, worktree: at.worktree, task: task.id)
         var events: [Event] = [.taskCreated(at: at, task)]
         if autoSelect {
             events.append(.taskSelectionChanged(taskPath))
@@ -298,49 +298,49 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
 public func apply(_ state: inout AppState, _ event: Event) {
     switch event {
 
-    case let .projectCreated(project):
-        state.projects.append(project)
+    case let .repoCreated(repo):
+        state.repos.append(repo)
 
-    case let .projectRenamed(id, name):
-        if let i = state.projects.firstIndex(where: { $0.id == id }) {
-            state.projects[i].name = name
+    case let .repoRenamed(id, name):
+        if let i = state.repos.firstIndex(where: { $0.id == id }) {
+            state.repos[i].name = name
         }
 
-    case let .projectColorChanged(id, color):
-        if let i = state.projects.firstIndex(where: { $0.id == id }) {
-            state.projects[i].color = color
+    case let .repoColorChanged(id, color):
+        if let i = state.repos.firstIndex(where: { $0.id == id }) {
+            state.repos[i].color = color
         }
 
-    case let .projectClaudeInvocationChanged(id, invocation):
-        if let i = state.projects.firstIndex(where: { $0.id == id }) {
-            state.projects[i].claudeInvocation = invocation
+    case let .repoClaudeInvocationChanged(id, invocation):
+        if let i = state.repos.firstIndex(where: { $0.id == id }) {
+            state.repos[i].claudeInvocation = invocation
         }
 
-    case let .projectEnabledChanged(id, enabled):
-        if let i = state.projects.firstIndex(where: { $0.id == id }) {
-            state.projects[i].enabled = enabled
+    case let .repoEnabledChanged(id, enabled):
+        if let i = state.repos.firstIndex(where: { $0.id == id }) {
+            state.repos[i].enabled = enabled
         }
 
-    case let .projectRootDirChanged(id, rootDir):
-        if let i = state.projects.firstIndex(where: { $0.id == id }) {
-            state.projects[i].rootDir = rootDir
+    case let .repoRootDirChanged(id, rootDir):
+        if let i = state.repos.firstIndex(where: { $0.id == id }) {
+            state.repos[i].rootDir = rootDir
         }
 
-    case let .projectDeleted(id):
+    case let .repoDeleted(id):
         // Every implicit task loss in this codebase has been traced to
         // a cascade through here. Log so the next regression is one
         // grep away.
-        let lost = state.projects
+        let lost = state.repos
             .first(where: { $0.id == id })?
             .worktrees.reduce(0) { $0 + $1.tasks.count } ?? 0
         if lost > 0 {
-            print("[reducer] projectDeleted \(id) removed \(lost) tasks")
+            print("[reducer] repoDeleted \(id) removed \(lost) tasks")
         }
-        state.projects.removeAll(where: { $0.id == id })
+        state.repos.removeAll(where: { $0.id == id })
 
-    case let .worktreeCreated(projectId, worktree):
-        if let i = state.projects.firstIndex(where: { $0.id == projectId }) {
-            state.projects[i].worktrees.append(worktree)
+    case let .worktreeCreated(repoId, worktree):
+        if let i = state.repos.firstIndex(where: { $0.id == repoId }) {
+            state.repos[i].worktrees.append(worktree)
         }
 
     case let .worktreeEnabledChanged(at, enabled):
@@ -350,13 +350,13 @@ public func apply(_ state: inout AppState, _ event: Event) {
         mutateWorktree(&state, at) { $0.missing = true }
 
     case let .worktreeDeleted(at):
-        if let pi = state.projects.firstIndex(where: { $0.id == at.project }) {
-            let lost = state.projects[pi].worktrees
+        if let pi = state.repos.firstIndex(where: { $0.id == at.repo }) {
+            let lost = state.repos[pi].worktrees
                 .first(where: { $0.id == at.worktree })?.tasks.count ?? 0
             if lost > 0 {
                 print("[reducer] worktreeDeleted \(at.worktree) removed \(lost) tasks")
             }
-            state.projects[pi].worktrees.removeAll(where: { $0.id == at.worktree })
+            state.repos[pi].worktrees.removeAll(where: { $0.id == at.worktree })
         }
 
     case let .taskCreated(at, task):
@@ -381,10 +381,10 @@ public func apply(_ state: inout AppState, _ event: Event) {
         }
 
     case let .taskDeleted(at):
-        if let pi = state.projects.firstIndex(where: { $0.id == at.project }),
-           let wi = state.projects[pi].worktrees.firstIndex(where: { $0.id == at.worktree }) {
+        if let pi = state.repos.firstIndex(where: { $0.id == at.repo }),
+           let wi = state.repos[pi].worktrees.firstIndex(where: { $0.id == at.worktree }) {
             print("[reducer] taskDeleted \(at.task)")
-            state.projects[pi].worktrees[wi].tasks.removeAll { $0.id == at.task }
+            state.repos[pi].worktrees[wi].tasks.removeAll { $0.id == at.task }
         }
 
     case let .taskSpecChanged(at, spec):
@@ -421,9 +421,9 @@ public func apply(_ state: inout AppState, _ event: Event) {
 
 // Termination effects fan out by TaskPath only. The host resolves
 // task → agent → kernel pid internally; the reducer doesn't model it.
-private func terminationEffects(forProject project: Project) -> [Effect] {
-    project.worktrees.flatMap { worktree in
-        let wtPath = WorktreePath(project: project.id, worktree: worktree.id)
+private func terminationEffects(forRepo repo: Repo) -> [Effect] {
+    repo.worktrees.flatMap { worktree in
+        let wtPath = WorktreePath(repo: repo.id, worktree: worktree.id)
         return terminationEffects(forWorktree: worktree, at: wtPath)
     }
 }
@@ -431,21 +431,21 @@ private func terminationEffects(forProject project: Project) -> [Effect] {
 private func terminationEffects(forWorktree worktree: Worktree, at: WorktreePath) -> [Effect] {
     worktree.tasks.map { task in
         .terminate(at: TaskPath(
-            project: at.project, worktree: at.worktree, task: task.id
+            repo: at.repo, worktree: at.worktree, task: task.id
         ))
     }
 }
 
 private func findWorktree(_ state: AppState, _ at: WorktreePath) -> Worktree? {
-    guard let project = state.projects.first(where: { $0.id == at.project }) else {
+    guard let repo = state.repos.first(where: { $0.id == at.repo }) else {
         return nil
     }
-    return project.worktrees.first(where: { $0.id == at.worktree })
+    return repo.worktrees.first(where: { $0.id == at.worktree })
 }
 
 private func findTask(_ state: AppState, _ at: TaskPath) -> Task? {
-    guard let project = state.projects.first(where: { $0.id == at.project }),
-          let worktree = project.worktrees.first(where: { $0.id == at.worktree }) else {
+    guard let repo = state.repos.first(where: { $0.id == at.repo }),
+          let worktree = repo.worktrees.first(where: { $0.id == at.worktree }) else {
         return nil
     }
     return worktree.tasks.first(where: { $0.id == at.task })
@@ -456,9 +456,9 @@ private func mutateWorktree(
     _ at: WorktreePath,
     _ mutate: (inout Worktree) -> Void
 ) {
-    guard let pi = state.projects.firstIndex(where: { $0.id == at.project }) else { return }
-    guard let wi = state.projects[pi].worktrees.firstIndex(where: { $0.id == at.worktree }) else { return }
-    mutate(&state.projects[pi].worktrees[wi])
+    guard let pi = state.repos.firstIndex(where: { $0.id == at.repo }) else { return }
+    guard let wi = state.repos[pi].worktrees.firstIndex(where: { $0.id == at.worktree }) else { return }
+    mutate(&state.repos[pi].worktrees[wi])
 }
 
 private func mutateTask(
@@ -466,8 +466,8 @@ private func mutateTask(
     _ at: TaskPath,
     _ mutate: (inout Task) -> Void
 ) {
-    guard let pi = state.projects.firstIndex(where: { $0.id == at.project }) else { return }
-    guard let wi = state.projects[pi].worktrees.firstIndex(where: { $0.id == at.worktree }) else { return }
-    guard let ti = state.projects[pi].worktrees[wi].tasks.firstIndex(where: { $0.id == at.task }) else { return }
-    mutate(&state.projects[pi].worktrees[wi].tasks[ti])
+    guard let pi = state.repos.firstIndex(where: { $0.id == at.repo }) else { return }
+    guard let wi = state.repos[pi].worktrees.firstIndex(where: { $0.id == at.worktree }) else { return }
+    guard let ti = state.repos[pi].worktrees[wi].tasks.firstIndex(where: { $0.id == at.task }) else { return }
+    mutate(&state.repos[pi].worktrees[wi].tasks[ti])
 }

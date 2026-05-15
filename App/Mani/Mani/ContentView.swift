@@ -6,7 +6,7 @@ import ManiCore
 struct ContentView: View {
     @EnvironmentObject var store: Store
     @EnvironmentObject var activityTracker: TaskActivityTracker
-    @State private var showingNewProject = false
+    @State private var showingNewRepo = false
     @State private var showingNewWorktree = false
     @State private var showingNewTask = false
     @State private var showingSearch = false
@@ -42,11 +42,11 @@ struct ContentView: View {
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         Menu {
-                            Button("New Project…") { showingNewProject = true }
+                            Button("New Repo…") { showingNewRepo = true }
                                 .keyboardShortcut("p", modifiers: [.command, .shift])
                             Button("New Worktree…") { showingNewWorktree = true }
                                 .keyboardShortcut("n", modifiers: [.command, .shift])
-                                .disabled(currentProject() == nil)
+                                .disabled(currentRepo() == nil)
                             Button("New Task…") { showingNewTask = true }
                                 .keyboardShortcut("t", modifiers: [.command])
                                 .disabled(currentWorktreePath() == nil)
@@ -59,17 +59,17 @@ struct ContentView: View {
             if let path = selectedJobPath, let context = breadcrumbContext() {
                 VStack(spacing: 0) {
                     Rectangle()
-                        .fill(SwiftUI.Color(hex: context.project.color))
+                        .fill(SwiftUI.Color(hex: context.repo.color))
                         .frame(height: 7)
                     HStack(spacing: 4) {
-                        Text(context.project.name)
-                            .foregroundStyle(SwiftUI.Color(hex: context.project.color))
+                        Text(context.repo.name)
+                            .foregroundStyle(SwiftUI.Color(hex: context.repo.color))
                         Text("›").foregroundStyle(.secondary)
                         Text(context.worktree.displayName)
-                            .foregroundStyle(SwiftUI.Color(hex: context.project.color))
+                            .foregroundStyle(SwiftUI.Color(hex: context.repo.color))
                         Text("›").foregroundStyle(.secondary)
                         Text(context.task.name).bold()
-                            .foregroundStyle(SwiftUI.Color(hex: context.project.color))
+                            .foregroundStyle(SwiftUI.Color(hex: context.repo.color))
                         Spacer()
                         ReadyClaudesBar(onSelect: { taskId in
                             selectTask(taskId: taskId)
@@ -97,7 +97,7 @@ struct ContentView: View {
                             task: context.task,
                             taskPath: path,
                             worktreePath: WorktreePath(
-                                project: path.project, worktree: path.worktree
+                                repo: path.repo, worktree: path.worktree
                             )
                         )
                         .id(path)
@@ -115,14 +115,14 @@ struct ContentView: View {
                     }
                 }
             } else {
-                if store.state.projects.isEmpty {
+                if store.state.repos.isEmpty {
                     VStack(spacing: 14) {
                         Image(systemName: "rectangle.stack.badge.plus")
                             .font(.system(size: 40))
                             .foregroundStyle(.secondary)
-                        Text("Create your first project")
+                        Text("Create your first repo")
                             .font(.headline)
-                        Button("New Project…") { showingNewProject = true }
+                        Button("New Repo…") { showingNewRepo = true }
                             .keyboardShortcut("p", modifiers: [.command, .shift])
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -144,8 +144,8 @@ struct ContentView: View {
             guard let newPath else { return }
             _Concurrency.Task { await store.dispatch(.markRead(at: newPath)) }
         }
-        .sheet(isPresented: $showingNewProject) {
-            NewProjectSheet(store: store, isPresented: $showingNewProject)
+        .sheet(isPresented: $showingNewRepo) {
+            NewProjectSheet(store: store, isPresented: $showingNewRepo)
         }
         .sheet(isPresented: $showingSearch) {
             ScrollbackSearchSheet(
@@ -164,10 +164,10 @@ struct ContentView: View {
             )
         }
         .sheet(isPresented: $showingNewWorktree) {
-            if let project = currentProject() {
+            if let repo = currentRepo() {
                 NewWorktreeSheet(
                     store: store,
-                    projectId: project.id,
+                    repoId: repo.id,
                     isPresented: $showingNewWorktree
                 )
             }
@@ -196,8 +196,8 @@ struct ContentView: View {
             let createdAt: Date
         }
         var out: [Entry] = []
-        for project in store.state.projects {
-            for worktree in project.worktrees {
+        for repo in store.state.repos {
+            for worktree in repo.worktrees {
                 for task in worktree.tasks {
                     guard case let .claude(sid) = task.kind, let sid else { continue }
                     if activityTracker.isThinking(sid: sid) { continue }
@@ -254,7 +254,7 @@ struct ContentView: View {
     }
 
     // Every task in state becomes a search source, labeled with its
-    // project › worktree › name breadcrumb. The currently-selected task
+    // repo › worktree › name breadcrumb. The currently-selected task
     // is sorted to the top so its scrollback is the first thing
     // ScrollbackSearchSheet scans (results stay roughly in order of
     // relevance for "I just saw this thing scroll past").
@@ -262,14 +262,14 @@ struct ContentView: View {
         var sources: [ScrollbackSearchSheet.Source] = []
         let selectedId = selectedJobId
         var selectedSource: ScrollbackSearchSheet.Source?
-        for project in store.state.projects {
-            for worktree in project.worktrees {
+        for repo in store.state.repos {
+            for worktree in repo.worktrees {
                 for task in worktree.tasks {
-                    let label = "\(project.name) › \(worktree.displayName) › \(task.name)"
+                    let label = "\(repo.name) › \(worktree.displayName) › \(task.name)"
                     let src = ScrollbackSearchSheet.Source(
                         label: label,
                         taskPath: TaskPath(
-                            project: project.id,
+                            repo: repo.id,
                             worktree: worktree.id,
                             task: task.id
                         ),
@@ -287,21 +287,21 @@ struct ContentView: View {
         return sources
     }
 
-    private func currentProject() -> Project? {
+    private func currentRepo() -> Repo? {
         if let path = selectedJobPath {
-            return store.state.projects.first { $0.id == path.project }
+            return store.state.repos.first { $0.id == path.repo }
         }
-        return store.state.projects.first
+        return store.state.repos.first
     }
 
     private func currentWorktreePath() -> WorktreePath? {
         if let path = selectedJobPath {
             return path.worktreePath
         }
-        guard let project = store.state.projects.first,
-              let worktree = project.worktrees.first
+        guard let repo = store.state.repos.first,
+              let worktree = repo.worktrees.first
         else { return nil }
-        return WorktreePath(project: project.id, worktree: worktree.id)
+        return WorktreePath(repo: repo.id, worktree: worktree.id)
     }
 
     private func currentWorktreeCwd() -> URL? {
@@ -310,7 +310,7 @@ struct ContentView: View {
 
     private func currentWorktree() -> Worktree? {
         guard let path = currentWorktreePath() else { return nil }
-        return store.state.projects.first(where: { $0.id == path.project })?
+        return store.state.repos.first(where: { $0.id == path.repo })?
             .worktrees.first(where: { $0.id == path.worktree })
     }
 
@@ -324,13 +324,13 @@ struct ContentView: View {
         return false
     }
 
-    private func breadcrumbContext() -> (project: Project, worktree: Worktree, task: Task)? {
+    private func breadcrumbContext() -> (repo: Repo, worktree: Worktree, task: Task)? {
         guard let path = selectedJobPath,
-              let project = store.state.projects.first(where: { $0.id == path.project }),
-              let worktree = project.worktrees.first(where: { $0.id == path.worktree }),
+              let repo = store.state.repos.first(where: { $0.id == path.repo }),
+              let worktree = repo.worktrees.first(where: { $0.id == path.worktree }),
               let task = worktree.tasks.first(where: { $0.id == path.task })
         else { return nil }
-        return (project, worktree, task)
+        return (repo, worktree, task)
     }
 
     private var selectedJobPath: TaskPath? {
@@ -339,14 +339,14 @@ struct ContentView: View {
     }
 
     private func firstJobId() -> UUID? {
-        store.state.projects.first?.worktrees.first?.tasks.first?.id
+        store.state.repos.first?.worktrees.first?.tasks.first?.id
     }
 
     private func lookupPath(forJobId taskId: UUID) -> TaskPath? {
-        for project in store.state.projects {
-            for worktree in project.worktrees {
+        for repo in store.state.repos {
+            for worktree in repo.worktrees {
                 if worktree.tasks.contains(where: { $0.id == taskId }) {
-                    return TaskPath(project: project.id, worktree: worktree.id, task: taskId)
+                    return TaskPath(repo: repo.id, worktree: worktree.id, task: taskId)
                 }
             }
         }
@@ -370,7 +370,7 @@ struct SidebarView: View {
     @State private var expandedPastSessions: Set<UUID> = []
     @State private var expandedArchivedProjects: Set<UUID> = []
     @State private var colorPickerProjectId: UUID?
-    @State private var newWorktreeForProject: Project?
+    @State private var newWorktreeForRepo: Repo?
     @State private var claudeInvocationProjectId: UUID?
 
     struct ResumeContext: Identifiable {
@@ -388,14 +388,14 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             ZStack {
-                if store.state.projects.isEmpty {
+                if store.state.repos.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "tray")
                             .font(.system(size: 28))
                             .foregroundStyle(.secondary)
-                        Text("No projects yet")
+                        Text("No repos yet")
                             .font(.headline)
-                        Text("Use the + button in the toolbar\nto create your first project.")
+                        Text("Use the + button in the toolbar\nto create your first repo.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -404,8 +404,8 @@ struct SidebarView: View {
                 } else {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(sortedProjects, id: \.id) { project in
-                                projectGroup(project: project)
+                            ForEach(sortedProjects, id: \.id) { repo in
+                                repoGroup(repo: repo)
                                     .padding(.vertical, 4)
                             }
                         }
@@ -452,38 +452,38 @@ struct SidebarView: View {
         }
         .sheet(item: Binding(
             get: { colorPickerProjectId.flatMap { id in
-                store.state.projects.first(where: { $0.id == id })
+                store.state.repos.first(where: { $0.id == id })
             } },
             set: { if $0 == nil { colorPickerProjectId = nil } }
-        )) { project in
-            ProjectColorSheet(
+        )) { repo in
+            RepoColorSheet(
                 store: store,
-                project: project,
+                repo: repo,
                 isPresented: Binding(
                     get: { colorPickerProjectId != nil },
                     set: { if !$0 { colorPickerProjectId = nil } }
                 )
             )
         }
-        .sheet(item: $newWorktreeForProject) { project in
+        .sheet(item: $newWorktreeForRepo) { repo in
             NewWorktreeSheet(
                 store: store,
-                projectId: project.id,
+                repoId: repo.id,
                 isPresented: Binding(
-                    get: { newWorktreeForProject != nil },
-                    set: { if !$0 { newWorktreeForProject = nil } }
+                    get: { newWorktreeForRepo != nil },
+                    set: { if !$0 { newWorktreeForRepo = nil } }
                 )
             )
         }
         .sheet(item: Binding(
             get: { claudeInvocationProjectId.flatMap { id in
-                store.state.projects.first(where: { $0.id == id })
+                store.state.repos.first(where: { $0.id == id })
             } },
             set: { if $0 == nil { claudeInvocationProjectId = nil } }
-        )) { project in
-            ProjectClaudeInvocationSheet(
+        )) { repo in
+            RepoClaudeInvocationSheet(
                 store: store,
-                project: project,
+                repo: repo,
                 isPresented: Binding(
                     get: { claudeInvocationProjectId != nil },
                     set: { if !$0 { claudeInvocationProjectId = nil } }
@@ -493,31 +493,31 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
-    private func projectMenu(project: Project) -> some View {
+    private func repoMenu(repo: Repo) -> some View {
         Button("Add worktree…") {
-            newWorktreeForProject = project
+            newWorktreeForRepo = repo
         }
         Button("Change color…") {
-            colorPickerProjectId = project.id
+            colorPickerProjectId = repo.id
         }
         Button("Claude command…") {
-            claudeInvocationProjectId = project.id
+            claudeInvocationProjectId = repo.id
         }
         Divider()
-        Button(project.enabled ? "Disable project (stop all tasks)" : "Enable project") {
+        Button(repo.enabled ? "Disable repo (stop all tasks)" : "Enable repo") {
             _Concurrency.Task {
-                await store.dispatch(.setProjectEnabled(id: project.id, enabled: !project.enabled))
+                await store.dispatch(.setProjectEnabled(id: repo.id, enabled: !repo.enabled))
             }
         }
         Divider()
-        Button("Delete project", role: .destructive) {
-            _Concurrency.Task { await store.dispatch(.deleteProject(id: project.id)) }
+        Button("Delete repo", role: .destructive) {
+            _Concurrency.Task { await store.dispatch(.deleteRepo(id: repo.id)) }
         }
     }
 
     @ViewBuilder
-    private func worktreeMenu(project: Project, worktree: Worktree) -> some View {
-        let path = WorktreePath(project: project.id, worktree: worktree.id)
+    private func worktreeMenu(repo: Repo, worktree: Worktree) -> some View {
+        let path = WorktreePath(repo: repo.id, worktree: worktree.id)
         Button("New shell here") {
             _Concurrency.Task {
                 await Self.spawnShell(at: path, cwd: worktree.path, store: store)
@@ -535,8 +535,8 @@ struct SidebarView: View {
             Self.openInIntelliJ(worktree.path)
         }
         Divider()
-        if worktree.path != project.rootDir {
-            Button("Make project root") {
+        if worktree.path != repo.rootDir {
+            Button("Make repo root") {
                 _Concurrency.Task { await store.dispatch(.setProjectRootDir(at: path)) }
             }
         }
@@ -566,9 +566,9 @@ struct SidebarView: View {
     }
 
     static func spawnClaude(at path: WorktreePath, cwd: URL, store: Store) async {
-        let project = store.state.projects.first(where: { $0.id == path.project })
+        let repo = store.state.repos.first(where: { $0.id == path.repo })
         let invocation = ClaudeTaskSpec.resolveInvocation(
-            project: project, settings: store.state.settings
+            repo: repo, settings: store.state.settings
         )
         let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: nil, invocation: invocation)
         await store.dispatch(.createTask(
@@ -623,9 +623,9 @@ struct SidebarView: View {
         let preservedName = wasRenamed
             ? currentName
             : "claude (adopted \(sessionId.prefix(6)))"
-        let project = store.state.projects.first(where: { $0.id == worktreePath.project })
+        let repo = store.state.repos.first(where: { $0.id == worktreePath.repo })
         let invocation = ClaudeTaskSpec.resolveInvocation(
-            project: project, settings: store.state.settings
+            repo: repo, settings: store.state.settings
         )
         let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: sessionId, invocation: invocation)
         _Concurrency.Task {
@@ -638,15 +638,15 @@ struct SidebarView: View {
                 autoSelect: true
             ))
             if wasRenamed,
-               let newJob = store.state.projects
-                    .first(where: { $0.id == worktreePath.project })?
+               let newJob = store.state.repos
+                    .first(where: { $0.id == worktreePath.repo })?
                     .worktrees.first(where: { $0.id == worktreePath.worktree })?
                     .tasks.first(where: {
                         if case let .claude(s) = $0.kind, s == sessionId { return true }
                         return false
                     }) {
                 let newPath = TaskPath(
-                    project: worktreePath.project,
+                    repo: worktreePath.repo,
                     worktree: worktreePath.worktree,
                     task: newJob.id
                 )
@@ -656,8 +656,8 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
-    private func taskMenu(project: Project, worktree: Worktree, task: Task) -> some View {
-        let path = TaskPath(project: project.id, worktree: worktree.id, task: task.id)
+    private func taskMenu(repo: Repo, worktree: Worktree, task: Task) -> some View {
+        let path = TaskPath(repo: repo.id, worktree: worktree.id, task: task.id)
         Button("Rename…") {
             renameContext = RenameContext(taskPath: path, currentName: task.name)
         }
@@ -690,7 +690,7 @@ struct SidebarView: View {
             Divider()
             Button("Adopt into Mani") {
                 adoptExternalClaude(taskPath: path, worktreePath: WorktreePath(
-                    project: project.id, worktree: worktree.id
+                    repo: repo.id, worktree: worktree.id
                 ), sessionId: sid, cwd: task.spec.cwd, currentName: task.name,
                    wasRenamed: task.renamed)
             }
@@ -716,48 +716,48 @@ struct SidebarView: View {
     }
 
     @ViewBuilder
-    private func projectGroup(project: Project) -> some View {
-        let visibleTasks = project.worktrees.flatMap { $0.tasks }.filter { task in
+    private func repoGroup(repo: Repo) -> some View {
+        let visibleTasks = repo.worktrees.flatMap { $0.tasks }.filter { task in
             if case .diff = task.kind { return false }
             return true
         }
-        let projectExpanded = !collapsedProjects.contains(project.id)
-        let color = SwiftUI.Color(hex: project.color)
+        let repoExpanded = !collapsedProjects.contains(repo.id)
+        let color = SwiftUI.Color(hex: repo.color)
         return HStack(spacing: 0) {
-            // Single continuous color bar spans the entire project
+            // Single continuous color bar spans the entire repo
             // group (header + every worktree + archived block) so a
-            // glance at the sidebar shows the project hierarchy as
+            // glance at the sidebar shows the repo hierarchy as
             // one cohesive block.
             Rectangle()
                 .fill(color)
                 .frame(width: 4)
             VStack(alignment: .leading, spacing: 0) {
-                ProjectHeaderRow(
-                    project: project,
-                    isExpanded: projectExpanded,
+                RepoHeaderRow(
+                    repo: repo,
+                    isExpanded: repoExpanded,
                     taskCount: visibleTasks.count,
-                    anyChildThinking: projectAnyThinking(project),
-                    anyChildReady: projectAnyReady(project),
-                    anyChildJustReady: projectAnyJustReady(project)
+                    anyChildThinking: repoAnyThinking(repo),
+                    anyChildReady: repoAnyReady(repo),
+                    anyChildJustReady: repoAnyJustReady(repo)
                 ) {
                     withAnimation(.easeInOut(duration: 0.15)) {
-                        if projectExpanded { collapsedProjects.insert(project.id) }
-                        else { collapsedProjects.remove(project.id) }
+                        if repoExpanded { collapsedProjects.insert(repo.id) }
+                        else { collapsedProjects.remove(repo.id) }
                     }
                 } onContextMenu: {
-                    AnyView(projectMenu(project: project))
+                    AnyView(repoMenu(repo: repo))
                 }
-                if projectExpanded {
-                    ForEach(Array(project.worktrees.enumerated()), id: \.element.id) { idx, worktree in
+                if repoExpanded {
+                    ForEach(Array(repo.worktrees.enumerated()), id: \.element.id) { idx, worktree in
                         if idx > 0 {
                             Rectangle()
                                 .fill(color.opacity(0.22))
                                 .frame(height: 0.5)
                                 .padding(.leading, 6)
                         }
-                        worktreeGroup(project: project, worktree: worktree)
+                        worktreeGroup(repo: repo, worktree: worktree)
                     }
-                    archivedWorktreesGroup(project: project)
+                    archivedWorktreesGroup(repo: repo)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -772,22 +772,22 @@ struct SidebarView: View {
     }
 
     // Sessions whose originating cwd no longer matches any current
-    // worktree in the project — i.e. the worktree was removed or
+    // worktree in the repo — i.e. the worktree was removed or
     // moved off disk. Rendered inside a single collapsible group
     // grouped by originating-worktree name so the user can find
     // them under the same label they had before the cleanup.
     @ViewBuilder
-    private func archivedWorktreesGroup(project: Project) -> some View {
+    private func archivedWorktreesGroup(repo: Repo) -> some View {
         let homePath = FileManager.default.homeDirectoryForCurrentUser
             .resolvingSymlinksInPath().path
-        let worktreePaths = project.worktrees.map {
+        let worktreePaths = repo.worktrees.map {
             $0.path.resolvingSymlinksInPath().path
         }.filter { $0 != homePath && $0 != "/" }
         let (_, archived) = archiveCache.entriesByPresence(
-            for: project.id, worktreePaths: worktreePaths
+            for: repo.id, worktreePaths: worktreePaths
         )
         if !archived.isEmpty {
-            let isExpanded = expandedArchivedProjects.contains(project.id)
+            let isExpanded = expandedArchivedProjects.contains(repo.id)
             HStack(spacing: 6) {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9, weight: .semibold))
@@ -811,8 +811,8 @@ struct SidebarView: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 withAnimation(.easeInOut(duration: 0.15)) {
-                    if isExpanded { expandedArchivedProjects.remove(project.id) }
-                    else { expandedArchivedProjects.insert(project.id) }
+                    if isExpanded { expandedArchivedProjects.remove(repo.id) }
+                    else { expandedArchivedProjects.insert(repo.id) }
                 }
             }
             if isExpanded {
@@ -822,7 +822,7 @@ struct SidebarView: View {
                 let names = grouped.keys.sorted()
                 ForEach(names, id: \.self) { name in
                     archivedWorktreeSection(
-                        project: project,
+                        repo: repo,
                         worktreeName: name,
                         entries: (grouped[name] ?? []).sorted {
                             ($0.lastMessageAt ?? .distantPast)
@@ -836,7 +836,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func archivedWorktreeSection(
-        project: Project,
+        repo: Repo,
         worktreeName: String,
         entries: [SessionIndexEntry]
     ) -> some View {
@@ -856,12 +856,12 @@ struct SidebarView: View {
         .padding(.trailing, 10)
         .padding(.vertical, 2)
         ForEach(entries, id: \.sessionId) { entry in
-            ArchivedSessionRow(project: project, entry: entry)
+            ArchivedSessionRow(repo: repo, entry: entry)
         }
     }
 
     @ViewBuilder
-    private func worktreeGroup(project: Project, worktree: Worktree) -> some View {
+    private func worktreeGroup(repo: Repo, worktree: Worktree) -> some View {
         let diffJobId = worktree.tasks.first(where: {
             if case .diff = $0.kind { return true }
             return false
@@ -871,10 +871,10 @@ struct SidebarView: View {
             if case .diff = task.kind { return false }
             return true
         }
-        let wtPath = WorktreePath(project: project.id, worktree: worktree.id)
+        let wtPath = WorktreePath(repo: repo.id, worktree: worktree.id)
         VStack(alignment: .leading, spacing: 0) {
             WorktreeHeaderRow(
-                project: project,
+                repo: repo,
                 worktree: worktree,
                 isExpanded: worktreeExpanded,
                 diffJobId: diffJobId,
@@ -898,24 +898,24 @@ struct SidebarView: View {
                     await Self.spawnClaude(at: wtPath, cwd: worktree.path, store: store)
                 }
             } onContextMenu: {
-                AnyView(worktreeMenu(project: project, worktree: worktree))
+                AnyView(worktreeMenu(repo: repo, worktree: worktree))
             }
             if worktreeExpanded {
                 let (managed, externals) = partitionVisibleTasks(visibleTasks)
                 ForEach(managed) { task in
                     TaskRow(
-                        project: project,
+                        repo: repo,
                         task: task,
                         selected: selectedJobId == task.id
                     ) {
                         onSelect(task.id)
                     } onContextMenu: {
-                        AnyView(taskMenu(project: project, worktree: worktree, task: task))
+                        AnyView(taskMenu(repo: repo, worktree: worktree, task: task))
                     }
                 }
                 if !externals.isEmpty {
                     pastSessionsGroup(
-                        project: project,
+                        repo: repo,
                         worktree: worktree,
                         externals: externals
                     )
@@ -924,10 +924,10 @@ struct SidebarView: View {
         }
     }
 
-    // Stable alphabetical (case-insensitive) project order in the
+    // Stable alphabetical (case-insensitive) repo order in the
     // sidebar — independent of insertion order in state.json.
-    private var sortedProjects: [Project] {
-        store.state.projects.sorted {
+    private var sortedProjects: [Repo] {
+        store.state.repos.sorted {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
     }
@@ -961,18 +961,18 @@ struct SidebarView: View {
         return false
     }
 
-    private func projectAnyThinking(_ project: Project) -> Bool {
-        project.worktrees.contains { worktreeAnyThinking($0) }
+    private func repoAnyThinking(_ repo: Repo) -> Bool {
+        repo.worktrees.contains { worktreeAnyThinking($0) }
     }
 
-    private func projectAnyReady(_ project: Project) -> Bool {
+    private func repoAnyReady(_ repo: Repo) -> Bool {
         // Mirror the per-worktree precedence: thinking trumps ready.
-        if projectAnyThinking(project) { return false }
-        return project.worktrees.contains { worktreeAnyReady($0) }
+        if repoAnyThinking(repo) { return false }
+        return repo.worktrees.contains { worktreeAnyReady($0) }
     }
 
-    private func projectAnyJustReady(_ project: Project) -> Bool {
-        project.worktrees.contains { worktreeAnyJustReady($0) }
+    private func repoAnyJustReady(_ repo: Repo) -> Bool {
+        repo.worktrees.contains { worktreeAnyJustReady($0) }
     }
 
     // Split tasks into "managed" (Mani-spawned, full-row treatment) and
@@ -993,7 +993,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func pastSessionsGroup(
-        project: Project,
+        repo: Repo,
         worktree: Worktree,
         externals: [Task]
     ) -> some View {
@@ -1046,13 +1046,13 @@ struct SidebarView: View {
             }
             ForEach(sorted) { task in
                 PastSessionRow(
-                    project: project,
+                    repo: repo,
                     task: task,
                     selected: selectedJobId == task.id
                 ) {
                     onSelect(task.id)
                 } onContextMenu: {
-                    AnyView(taskMenu(project: project, worktree: worktree, task: task))
+                    AnyView(taskMenu(repo: repo, worktree: worktree, task: task))
                 }
             }
         }
@@ -1282,14 +1282,14 @@ private struct ExternalClaudeView: View {
             .split(separator: "/", omittingEmptySubsequences: true)
             .joined(separator: "-")
         return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/projects")
+            .appendingPathComponent(".claude/repos")
             .appendingPathComponent(slug)
             .appendingPathComponent("\(sid).jsonl")
     }
 
     private func load() async {
         guard let sid = sessionId else { loading = false; return }
-        let projectId = taskPath.project
+        let repoId = taskPath.repo
         let live = transcriptURL
         let archive = safekeepingStore
         await _Concurrency.Task.detached(priority: .userInitiated) {
@@ -1299,10 +1299,10 @@ private struct ExternalClaudeView: View {
             // works unchanged. Fall back to the live source if there
             // is no archive yet (hot, first-sweep cases).
             let urlForParse: URL?
-            if archive.hasTranscript(sessionId: sid, for: projectId) {
+            if archive.hasTranscript(sessionId: sid, for: repoId) {
                 do {
                     let data = try archive.readArchivedTranscript(
-                        sessionId: sid, for: projectId
+                        sessionId: sid, for: repoId
                     )
                     let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
                         .appendingPathComponent("mani-archive-\(sid).jsonl")
@@ -1334,7 +1334,7 @@ private struct ExternalClaudeView: View {
                     // and lastMessageAt that came out of claude's own
                     // sessions-index.json.
                     if let entry = SessionArchiveCache.shared
-                        .entries(for: projectId)
+                        .entries(for: repoId)
                         .first(where: { $0.sessionId == sid })
                     {
                         detail = ClaudeHistoryScanner.Session(
@@ -1367,9 +1367,9 @@ private struct ExternalClaudeView: View {
         let preservedRenamed = task.renamed
         let oldPath = taskPath
         let wt = worktreePath
-        let project = store.state.projects.first(where: { $0.id == wt.project })
+        let repo = store.state.repos.first(where: { $0.id == wt.repo })
         let invocation = ClaudeTaskSpec.resolveInvocation(
-            project: project, settings: store.state.settings
+            repo: repo, settings: store.state.settings
         )
         _Concurrency.Task {
             // Order matters: delete the external first so the new Task's
@@ -1384,15 +1384,15 @@ private struct ExternalClaudeView: View {
                 autoSelect: true
             ))
             if preservedRenamed,
-               let newJob = store.state.projects
-                    .first(where: { $0.id == wt.project })?
+               let newJob = store.state.repos
+                    .first(where: { $0.id == wt.repo })?
                     .worktrees.first(where: { $0.id == wt.worktree })?
                     .tasks.first(where: {
                         if case let .claude(s) = $0.kind, s == sid { return true }
                         return false
                     }) {
                 let newPath = TaskPath(
-                    project: wt.project, worktree: wt.worktree, task: newJob.id
+                    repo: wt.repo, worktree: wt.worktree, task: newJob.id
                 )
                 await store.dispatch(.renameTask(at: newPath, name: preservedName))
             }
@@ -1431,9 +1431,9 @@ private struct StoppedTaskView: View {
                 // Claude tasks always rebuild via ClaudeTaskSpec — never reuse
                 // task.spec for them, since the persisted spec may be a stale
                 // pre-zsh-injection invocation from an earlier Mani build.
-                let project = store.state.projects.first(where: { $0.id == taskPath.project })
+                let repo = store.state.repos.first(where: { $0.id == taskPath.repo })
                 let invocation = ClaudeTaskSpec.resolveInvocation(
-                    project: project, settings: store.state.settings
+                    repo: repo, settings: store.state.settings
                 )
                 let newSpec = ClaudeTaskSpec.restartSpec(for: task, invocation: invocation)
                 let path = taskPath
@@ -1486,17 +1486,17 @@ struct TerminalPane: NSViewRepresentable {
         // libghostty-backed renderer (per ADR-002 v0.2 swap). Cached per
         // TaskPath so tab-switching back doesn't tear down the surface and
         // replay scrollback. The TerminalTheme is generated from the
-        // project's color (both a light and a dark variant; libghostty
+        // repo's color (both a light and a dark variant; libghostty
         // swaps automatically with the system appearance). Cache key
-        // includes the color hex so a project re-coloring rebuilds the
+        // includes the color hex so a repo re-coloring rebuilds the
         // renderer next time it mounts.
-        let projectColor = store.state.projects
-            .first(where: { $0.id == taskPath.project })?.color
+        let repoColor = store.state.repos
+            .first(where: { $0.id == taskPath.repo })?.color
             ?? "#808080"
-        let theme = ProjectThemeGenerator.theme(forProjectColor: projectColor)
+        let theme = RepoThemeGenerator.theme(forProjectColor: repoColor)
         let renderer = TerminalRendererCache.shared.renderer(
             for: taskPath,
-            themeKey: ProjectThemeGenerator.cacheKey(forProjectColor: projectColor),
+            themeKey: RepoThemeGenerator.cacheKey(forProjectColor: repoColor),
             theme: theme,
             fontFamily: store.state.settings.terminalFontFamily,
             fontSize: store.state.settings.terminalFontSize
