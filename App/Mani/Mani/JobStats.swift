@@ -70,8 +70,8 @@ final class TaskStatsPoller {
         guard let store else { return [] }
         var out: [Snapshot] = []
         for repo in store.state.repos {
-            for worktree in repo.worktrees {
-                for task in worktree.tasks {
+            for project in repo.projects {
+                for task in project.tasks {
                     if case let .claude(sid) = task.kind {
                         out.append(Snapshot(
                             taskId: task.id, sessionId: sid, cwd: task.spec.cwd

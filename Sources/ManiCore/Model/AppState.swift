@@ -64,16 +64,16 @@ public struct AppState: Codable, Equatable {
 
     // The TaskPath of the (single) Task that already tracks this claude
     // session id, or nil if no task does. Invariant: at most one task
-    // per sid across the whole state — the reducer's linkClaudeSession
-    // and discoverClaudeSession both enforce this.
+    // per sid across the whole state — the reducer enforces this in
+    // linkClaudeSession, adoptExternalConvo, and createTask paths.
     public func taskOwningClaudeSession(_ sessionId: String) -> TaskPath? {
         for repo in repos {
-            for worktree in repo.worktrees {
-                for task in worktree.tasks {
+            for project in repo.projects {
+                for task in project.tasks {
                     if case let .claude(sid) = task.kind, sid == sessionId {
                         return TaskPath(
                             repo: repo.id,
-                            worktree: worktree.id,
+                            project: project.id,
                             task: task.id
                         )
                     }
@@ -83,77 +83,21 @@ public struct AppState: Codable, Equatable {
         return nil
     }
 
-    // For each non-nil claude session id appearing on multiple Tasks,
-    // returns the TaskPaths of the duplicates that should be deleted —
-    // the group minus the "best" surviving Task. Selection rule per
-    // group: a user-renamed Task ALWAYS wins (losing a rename to a
-    // dedupe sweep happened once and the fix was permanent). Within
-    // renamed-vs-renamed, fall back to "live runtime" (currently
-    // believed running) → unread → createdAt.
-    public func duplicateClaudeTasksToRemove() -> [TaskPath] {
-        struct Entry {
-            let path: TaskPath
-            let task: Task
-        }
-        var bySid: [String: [Entry]] = [:]
-        for repo in repos {
-            for worktree in repo.worktrees {
-                for task in worktree.tasks {
-                    if case let .claude(sid?) = task.kind {
-                        let path = TaskPath(
-                            repo: repo.id,
-                            worktree: worktree.id,
-                            task: task.id
-                        )
-                        bySid[sid, default: []].append(Entry(path: path, task: task))
-                    }
-                }
-            }
-        }
-        var result: [TaskPath] = []
-        for (_, group) in bySid where group.count > 1 {
-            let sorted = group.sorted { a, b in
-                if a.task.renamed != b.task.renamed { return a.task.renamed && !b.task.renamed }
-                let liveA = isRunning(a.task.runtime)
-                let liveB = isRunning(b.task.runtime)
-                if liveA != liveB { return liveA && !liveB }
-                if a.task.unread != b.task.unread { return a.task.unread > b.task.unread }
-                return a.task.createdAt > b.task.createdAt
-            }
-            for entry in sorted.dropFirst() {
-                result.append(entry.path)
-            }
-        }
-        return result
-    }
-
     // All `.claude` Tasks across the state, paired with their TaskPath.
     public func claudeTasks() -> [(TaskPath, Task)] {
         var out: [(TaskPath, Task)] = []
         for repo in repos {
-            for worktree in repo.worktrees {
-                for task in worktree.tasks {
+            for project in repo.projects {
+                for task in project.tasks {
                     guard case .claude = task.kind else { continue }
                     let path = TaskPath(
-                        repo: repo.id, worktree: worktree.id, task: task.id
+                        repo: repo.id, project: project.id, task: task.id
                     )
                     out.append((path, task))
                 }
             }
         }
         return out
-    }
-}
-
-// True iff runtime represents "we believe an agent is currently alive"
-// — only `.running` qualifies. Boot reconciliation flips stale .running
-// entries to .exited if the agent's socket is no longer connectable.
-private func isRunning(_ runtime: TaskRuntime) -> Bool {
-    switch runtime {
-    case .running:                 return true
-    case .neverStarted,
-         .exited,
-         .completed:               return false
     }
 }
 

@@ -3,17 +3,18 @@ import Foundation
 public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], effects: [Effect]) {
     switch action {
 
+    // MARK: Repo lifecycle
+
     case let .createRepo(name, color, rootDir):
-        // The repo's primary workspace is implicit: a Worktree is
-        // materialized at the rootDir so the sidebar has a row and tasks
-        // spawned at the repo root have somewhere to attach.
-        let initialWorktree = Worktree(
+        // A newly-created repo starts with one Project whose workspace
+        // IS the rootDir. The user is going to do at least one thing
+        // here, and the empty-state otherwise looks broken.
+        let initialProject = Project(
             id: UUID(),
-            path: rootDir,
-            kind: .folder,
-            enabled: true,
-            missing: false,
+            name: URL(fileURLWithPath: rootDir.path).lastPathComponent,
+            workspace: Workspace(path: rootDir, kind: .folder, missing: false),
             tasks: [],
+            archivedAt: nil,
             createdAt: Date()
         )
         let repo = Repo(
@@ -22,7 +23,8 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             color: color,
             enabled: true,
             rootDir: rootDir,
-            worktrees: [initialWorktree],
+            projects: [initialProject],
+            externalConvos: [],
             createdAt: Date(),
             claudeInvocation: nil
         )
@@ -34,7 +36,7 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         let event = Event.repoRenamed(id: id, name: name)
         return ([event], [.persistEvents([event])])
 
-    case let .setProjectEnabled(id, enabled):
+    case let .setRepoEnabled(id, enabled):
         guard let repo = state.repos.first(where: { $0.id == id }) else {
             return ([], [])
         }
@@ -45,19 +47,19 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         }
         return ([event], effects)
 
-    case let .setProjectColor(id, color):
+    case let .setRepoColor(id, color):
         guard state.repos.contains(where: { $0.id == id }) else { return ([], []) }
         let event = Event.repoColorChanged(id: id, color: color)
         return ([event], [.persistEvents([event])])
 
-    case let .setProjectClaudeInvocation(id, invocation):
+    case let .setRepoClaudeInvocation(id, invocation):
         guard state.repos.contains(where: { $0.id == id }) else { return ([], []) }
         let event = Event.repoClaudeInvocationChanged(id: id, invocation: invocation)
         return ([event], [.persistEvents([event])])
 
-    case let .setProjectRootDir(at):
-        guard let worktree = findWorktree(state, at) else { return ([], []) }
-        let event = Event.repoRootDirChanged(id: at.repo, rootDir: worktree.path)
+    case let .setRepoRootDir(at):
+        guard let project = findProject(state, at) else { return ([], []) }
+        let event = Event.repoRootDirChanged(id: at.repo, rootDir: project.workspace.path)
         return ([event], [.persistEvents([event])])
 
     case let .deleteRepo(id):
@@ -72,62 +74,82 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         effects.append(contentsOf: terminationEffects(forRepo: repo))
         return (events, effects)
 
-    case let .createWorktree(repoId, kind, path):
+    // MARK: Project lifecycle
+
+    case let .createProject(repoId, name, workspace):
         guard let repo = state.repos.first(where: { $0.id == repoId }) else {
             return ([], [])
         }
-        let worktree = Worktree(
+        let project = Project(
             id: UUID(),
-            path: path,
-            kind: kind,
-            enabled: true,
-            missing: false,
+            name: name,
+            workspace: workspace,
             tasks: [],
+            archivedAt: nil,
             createdAt: Date()
         )
-        let event = Event.worktreeCreated(repoId: repoId, worktree)
+        let projectPath = ProjectPath(repo: repoId, project: project.id)
+        let event = Event.projectCreated(repoId: repoId, project)
         var effects: [Effect] = [.persistEvents([event])]
-        if case let .git(branch, baseRef) = kind {
+        if case let .gitWorktree(branch, baseRef) = workspace.kind {
             effects.append(.createGitWorktree(
-                repoId: repoId,
+                projectPath: projectPath,
                 repoRoot: repo.rootDir,
                 branch: branch,
-                path: path,
+                path: workspace.path,
                 baseRef: baseRef
             ))
         }
         return ([event], effects)
 
-    case let .setWorktreeEnabled(at, enabled):
-        guard let worktree = findWorktree(state, at) else { return ([], []) }
-        let event = Event.worktreeEnabledChanged(at: at, enabled: enabled)
-        var effects: [Effect] = [.persistEvents([event])]
-        if !enabled {
-            effects.append(contentsOf: terminationEffects(forWorktree: worktree, at: at))
-        }
-        return ([event], effects)
-
-    case let .markWorktreeMissing(at):
-        guard findWorktree(state, at) != nil else { return ([], []) }
-        let event = Event.worktreeMarkedMissing(at: at)
+    case let .renameProject(at, name):
+        guard findProject(state, at) != nil else { return ([], []) }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return ([], []) }
+        let event = Event.projectRenamed(at: at, name: trimmed)
         return ([event], [.persistEvents([event])])
 
-    case let .deleteWorktree(at):
-        guard let worktree = findWorktree(state, at) else { return ([], []) }
-        var events: [Event] = [.worktreeDeleted(at: at)]
-        if let sel = state.selectedTaskPath, sel.worktreePath == at {
+    case let .archiveProject(at):
+        guard let project = findProject(state, at) else { return ([], []) }
+        if project.archivedAt != nil { return ([], []) }
+        let when = Date()
+        var events: [Event] = [.projectArchived(at: at, when: when)]
+        if let sel = state.selectedTaskPath, sel.projectPath == at {
             events.append(.taskSelectionChanged(nil))
         }
         var effects: [Effect] = [.persistEvents(events)]
-        effects.append(contentsOf: terminationEffects(forWorktree: worktree, at: at))
+        effects.append(contentsOf: project.tasks.map { task in
+            .terminate(at: TaskPath(repo: at.repo, project: at.project, task: task.id))
+        })
         return (events, effects)
 
+    case let .unarchiveProject(at):
+        guard let project = findProject(state, at) else { return ([], []) }
+        if project.archivedAt == nil { return ([], []) }
+        let event = Event.projectUnarchived(at: at)
+        return ([event], [.persistEvents([event])])
+
+    case let .markProjectWorkspaceMissing(at):
+        guard findProject(state, at) != nil else { return ([], []) }
+        let event = Event.projectWorkspaceMarkedMissing(at: at)
+        return ([event], [.persistEvents([event])])
+
+    case let .deleteProject(at):
+        guard let project = findProject(state, at) else { return ([], []) }
+        var events: [Event] = [.projectDeleted(at: at)]
+        if let sel = state.selectedTaskPath, sel.projectPath == at {
+            events.append(.taskSelectionChanged(nil))
+        }
+        var effects: [Effect] = [.persistEvents(events)]
+        effects.append(contentsOf: project.tasks.map { task in
+            .terminate(at: TaskPath(repo: at.repo, project: at.project, task: task.id))
+        })
+        return (events, effects)
+
+    // MARK: Task lifecycle
+
     case let .createTask(at, name, kind, spec, autoSelect):
-        guard findWorktree(state, at) != nil else { return ([], []) }
-        // Externally-discovered claude tasks never get a spawn effect —
-        // those flow through .discoverClaudeSession. Everything else
-        // starts as .running (the spawn is fired immediately); the
-        // EffectRunner reports back .taskExited if the spawn fails.
+        guard findProject(state, at) != nil else { return ([], []) }
         let task = Task(
             id: UUID(),
             name: name,
@@ -139,14 +161,14 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             createdAt: Date(),
             renamed: false
         )
-        let taskPath = TaskPath(repo: at.repo, worktree: at.worktree, task: task.id)
+        let taskPath = TaskPath(repo: at.repo, project: at.project, task: task.id)
         var events: [Event] = [.taskCreated(at: at, task)]
         if autoSelect {
             events.append(.taskSelectionChanged(taskPath))
         }
         let effects: [Effect] = [
             .persistEvents(events),
-            .spawn(at: taskPath, spec: spec)
+            .spawn(at: taskPath, spec: spec),
         ]
         return (events, effects)
 
@@ -163,9 +185,6 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         guard let task = findTask(state, at), case .claude = task.kind else {
             return ([], [])
         }
-        // Globally idempotent: refuse to link if a different task already
-        // tracks this session id. claude sessions live in one cwd, so
-        // duplicates would be a bug.
         if let owner = state.taskOwningClaudeSession(sessionId), owner != at {
             return ([], [])
         }
@@ -188,36 +207,6 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         let effects: [Effect] = [.persistEvents(events), .terminate(at: at)]
         return (events, effects)
 
-    case let .discoverClaudeSession(at, sessionId, cwd):
-        guard findWorktree(state, at) != nil else { return ([], []) }
-        // Globally idempotent: a claude session must be tracked by at most
-        // one task. If any task already has it, no-op.
-        if state.taskOwningClaudeSession(sessionId) != nil {
-            return ([], [])
-        }
-        // External claude tasks: we don't own the process. spec.command is
-        // a sentinel string that lets the UI and respawn paths distinguish
-        // them. runtime stays .neverStarted — there's no agent to attach to.
-        let task = Task(
-            id: UUID(),
-            name: "claude",
-            kind: .claude(sessionId: sessionId),
-            enabled: true,
-            spec: ProcessSpec(
-                command: "(external claude)",
-                args: [],
-                env: [:],
-                cwd: cwd,
-                initialInput: nil
-            ),
-            runtime: .neverStarted,
-            unread: 0,
-            createdAt: Date(),
-            renamed: false
-        )
-        let event = Event.taskCreated(at: at, task)
-        return ([event], [.persistEvents([event])])
-
     case let .completeTask(at):
         guard findTask(state, at) != nil else { return ([], []) }
         let event = Event.taskCompleted(at: at, completedAt: Date())
@@ -236,16 +225,7 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
 
     case let .restartTask(at):
         guard let task = findTask(state, at) else { return ([], []) }
-        // External claudes have no agent of ours to restart; reject quietly.
         if task.spec.command == "(external claude)" { return ([], []) }
-        // We emit ONLY .spawn — the EffectRunner's spawn handler is
-        // idempotent: it terminates any existing agent for this task.id
-        // and waits for the socket to disappear before launching the
-        // replacement. Emitting a separate .terminate here would race
-        // the spawn (both run on independent Tasks from the Store) and
-        // produced the "code -1 on Restart" symptom.
-        // .taskSpawned is emitted optimistically; if spawn fails the
-        // EffectRunner dispatches .taskExited to reconcile.
         let now = Date()
         let event = Event.taskSpawned(at: at, when: now)
         let effects: [Effect] = [
@@ -268,9 +248,6 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         guard let task = findTask(state, at) else { return ([], []) }
         let event = Event.taskExited(at: at, when: when, code: code)
         var effects: [Effect] = [.persistEvents([event])]
-        // Only notify if the user hadn't already marked it completed.
-        // (.completed → .exited is suppressed below in apply, but the
-        // notification is reducer-time.)
         if case .completed = task.runtime {
             // user-initiated completion; no notification
         } else {
@@ -281,13 +258,78 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         }
         return ([event], effects)
 
+    // MARK: External convos
+
+    case let .discoverExternalConvo(repoId, sessionId, cwd):
+        guard state.repos.contains(where: { $0.id == repoId }) else { return ([], []) }
+        // Globally idempotent: ignore a sid we already track anywhere
+        // (as a task or as an external convo in any repo).
+        if state.taskOwningClaudeSession(sessionId) != nil { return ([], []) }
+        if state.repos.contains(where: { repo in
+            repo.externalConvos.contains(where: { $0.sessionId == sessionId })
+        }) { return ([], []) }
+        let convo = ExternalConvo(
+            id: UUID(),
+            sessionId: sessionId,
+            cwd: cwd,
+            firstSeenAt: Date()
+        )
+        let event = Event.externalConvoDiscovered(repoId: repoId, convo)
+        return ([event], [.persistEvents([event])])
+
+    case let .dismissExternalConvo(at):
+        guard findExternalConvo(state, at) != nil else { return ([], []) }
+        let event = Event.externalConvoDismissed(at: at)
+        return ([event], [.persistEvents([event])])
+
+    case let .adoptExternalConvo(at, into, name):
+        guard let convo = findExternalConvo(state, at),
+              findProject(state, into) != nil,
+              let repo = state.repos.first(where: { $0.id == into.repo })
+        else { return ([], []) }
+        if state.taskOwningClaudeSession(convo.sessionId) != nil {
+            return ([], [])
+        }
+        let invocation = ClaudeTaskSpec.resolveInvocation(
+            repo: repo, settings: state.settings
+        )
+        let spec = ClaudeTaskSpec.make(
+            cwd: convo.cwd,
+            sessionId: convo.sessionId,
+            invocation: invocation
+        )
+        let task = Task(
+            id: UUID(),
+            name: name,
+            kind: .claude(sessionId: convo.sessionId),
+            enabled: true,
+            spec: spec,
+            runtime: .running(spawnedAt: Date()),
+            unread: 0,
+            createdAt: Date(),
+            renamed: false
+        )
+        let taskPath = TaskPath(repo: into.repo, project: into.project, task: task.id)
+        let events: [Event] = [
+            .taskCreated(at: into, task),
+            .externalConvoDismissed(at: at),
+            .taskSelectionChanged(taskPath),
+        ]
+        let effects: [Effect] = [
+            .persistEvents(events),
+            .spawn(at: taskPath, spec: spec),
+        ]
+        return (events, effects)
+
+    // MARK: Selection
+
     case let .selectTask(at):
-        // Refuse to set a selection pointing at a non-existent task so
-        // the UI never has to defend against dangling selections.
         if let at, findTask(state, at) == nil { return ([], []) }
         if state.selectedTaskPath == at { return ([], []) }
         let event = Event.taskSelectionChanged(at)
         return ([event], [.persistEvents([event])])
+
+    // MARK: Settings
 
     case let .updateSettings(settings):
         let event = Event.settingsUpdated(settings)
@@ -327,40 +369,43 @@ public func apply(_ state: inout AppState, _ event: Event) {
         }
 
     case let .repoDeleted(id):
-        // Every implicit task loss in this codebase has been traced to
-        // a cascade through here. Log so the next regression is one
-        // grep away.
         let lost = state.repos
             .first(where: { $0.id == id })?
-            .worktrees.reduce(0) { $0 + $1.tasks.count } ?? 0
+            .projects.reduce(0) { $0 + $1.tasks.count } ?? 0
         if lost > 0 {
             print("[reducer] repoDeleted \(id) removed \(lost) tasks")
         }
         state.repos.removeAll(where: { $0.id == id })
 
-    case let .worktreeCreated(repoId, worktree):
+    case let .projectCreated(repoId, project):
         if let i = state.repos.firstIndex(where: { $0.id == repoId }) {
-            state.repos[i].worktrees.append(worktree)
+            state.repos[i].projects.append(project)
         }
 
-    case let .worktreeEnabledChanged(at, enabled):
-        mutateWorktree(&state, at) { $0.enabled = enabled }
+    case let .projectRenamed(at, name):
+        mutateProject(&state, at) { $0.name = name }
 
-    case let .worktreeMarkedMissing(at):
-        mutateWorktree(&state, at) { $0.missing = true }
+    case let .projectArchived(at, when):
+        mutateProject(&state, at) { $0.archivedAt = when }
 
-    case let .worktreeDeleted(at):
-        if let pi = state.repos.firstIndex(where: { $0.id == at.repo }) {
-            let lost = state.repos[pi].worktrees
-                .first(where: { $0.id == at.worktree })?.tasks.count ?? 0
+    case let .projectUnarchived(at):
+        mutateProject(&state, at) { $0.archivedAt = nil }
+
+    case let .projectWorkspaceMarkedMissing(at):
+        mutateProject(&state, at) { $0.workspace.missing = true }
+
+    case let .projectDeleted(at):
+        if let ri = state.repos.firstIndex(where: { $0.id == at.repo }) {
+            let lost = state.repos[ri].projects
+                .first(where: { $0.id == at.project })?.tasks.count ?? 0
             if lost > 0 {
-                print("[reducer] worktreeDeleted \(at.worktree) removed \(lost) tasks")
+                print("[reducer] projectDeleted \(at.project) removed \(lost) tasks")
             }
-            state.repos[pi].worktrees.removeAll(where: { $0.id == at.worktree })
+            state.repos[ri].projects.removeAll(where: { $0.id == at.project })
         }
 
     case let .taskCreated(at, task):
-        mutateWorktree(&state, at) { $0.tasks.append(task) }
+        mutateProject(&state, at) { $0.tasks.append(task) }
 
     case let .taskEnabledChanged(at, enabled):
         mutateTask(&state, at) { $0.enabled = enabled }
@@ -381,10 +426,10 @@ public func apply(_ state: inout AppState, _ event: Event) {
         }
 
     case let .taskDeleted(at):
-        if let pi = state.repos.firstIndex(where: { $0.id == at.repo }),
-           let wi = state.repos[pi].worktrees.firstIndex(where: { $0.id == at.worktree }) {
+        if let ri = state.repos.firstIndex(where: { $0.id == at.repo }),
+           let pi = state.repos[ri].projects.firstIndex(where: { $0.id == at.project }) {
             print("[reducer] taskDeleted \(at.task)")
-            state.repos[pi].worktrees[wi].tasks.removeAll { $0.id == at.task }
+            state.repos[ri].projects[pi].tasks.removeAll { $0.id == at.task }
         }
 
     case let .taskSpecChanged(at, spec):
@@ -397,14 +442,21 @@ public func apply(_ state: inout AppState, _ event: Event) {
             }
         }
 
+    case let .externalConvoDiscovered(repoId, convo):
+        if let i = state.repos.firstIndex(where: { $0.id == repoId }) {
+            state.repos[i].externalConvos.append(convo)
+        }
+
+    case let .externalConvoDismissed(at):
+        if let i = state.repos.firstIndex(where: { $0.id == at.repo }) {
+            state.repos[i].externalConvos.removeAll(where: { $0.id == at.convo })
+        }
+
     case let .taskSpawned(at, when):
         mutateTask(&state, at) { $0.runtime = .running(spawnedAt: when) }
 
     case let .taskExited(at, when, code):
         mutateTask(&state, at) { task in
-            // Don't downgrade a user-completed task back to .exited —
-            // completion is the user's intent, exit is the kernel's
-            // notification, and we keep the user's intent visible.
             if case .completed = task.runtime { return }
             task.runtime = .exited(at: when, code: code)
         }
@@ -419,46 +471,43 @@ public func apply(_ state: inout AppState, _ event: Event) {
 
 // MARK: - Helpers
 
-// Termination effects fan out by TaskPath only. The host resolves
-// task → agent → kernel pid internally; the reducer doesn't model it.
 private func terminationEffects(forRepo repo: Repo) -> [Effect] {
-    repo.worktrees.flatMap { worktree in
-        let wtPath = WorktreePath(repo: repo.id, worktree: worktree.id)
-        return terminationEffects(forWorktree: worktree, at: wtPath)
+    repo.projects.flatMap { project in
+        project.tasks.map { task in
+            .terminate(at: TaskPath(repo: repo.id, project: project.id, task: task.id))
+        }
     }
 }
 
-private func terminationEffects(forWorktree worktree: Worktree, at: WorktreePath) -> [Effect] {
-    worktree.tasks.map { task in
-        .terminate(at: TaskPath(
-            repo: at.repo, worktree: at.worktree, task: task.id
-        ))
-    }
-}
-
-private func findWorktree(_ state: AppState, _ at: WorktreePath) -> Worktree? {
+private func findProject(_ state: AppState, _ at: ProjectPath) -> Project? {
     guard let repo = state.repos.first(where: { $0.id == at.repo }) else {
         return nil
     }
-    return repo.worktrees.first(where: { $0.id == at.worktree })
+    return repo.projects.first(where: { $0.id == at.project })
 }
 
 private func findTask(_ state: AppState, _ at: TaskPath) -> Task? {
     guard let repo = state.repos.first(where: { $0.id == at.repo }),
-          let worktree = repo.worktrees.first(where: { $0.id == at.worktree }) else {
-        return nil
-    }
-    return worktree.tasks.first(where: { $0.id == at.task })
+          let project = repo.projects.first(where: { $0.id == at.project })
+    else { return nil }
+    return project.tasks.first(where: { $0.id == at.task })
 }
 
-private func mutateWorktree(
+private func findExternalConvo(_ state: AppState, _ at: ExternalConvoPath) -> ExternalConvo? {
+    guard let repo = state.repos.first(where: { $0.id == at.repo }) else {
+        return nil
+    }
+    return repo.externalConvos.first(where: { $0.id == at.convo })
+}
+
+private func mutateProject(
     _ state: inout AppState,
-    _ at: WorktreePath,
-    _ mutate: (inout Worktree) -> Void
+    _ at: ProjectPath,
+    _ mutate: (inout Project) -> Void
 ) {
-    guard let pi = state.repos.firstIndex(where: { $0.id == at.repo }) else { return }
-    guard let wi = state.repos[pi].worktrees.firstIndex(where: { $0.id == at.worktree }) else { return }
-    mutate(&state.repos[pi].worktrees[wi])
+    guard let ri = state.repos.firstIndex(where: { $0.id == at.repo }) else { return }
+    guard let pi = state.repos[ri].projects.firstIndex(where: { $0.id == at.project }) else { return }
+    mutate(&state.repos[ri].projects[pi])
 }
 
 private func mutateTask(
@@ -466,8 +515,8 @@ private func mutateTask(
     _ at: TaskPath,
     _ mutate: (inout Task) -> Void
 ) {
-    guard let pi = state.repos.firstIndex(where: { $0.id == at.repo }) else { return }
-    guard let wi = state.repos[pi].worktrees.firstIndex(where: { $0.id == at.worktree }) else { return }
-    guard let ti = state.repos[pi].worktrees[wi].tasks.firstIndex(where: { $0.id == at.task }) else { return }
-    mutate(&state.repos[pi].worktrees[wi].tasks[ti])
+    guard let ri = state.repos.firstIndex(where: { $0.id == at.repo }) else { return }
+    guard let pi = state.repos[ri].projects.firstIndex(where: { $0.id == at.project }) else { return }
+    guard let ti = state.repos[ri].projects[pi].tasks.firstIndex(where: { $0.id == at.task }) else { return }
+    mutate(&state.repos[ri].projects[pi].tasks[ti])
 }

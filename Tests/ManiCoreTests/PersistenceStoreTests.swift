@@ -33,7 +33,8 @@ final class PersistenceStoreTests: XCTestCase {
             color: "#abcdef",
             enabled: true,
             rootDir: URL(fileURLWithPath: "/tmp/\(name)"),
-            worktrees: [],
+            projects: [],
+            externalConvos: [],
             createdAt: Date(),
             claudeInvocation: nil
         ))

@@ -5,14 +5,14 @@ import SwiftUI
 // Background process that:
 //   1. Walks ~/.claude/repos/-<slug>/*.jsonl
 //   2. Matches each session file's recorded cwd to the longest-prefix
-//      worktree across all repos in the live AppState.
+//      project across all repos in the live AppState.
 //   3. For settled files (mtime > 5 min) without a safekept copy:
 //      gzip-archive the JSONL and upsert a full index entry.
 //   4. For hot files (mtime <= 5 min): upsert a thin index entry only.
 //      The next sweep that catches the file after it settles archives it.
 //   5. Publishes per-repo entries (full set, including archived-
-//      worktree ones) onto SessionArchiveCache so the sidebar can
-//      render PastSessionRow + the "Archived worktrees" group.
+//      project ones) onto SessionArchiveCache so the sidebar can
+//      render PastSessionRow + the "Archived projects" group.
 //
 // Scheduling:
 //   - One sweep ~5s after launch (so the UI is interactive first).
@@ -71,14 +71,14 @@ final class SafekeepingSweeper: ObservableObject {
             lastSweepAt = Date()
         }
 
-        // Snapshot the repo→worktrees map up-front. The sweep runs
+        // Snapshot the repo→projects map up-front. The sweep runs
         // off-main; if state mutates mid-sweep that's fine, but a
         // stable snapshot keeps the matching consistent.
         let reposSnapshot: [RepoMatcher] = store.state.repos.map {
             RepoMatcher(
                 id: $0.id,
                 name: $0.name,
-                worktreePaths: $0.worktrees.map { $0.path.resolvingSymlinksInPath().path }
+                worktreePaths: $0.projects.map { $0.workspace.path.resolvingSymlinksInPath().path }
             )
         }
         let archive = self.archive

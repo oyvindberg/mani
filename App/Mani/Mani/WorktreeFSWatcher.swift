@@ -1,7 +1,7 @@
 import Foundation
 import CoreServices
 
-// Lightweight FSEvents watcher over a single worktree path. Used by the
+// Lightweight FSEvents watcher over a single project path. Used by the
 // Diff Workspace to auto-refresh the file list when the user edits a
 // file outside Mani.
 //

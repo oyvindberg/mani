@@ -57,7 +57,7 @@ struct RepoClaudeInvocationSheet: View {
                     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                     let next: String? = overrideEnabled && !trimmed.isEmpty ? trimmed : nil
                     _Concurrency.Task {
-                        await store.dispatch(.setProjectClaudeInvocation(
+                        await store.dispatch(.setRepoClaudeInvocation(
                             id: repo.id, invocation: next
                         ))
                         isPresented = false

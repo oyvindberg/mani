@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 // Background git poller. Every 5 seconds it shells out to git in each
-// worktree path and refreshes branch + ahead/behind counts against the
+// project path and refreshes branch + ahead/behind counts against the
 // remote tracking branch (or origin/main / origin/master as a fallback).
 // Periodic background `git fetch` keeps the ahead/behind numbers honest;
 // it runs at a slower cadence (~5 min) so we don't hammer the network.
@@ -53,12 +53,12 @@ final class WorktreeStatsPoller {
 
     private func loop() async {
         while !_Concurrency.Task.isCancelled {
-            let worktrees = await collectWorktrees()
+            let projects = await collectWorktrees()
             let now = Date()
             let shouldFetch = now.timeIntervalSince(lastFetchAt) > Double(fetchTickSeconds)
             if shouldFetch { lastFetchAt = now }
 
-            for (id, path) in worktrees {
+            for (id, path) in projects {
                 guard !_Concurrency.Task.isCancelled else { return }
                 if shouldFetch {
                     _ = Self.runGit(["fetch", "--quiet", "--no-tags"], in: path)
@@ -78,8 +78,8 @@ final class WorktreeStatsPoller {
         guard let store else { return [] }
         var result: [(UUID, URL)] = []
         for repo in store.state.repos {
-            for worktree in repo.worktrees {
-                result.append((worktree.id, worktree.path))
+            for project in repo.projects {
+                result.append((project.id, project.workspace.path))
             }
         }
         return result

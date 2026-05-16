@@ -38,7 +38,7 @@ final class Store: ObservableObject {
             case .writeSnapshot:
                 let snapshot = state
                 _Concurrency.Task { await runner.compact(snapshot) }
-            case .spawn, .terminate, .createGitWorktree, .archive,
+            case .spawn, .terminate, .createGitWorktree,
                  .watchClaudeProjects, .userNotification:
                 let runner = self.runner
                 _Concurrency.Task { [weak self] in

@@ -6,7 +6,7 @@ import ManiCore
 // Each is collapsible at its parent level (the parent owns the
 // expansion state). A continuous repo-color stripe runs along the
 // left edge of every row inside a repo so the hierarchy reads as
-// "this all belongs to atlas" even when worktrees are collapsed away.
+// "this all belongs to atlas" even when projects are collapsed away.
 
 // MARK: - Task kind icon
 
@@ -120,11 +120,11 @@ struct RepoHeaderRow: View {
     }
 }
 
-// MARK: - Worktree header
+// MARK: - Project header
 
 struct WorktreeHeaderRow: View {
     let repo: Repo
-    let worktree: Worktree
+    let project: Project
     let isExpanded: Bool
     let diffJobId: UUID?
     let selectedJobId: UUID?
@@ -141,11 +141,11 @@ struct WorktreeHeaderRow: View {
     @State private var headerHovered = false
 
     private var displayName: String {
-        worktree.displayName
+        project.name
     }
 
     private var gitStats: WorktreeGitStats? {
-        statsCache.stats[worktree.id]
+        statsCache.stats[project.id]
     }
 
     var body: some View {
@@ -159,7 +159,7 @@ struct WorktreeHeaderRow: View {
                     SwiftUI.Color.secondary.opacity(0.08)
                 }
                 // Dimmer overlay than per-task: this is the aggregate
-                // signal across all child claudes in the worktree, so
+                // signal across all child claudes in the project, so
                 // we don't want it to overpower the per-task pulses
                 // nested inside.
                 ActivityOverlay(
@@ -189,16 +189,16 @@ struct WorktreeHeaderRow: View {
                 .foregroundStyle(.secondary)
             Text(displayName)
                 .font(.system(.subheadline, design: .default).weight(.semibold))
-                .opacity(worktree.enabled ? 1 : 0.5)
+                .opacity((!project.isArchived) ? 1 : 0.5)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            if worktree.path == repo.rootDir {
+            if project.workspace.path == repo.rootDir {
                 Image(systemName: "star.fill")
                     .font(.system(size: 8))
                     .foregroundStyle(.yellow)
-                    .help("Repo root — `git worktree add` anchors here")
+                    .help("Repo root — `git project add` anchors here")
             }
-            if worktree.missing {
+            if project.workspace.missing {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 9))
                     .foregroundStyle(.orange)
@@ -272,8 +272,8 @@ struct WorktreeHeaderRow: View {
     }
 
     private var worktreeIcon: String {
-        switch worktree.kind {
-        case .git: return "arrow.triangle.branch"
+        switch project.workspace.kind {
+        case .gitWorktree: return "arrow.triangle.branch"
         case .folder: return "folder.fill"
         }
     }
@@ -384,7 +384,7 @@ struct TaskRow: View {
 
 // MARK: - Reusable action button
 
-// Small icon button used in the worktree header's bottom row. Designed
+// Small icon button used in the project header's bottom row. Designed
 // to be visibly different from informational badges: stronger hover
 // state, accentColor pulse on press, and a hand-pointer cursor while
 // hovered so the affordance is obvious.
@@ -518,7 +518,7 @@ struct PastSessionRow: View {
 //     keeps the row visually claimed.
 //
 // `intensity` controls absolute opacity caps. .normal for per-task
-// rows; .subtle for the parent worktree (aggregate) row, so the
+// rows; .subtle for the parent project (aggregate) row, so the
 // nested per-task pulse stays the primary signal.
 struct ActivityOverlay: View {
     let repoColor: SwiftUI.Color
@@ -611,11 +611,11 @@ struct ActivityOverlay: View {
     }
 }
 
-// Row for a safekept session whose originating worktree is no longer
-// in the repo's live worktrees. Doesn't render off a Task because
+// Row for a safekept session whose originating project is no longer
+// in the repo's live projects. Doesn't render off a Task because
 // these don't have one — they live only in the SessionArchiveCache.
-// Click does nothing yet (a future "Adopt as worktree" / "Resume in
-// new worktree" action would dispatch through Store).
+// Click does nothing yet (a future "Adopt as project" / "Resume in
+// new project" action would dispatch through Store).
 struct ArchivedSessionRow: View {
     let repo: Repo
     let entry: SessionIndexEntry

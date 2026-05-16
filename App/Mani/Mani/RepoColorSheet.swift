@@ -44,7 +44,7 @@ struct RepoColorSheet: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Apply") {
                     _Concurrency.Task {
-                        await store.dispatch(.setProjectColor(
+                        await store.dispatch(.setRepoColor(
                             id: repo.id, color: color
                         ))
                         isPresented = false

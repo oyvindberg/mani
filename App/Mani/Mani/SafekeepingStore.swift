@@ -10,7 +10,7 @@ import SwiftUI
 //
 // Why this exists:
 //   1. claude.ai's own cleanup deletes session JSONLs after some period,
-//      but the user wants conversations from worktrees that have since
+//      but the user wants conversations from projects that have since
 //      been moved/deleted to keep showing up under their repo. We
 //      copy + compress to a place WE control.
 //   2. discoverHistoricalClaudeSessions previously walked every

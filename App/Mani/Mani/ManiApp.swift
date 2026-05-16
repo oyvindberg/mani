@@ -201,8 +201,8 @@ struct ManiApp: App {
     // legacy ExternalSessionInfoCache is mirrored from the same
     // entries so PastSessionRow continues to work unchanged.
     //
-    // We do NOT dispatch discoverClaudeSession for archived sessions:
-    // those go through the "Archived worktrees" sidebar group instead,
+    // We do NOT dispatch discoverExternalConvo for archived sessions:
+    // those go through the "Archived projects" sidebar group instead,
     // which renders directly from the cache. Live external claude
     // sessions are still picked up by ClaudeWatcher.onNewSession.
     @MainActor
@@ -218,10 +218,10 @@ struct ManiApp: App {
         await reconcileJobsForArchivedSessions(store: store, cache: cache)
     }
 
-    // For each cached session whose originating worktree is still in
+    // For each cached session whose originating project is still in
     // the repo AND no Task currently tracks it, dispatch
-    // discoverClaudeSession so PastSessionRow appears under that
-    // worktree. The reducer is globally idempotent on sessionId so
+    // discoverExternalConvo so PastSessionRow appears under that
+    // project. The reducer is globally idempotent on sessionId so
     // re-firing is safe.
     //
     // Called from: bootstrap (once at launch) and SafekeepingSweeper
@@ -235,20 +235,28 @@ struct ManiApp: App {
         let homePath = FileManager.default.homeDirectoryForCurrentUser
             .resolvingSymlinksInPath().path
         for repo in store.state.repos {
-            let pairs = repo.worktrees.map {
-                ($0.id, $0.path.resolvingSymlinksInPath().path)
+            // Match against project workspaces (preferred) and fall back
+            // to the repo's rootDir so a session whose cwd is in the
+            // repo but not in any specific project still surfaces.
+            let projectPaths = repo.projects.map {
+                $0.workspace.path.resolvingSymlinksInPath().path
             }
+            let repoRoot = repo.rootDir.resolvingSymlinksInPath().path
             for entry in cache.entries(for: repo.id) {
-                guard let (worktreeId, _) = pairs.first(where: { id, wt in
+                let inProject = projectPaths.contains { wt in
                     if wt == homePath || wt == "/" { return false }
                     return entry.originatingCwd == wt
                         || entry.originatingCwd.hasPrefix(wt + "/")
-                }) else { continue }
+                }
+                let inRepoRoot = !(repoRoot == homePath || repoRoot == "/") &&
+                    (entry.originatingCwd == repoRoot
+                     || entry.originatingCwd.hasPrefix(repoRoot + "/"))
+                guard inProject || inRepoRoot else { continue }
                 if store.state.taskOwningClaudeSession(entry.sessionId) != nil {
                     continue
                 }
-                await store.dispatch(.discoverClaudeSession(
-                    at: WorktreePath(repo: repo.id, worktree: worktreeId),
+                await store.dispatch(.discoverExternalConvo(
+                    repoId: repo.id,
                     sessionId: entry.sessionId,
                     cwd: URL(fileURLWithPath: entry.originatingCwd)
                 ))
@@ -265,12 +273,12 @@ struct ManiApp: App {
     @MainActor
     private static func migrateRenamedFlags(store: Store) async {
         for repo in store.state.repos {
-            for worktree in repo.worktrees {
-                for task in worktree.tasks {
+            for project in repo.projects {
+                for task in project.tasks {
                     if task.renamed { continue }
                     if isDefaultJobName(task.name, kind: task.kind) { continue }
                     let path = TaskPath(
-                        repo: repo.id, worktree: worktree.id, task: task.id
+                        repo: repo.id, project: project.id, task: task.id
                     )
                     await store.dispatch(.renameTask(at: path, name: task.name))
                 }
@@ -294,33 +302,33 @@ struct ManiApp: App {
         }
     }
 
-    // Every git-checkout worktree gets a permanent .diff Task (the Diff
-    // Workspace is a fixture of the worktree, not something the user
-    // spawns). The check is filesystem-based — Mani's WorktreeKind .folder
+    // Every git-checkout project gets a permanent .diff Task (the Diff
+    // Workspace is a fixture of the project, not something the user
+    // spawns). The check is filesystem-based — Mani's WorkspaceKind .folder
     // vs .git only tracks whether Mani created the directory via `git
-    // worktree add`; a .folder worktree may still be a git repo that the
+    // project add`; a .folder project may still be a git repo that the
     // user is working in. We test by stat'ing <path>/.git (a directory for
-    // a normal clone, a file for a `git worktree`-style linked checkout).
+    // a normal clone, a file for a `git project`-style linked checkout).
     @MainActor
     private static func ensureDiffJobsForGitWorktrees(store: Store) async {
         for repo in store.state.repos {
-            for worktree in repo.worktrees {
-                guard isGitCheckout(at: worktree.path) else { continue }
-                let hasDiff = worktree.tasks.contains { task in
+            for project in repo.projects {
+                guard isGitCheckout(at: project.workspace.path) else { continue }
+                let hasDiff = project.tasks.contains { task in
                     if case .diff = task.kind { return true }
                     return false
                 }
                 if !hasDiff {
-                    let path = WorktreePath(repo: repo.id, worktree: worktree.id)
-                    await SidebarView.spawnDiff(at: path, cwd: worktree.path, store: store)
+                    let path = ProjectPath(repo: repo.id, project: project.id)
+                    await SidebarView.spawnDiff(at: path, cwd: project.workspace.path, store: store)
                 }
             }
         }
     }
 
     // True iff `path` contains a `.git` entry (directory for a normal clone,
-    // file pointing at a gitdir for a linked worktree). Used to gate the
-    // Diff Workspace fixture regardless of the Mani WorktreeKind label.
+    // file pointing at a gitdir for a linked project). Used to gate the
+    // Diff Workspace fixture regardless of the Mani WorkspaceKind label.
     static func isGitCheckout(at path: URL) -> Bool {
         let gitMarker = path.appendingPathComponent(".git").path
         return FileManager.default.fileExists(atPath: gitMarker)
@@ -346,7 +354,7 @@ struct ManiApp: App {
     private static func taskExists(_ path: TaskPath, in state: AppState) -> Bool {
         state.repos
             .first(where: { $0.id == path.repo })?
-            .worktrees.first(where: { $0.id == path.worktree })?
+            .projects.first(where: { $0.id == path.project })?
             .tasks.first(where: { $0.id == path.task }) != nil
     }
 
@@ -358,9 +366,9 @@ struct ManiApp: App {
             rootDir: home
         ))
         guard let repo = store.state.repos.first,
-              let worktree = repo.worktrees.first
+              let project = repo.projects.first
         else { return }
-        let path = WorktreePath(repo: repo.id, worktree: worktree.id)
+        let path = ProjectPath(repo: repo.id, project: project.id)
         let spec = ProcessSpec(
             command: "/bin/zsh",
             args: ["-l"],
@@ -377,9 +385,9 @@ struct ManiApp: App {
         ))
     }
 
-    // Map a freshly-detected Claude session to a Mani worktree by cwd. If
-    // a worktree's path is a prefix of the session cwd, we treat the session
-    // as belonging there and dispatch discoverClaudeSession (which is a no-op
+    // Map a freshly-detected Claude session to a Mani project by cwd. If
+    // a project's path is a prefix of the session cwd, we treat the session
+    // as belonging there and dispatch discoverExternalConvo (which is a no-op
     // if a task already tracks this session id, so re-firing is safe).
     private static func handleDiscoveredSession(
         _ detected: ClaudeWatcher.DetectedSession,
@@ -387,7 +395,7 @@ struct ManiApp: App {
     ) async {
         guard let cwd = detected.cwd else { return }
         let cwdURL = URL(fileURLWithPath: cwd).resolvingSymlinksInPath()
-        // Skip auto-discovery when the matched worktree's path is too broad
+        // Skip auto-discovery when the matched project's path is too broad
         // (the user's $HOME, "/", or similar). Any claude run anywhere on
         // the machine would otherwise produce a discovered task — that's the
         // bug where dozens of "external claude" rows appear in the sidebar.
@@ -395,31 +403,31 @@ struct ManiApp: App {
             .resolvingSymlinksInPath().path
         let tooBroad: Set<String> = [homePath, "/"]
         for repo in store.state.repos {
-            for worktree in repo.worktrees {
-                let wtPath = worktree.path.resolvingSymlinksInPath().path
+            for project in repo.projects {
+                let wtPath = project.workspace.path.resolvingSymlinksInPath().path
                 if tooBroad.contains(wtPath) { continue }
                 guard cwdURL.path == wtPath || cwdURL.path.hasPrefix(wtPath + "/") else {
                     continue
                 }
-                let path = WorktreePath(repo: repo.id, worktree: worktree.id)
+                let path = ProjectPath(repo: repo.id, project: project.id)
 
                 // Prefer linking into an existing claude(nil) task in this
-                // worktree (created by NewTaskSheet's "Claude" option) — the
+                // project (created by NewTaskSheet's "Claude" option) — the
                 // user spawned this session via Mani and wants the session
                 // attached to the existing slot, not a duplicate.
-                if let unlinked = worktree.tasks.first(where: { task in
+                if let unlinked = project.tasks.first(where: { task in
                     if case .claude(let sid) = task.kind, sid == nil { return true }
                     return false
                 }) {
                     let taskPath = TaskPath(
-                        repo: repo.id, worktree: worktree.id, task: unlinked.id
+                        repo: repo.id, project: project.id, task: unlinked.id
                     )
                     await store.dispatch(.linkClaudeSession(
                         at: taskPath, sessionId: detected.sessionId
                     ))
                 } else {
-                    await store.dispatch(.discoverClaudeSession(
-                        at: path,
+                    await store.dispatch(.discoverExternalConvo(
+                        repoId: repo.id,
                         sessionId: detected.sessionId,
                         cwd: URL(fileURLWithPath: cwd)
                     ))
@@ -461,11 +469,11 @@ struct ManiApp: App {
             )
         }
         for repo in store.state.repos {
-            for worktree in repo.worktrees {
-                for task in worktree.tasks {
+            for project in repo.projects {
+                for task in project.tasks {
                     if case let .claude(sid) = task.kind, sid == detected.sessionId {
                         let path = TaskPath(
-                            repo: repo.id, worktree: worktree.id, task: task.id
+                            repo: repo.id, project: project.id, task: task.id
                         )
                         await store.dispatch(.bumpUnread(at: path, by: delta))
                         return
@@ -478,7 +486,7 @@ struct ManiApp: App {
         // the session's onNewSession fired against an empty repo
         // list (claude was already running when the user added the
         // repo, or FSEvents missed the initial create). The
-        // discoverClaudeSession reducer is globally idempotent so
+        // discoverExternalConvo reducer is globally idempotent so
         // re-firing is safe.
         await handleDiscoveredSession(detected, store: store)
     }

@@ -14,7 +14,7 @@ import ManiCore
 struct DiffWorkspaceView: View {
     let task: Task
     let taskPath: TaskPath
-    let worktreePath: URL
+    let projectPath: URL
 
     @EnvironmentObject var store: Store
 
@@ -39,7 +39,7 @@ struct DiffWorkspaceView: View {
 
     // Tracks which section the selected file lives in so the right pane
     // renders the right diff: staged shows index-vs-HEAD, unstaged shows
-    // worktree-vs-index, untracked shows the full file as added.
+    // project-vs-index, untracked shows the full file as added.
     enum Section: Equatable { case staged, unstaged, untracked }
     struct SelectedFile: Equatable {
         let path: String
@@ -379,17 +379,17 @@ struct DiffWorkspaceView: View {
         // mark a follow-up. Without this, FSEvents bursts (and the
         // self-trigger from running git itself) used to spawn N
         // overlapping `git status` subprocesses, each tying up a
-        // core. Empirically: 800 % CPU on a 7-worktree machine.
+        // core. Empirically: 800 % CPU on a 7-project machine.
         if refreshInFlight {
             refreshAgainPending = true
             return
         }
         refreshInFlight = true
-        let wt = worktreePath
+        let wt = projectPath
         _Concurrency.Task.detached(priority: .userInitiated) {
-            let staged = GitChangesScanner.staged(worktree: wt)
-            let unstaged = GitChangesScanner.unstaged(worktree: wt)
-            let untracked = GitChangesScanner.untracked(worktree: wt)
+            let staged = GitChangesScanner.staged(project: wt)
+            let unstaged = GitChangesScanner.unstaged(project: wt)
+            let untracked = GitChangesScanner.untracked(project: wt)
             let stagedTree = PathTreeNode.tree(
                 from: staged.map { ($0.path, .some($0.status)) }
             )
@@ -458,9 +458,9 @@ struct DiffWorkspaceView: View {
     // MARK: Git ops
 
     private func stage(paths: [String]) {
-        let wt = worktreePath
+        let wt = projectPath
         _Concurrency.Task.detached(priority: .userInitiated) {
-            _ = GitChangesScanner.add(paths: paths, worktree: wt)
+            _ = GitChangesScanner.add(paths: paths, project: wt)
             await MainActor.run { refreshFileList() }
         }
     }
@@ -474,27 +474,27 @@ struct DiffWorkspaceView: View {
         alert.addButton(withTitle: "Discard")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let wt = worktreePath
+        let wt = projectPath
         _Concurrency.Task.detached(priority: .userInitiated) {
-            _ = GitChangesScanner.discard(paths: paths, worktree: wt)
+            _ = GitChangesScanner.discard(paths: paths, project: wt)
             await MainActor.run { refreshFileList() }
         }
     }
 
     private func unstage(paths: [String]) {
-        let wt = worktreePath
+        let wt = projectPath
         _Concurrency.Task.detached(priority: .userInitiated) {
-            _ = GitChangesScanner.unstage(paths: paths, worktree: wt)
+            _ = GitChangesScanner.unstage(paths: paths, project: wt)
             await MainActor.run { refreshFileList() }
         }
     }
 
     private func performCommit() {
         let msg = commitMessage
-        let wt = worktreePath
+        let wt = projectPath
         commitInFlight = true
         _Concurrency.Task.detached(priority: .userInitiated) {
-            let ok = GitChangesScanner.commitStaged(message: msg, worktree: wt)
+            let ok = GitChangesScanner.commitStaged(message: msg, project: wt)
             await MainActor.run {
                 commitInFlight = false
                 if ok {
@@ -508,7 +508,7 @@ struct DiffWorkspaceView: View {
     // MARK: FS auto-refresh
 
     private func startFSWatching() {
-        let watcher = WorktreeFSWatcher(root: worktreePath) {
+        let watcher = WorktreeFSWatcher(root: projectPath) {
             // Coalesce bursts of writes.
             _Concurrency.Task { @MainActor in refreshFileList() }
         }
@@ -543,7 +543,7 @@ struct DiffWorkspaceView: View {
             // Index vs HEAD: what's been added with `git add` since last commit.
             pipeline = "git diff --cached -- \(escaped) | delta --paging=never | less -RF\n"
         case .unstaged:
-            // Worktree vs index: what would be staged next.
+            // Project vs index: what would be staged next.
             pipeline = "git diff -- \(escaped) | delta --paging=never | less -RF\n"
         case .untracked:
             // Untracked = nothing committed yet; render as all-added.
@@ -579,9 +579,9 @@ struct DiffWorkspaceView: View {
 
     private func addSelectedToGit() {
         let paths = Array(untrackedSelection)
-        let wt = worktreePath
+        let wt = projectPath
         _Concurrency.Task.detached(priority: .userInitiated) {
-            _ = GitChangesScanner.add(paths: paths, worktree: wt)
+            _ = GitChangesScanner.add(paths: paths, project: wt)
             await MainActor.run {
                 untrackedSelection.removeAll()
                 refreshFileList()

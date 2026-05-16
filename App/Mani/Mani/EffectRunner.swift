@@ -69,10 +69,10 @@ actor EffectRunner {
         dispatch: @escaping (Action) async -> Void
     ) async {
         for repo in state.repos {
-            for worktree in repo.worktrees {
-                for task in worktree.tasks {
+            for project in repo.projects {
+                for task in project.tasks {
                     let path = TaskPath(
-                        repo: repo.id, worktree: worktree.id, task: task.id
+                        repo: repo.id, project: project.id, task: task.id
                     )
                     switch task.runtime {
                     case .running:
@@ -270,7 +270,7 @@ actor EffectRunner {
                 baseRef: baseRef
             )
 
-        case .archive, .watchClaudeProjects:
+        case .watchClaudeProjects:
             break
         }
     }
@@ -291,7 +291,7 @@ actor EffectRunner {
         }
         let result = await runGit(args: addArgs, cwd: repoRoot)
         if result.exit != 0 {
-            NSLog("[mani] git worktree add failed exit=\(result.exit) stderr=\(result.stderr)")
+            NSLog("[mani] git project add failed exit=\(result.exit) stderr=\(result.stderr)")
             return
         }
 

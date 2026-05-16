@@ -3,7 +3,7 @@ import ManiCore
 import Foundation
 
 // Minimal v0.1 creation dialogs. Color picking, swatch palette, branch
-// dropdown for git worktrees, etc. come later — see docs/ui.md.
+// dropdown for git projects, etc. come later — see docs/ui.md.
 
 struct NewProjectSheet: View {
     let store: Store
@@ -27,7 +27,7 @@ struct NewProjectSheet: View {
                 Text("Color").font(.caption).foregroundStyle(.secondary)
                 ColorSwatchPicker(hex: $color)
             }
-            Text("The repo root anchors `git worktree add` and shows as the repo's main workspace. Additional worktrees can be added after creation.")
+            Text("The repo root anchors `git project add` and shows as the repo's main workspace. Additional projects can be added after creation.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
@@ -76,7 +76,7 @@ struct NewWorktreeSheet: View {
 
     enum Kind: String, CaseIterable, Identifiable {
         case folder = "Folder"
-        case git = "Git worktree"
+        case git = "Git project"
         var id: String { rawValue }
     }
 
@@ -88,7 +88,7 @@ struct NewWorktreeSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("New worktree").font(.headline)
+            Text("New project").font(.headline)
             Picker("Kind", selection: $kind) {
                 ForEach(Kind.allCases) { k in Text(k.rawValue).tag(k) }
             }
@@ -104,33 +104,37 @@ struct NewWorktreeSheet: View {
                 }
                 Toggle("Add a default shell task", isOn: $addShellTask)
             }
-            Text("The worktree's directory name + current branch identify it in the sidebar.")
+            Text("The project's directory name + current branch identify it in the sidebar.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
                 Spacer()
                 Button("Cancel") { isPresented = false }.keyboardShortcut(.cancelAction)
                 Button("Create") {
-                    let worktreeKind: WorktreeKind = (kind == .git)
-                        ? .git(branch: branch.isEmpty ? "main" : branch,
+                    let worktreeKind: WorkspaceKind = (kind == .git)
+                        ? .gitWorktree(branch: branch.isEmpty ? "main" : branch,
                                baseRef: baseRef.isEmpty ? nil : baseRef)
                         : .folder
                     let pathURL = URL(fileURLWithPath: path)
                     let wantShell = addShellTask
                     let repoId = repoId
                     _Concurrency.Task {
-                        await store.dispatch(.createWorktree(
+                        await store.dispatch(.createProject(
                             repoId: repoId,
-                            kind: worktreeKind,
-                            path: pathURL
+                            name: pathURL.lastPathComponent,
+                            workspace: Workspace(
+                                path: pathURL,
+                                kind: worktreeKind,
+                                missing: false
+                            )
                         ))
                         guard let repo = store.state.repos.first(where: { $0.id == repoId }),
-                              let worktree = repo.worktrees.last else {
+                              let project = repo.projects.last else {
                             isPresented = false
                             return
                         }
-                        let wtPath = WorktreePath(
-                            repo: repoId, worktree: worktree.id
+                        let wtPath = ProjectPath(
+                            repo: repoId, project: project.id
                         )
                         if wantShell {
                             let spec = ProcessSpec(
@@ -145,9 +149,9 @@ struct NewWorktreeSheet: View {
                                 spec: spec, autoSelect: true
                             ))
                         }
-                        // .git kind worktrees are by definition git checkouts.
+                        // .git kind projects are by definition git checkouts.
                         // For .folder kind, check the filesystem — many
-                        // `.folder` worktrees ARE git repos the user just
+                        // `.folder` projects ARE git repos the user just
                         // chose to register as plain folders.
                         if ManiApp.isGitCheckout(at: pathURL) {
                             await SidebarView.spawnDiff(
@@ -155,7 +159,7 @@ struct NewWorktreeSheet: View {
                             )
                         }
                         // Pull in any pre-existing claude sessions
-                        // that match the new worktree's path now,
+                        // that match the new project's path now,
                         // instead of waiting for the 5-min tick.
                         await sweeper.runOnce()
                         isPresented = false
@@ -223,20 +227,20 @@ struct RenameJobSheet: View {
 
 struct ResumeClaudeSheet: View {
     let store: Store
-    let worktreePath: WorktreePath
+    let projectPath: ProjectPath
     let cwd: URL
     @Binding var isPresented: Bool
     var onCreated: ((UUID) -> Void)?
     @EnvironmentObject var archiveCache: SessionArchiveCache
 
     // Filter the repo-wide cache down to sessions whose
-    // originating cwd matches this worktree. Cheap — the cache is
+    // originating cwd matches this project. Cheap — the cache is
     // already in memory after boot's bootstrap + first sweep, so no
     // disk scan on open.
     private var sessions: [SessionIndexEntry] {
         let cwdPath = cwd.path
         let cwdPrefix = cwdPath + "/"
-        return archiveCache.entries(for: worktreePath.repo)
+        return archiveCache.entries(for: projectPath.repo)
             .filter { entry in
                 entry.originatingCwd == cwdPath
                     || entry.originatingCwd.hasPrefix(cwdPrefix)
@@ -304,22 +308,22 @@ struct ResumeClaudeSheet: View {
     }
 
     private func resume(sessionId: String) {
-        let repo = store.state.repos.first(where: { $0.id == worktreePath.repo })
+        let repo = store.state.repos.first(where: { $0.id == projectPath.repo })
         let invocation = ClaudeTaskSpec.resolveInvocation(
             repo: repo, settings: store.state.settings
         )
         let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: sessionId, invocation: invocation)
         _Concurrency.Task {
             await store.dispatch(.createTask(
-                at: worktreePath,
+                at: projectPath,
                 name: "claude (resumed \(sessionId.prefix(6)))",
                 kind: .claude(sessionId: sessionId),
                 spec: spec,
                 autoSelect: true
             ))
             if let id = store.state.repos
-                .first(where: { $0.id == worktreePath.repo })?
-                .worktrees.first(where: { $0.id == worktreePath.worktree })?
+                .first(where: { $0.id == projectPath.repo })?
+                .projects.first(where: { $0.id == projectPath.project })?
                 .tasks.last?.id
             {
                 onCreated?(id)
@@ -329,21 +333,21 @@ struct ResumeClaudeSheet: View {
     }
 
     private func startFresh() {
-        let repo = store.state.repos.first(where: { $0.id == worktreePath.repo })
+        let repo = store.state.repos.first(where: { $0.id == projectPath.repo })
         let invocation = ClaudeTaskSpec.resolveInvocation(
             repo: repo, settings: store.state.settings
         )
         let spec = ClaudeTaskSpec.make(cwd: cwd, sessionId: nil, invocation: invocation)
         _Concurrency.Task {
             await store.dispatch(.createTask(
-                at: worktreePath, name: "claude",
+                at: projectPath, name: "claude",
                 kind: .claude(sessionId: nil),
                 spec: spec,
                 autoSelect: true
             ))
             if let id = store.state.repos
-                .first(where: { $0.id == worktreePath.repo })?
-                .worktrees.first(where: { $0.id == worktreePath.worktree })?
+                .first(where: { $0.id == projectPath.repo })?
+                .projects.first(where: { $0.id == projectPath.project })?
                 .tasks.last?.id
             {
                 onCreated?(id)
@@ -355,7 +359,7 @@ struct ResumeClaudeSheet: View {
 
 struct NewTaskSheet: View {
     let store: Store
-    let worktreePath: WorktreePath
+    let projectPath: ProjectPath
     let cwd: URL
     @Binding var isPresented: Bool
     var onCreated: ((UUID) -> Void)?
@@ -414,7 +418,7 @@ struct NewTaskSheet: View {
                     let args = argsString
                         .split(whereSeparator: { $0.isWhitespace })
                         .map(String.init)
-                    let claudeRepo = store.state.repos.first(where: { $0.id == worktreePath.repo })
+                    let claudeRepo = store.state.repos.first(where: { $0.id == projectPath.repo })
                     let claudeInvocation = ClaudeTaskSpec.resolveInvocation(
                         repo: claudeRepo, settings: store.state.settings
                     )
@@ -431,15 +435,15 @@ struct NewTaskSheet: View {
                     let taskName = name.isEmpty ? kind.rawValue.lowercased() : name
                     _Concurrency.Task {
                         await store.dispatch(.createTask(
-                            at: worktreePath,
+                            at: projectPath,
                             name: taskName,
                             kind: taskKind,
                             spec: spec,
                             autoSelect: true
                         ))
                         if let id = store.state.repos
-                            .first(where: { $0.id == worktreePath.repo })?
-                            .worktrees.first(where: { $0.id == worktreePath.worktree })?
+                            .first(where: { $0.id == projectPath.repo })?
+                            .projects.first(where: { $0.id == projectPath.project })?
                             .tasks.last?.id
                         {
                             onCreated?(id)

@@ -1,6 +1,6 @@
 import Foundation
 
-// Snapshots the working state of a git worktree for the Diff Workspace.
+// Snapshots the working state of a git project for the Diff Workspace.
 // Two queries:
 //   - `git diff --name-status <ref>` for tracked changes (M / A / D / R / etc)
 //   - `git ls-files --others --exclude-standard` for untracked files
@@ -53,22 +53,22 @@ enum GitChangesScanner {
     // the user picks a non-HEAD ref to compare against; combines staged
     // and unstaged. The IDE-style flow prefers the staged/unstaged
     // breakdown below.
-    static func tracked(worktree: URL, sourceRef: String) -> [GitChange] {
-        let out = runGit(args: ["diff", "--name-status", sourceRef], cwd: worktree)
+    static func tracked(project: URL, sourceRef: String) -> [GitChange] {
+        let out = runGit(args: ["diff", "--name-status", sourceRef], cwd: project)
         return parseNameStatus(out)
     }
 
     // Staged changes: index vs HEAD. What `git commit -m` would commit
     // (without -a). `R` lines carry old + new paths.
-    static func staged(worktree: URL) -> [GitChange] {
-        let out = runGit(args: ["diff", "--cached", "--name-status"], cwd: worktree)
+    static func staged(project: URL) -> [GitChange] {
+        let out = runGit(args: ["diff", "--cached", "--name-status"], cwd: project)
         return parseNameStatus(out)
     }
 
-    // Unstaged tracked changes: worktree vs index. What `git add` would
+    // Unstaged tracked changes: project vs index. What `git add` would
     // stage. Excludes already-staged content.
-    static func unstaged(worktree: URL) -> [GitChange] {
-        let out = runGit(args: ["diff", "--name-status"], cwd: worktree)
+    static func unstaged(project: URL) -> [GitChange] {
+        let out = runGit(args: ["diff", "--name-status"], cwd: project)
         return parseNameStatus(out)
     }
 
@@ -93,45 +93,45 @@ enum GitChangesScanner {
         }
     }
 
-    static func untracked(worktree: URL) -> [String] {
+    static func untracked(project: URL) -> [String] {
         let out = runGit(
             args: ["ls-files", "--others", "--exclude-standard"],
-            cwd: worktree
+            cwd: project
         )
         return out.split(separator: "\n").map(String.init)
     }
 
     // Stage the given paths (`git add -- <paths>`).
     @discardableResult
-    static func add(paths: [String], worktree: URL) -> Bool {
+    static func add(paths: [String], project: URL) -> Bool {
         guard !paths.isEmpty else { return true }
-        return runGitOp(args: ["add", "--"] + paths, cwd: worktree)
+        return runGitOp(args: ["add", "--"] + paths, cwd: project)
     }
 
     // Unstage the given paths (`git restore --staged -- <paths>`). Index
     // returns to HEAD for those paths; working tree unaffected.
     @discardableResult
-    static func unstage(paths: [String], worktree: URL) -> Bool {
+    static func unstage(paths: [String], project: URL) -> Bool {
         guard !paths.isEmpty else { return true }
-        return runGitOp(args: ["restore", "--staged", "--"] + paths, cwd: worktree)
+        return runGitOp(args: ["restore", "--staged", "--"] + paths, cwd: project)
     }
 
     // Discard working-tree changes for the given paths (`git restore -- <p>`).
     // Destructive; caller is responsible for the confirm prompt.
     @discardableResult
-    static func discard(paths: [String], worktree: URL) -> Bool {
+    static func discard(paths: [String], project: URL) -> Bool {
         guard !paths.isEmpty else { return true }
-        return runGitOp(args: ["restore", "--"] + paths, cwd: worktree)
+        return runGitOp(args: ["restore", "--"] + paths, cwd: project)
     }
 
     // Commit currently-staged content only (`git commit -m`). Unstaged
     // tracked changes and untracked files are NOT included; the user is
     // expected to stage explicitly first.
     @discardableResult
-    static func commitStaged(message: String, worktree: URL) -> Bool {
+    static func commitStaged(message: String, project: URL) -> Bool {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
-        return runGitOp(args: ["commit", "-m", trimmed], cwd: worktree)
+        return runGitOp(args: ["commit", "-m", trimmed], cwd: project)
     }
 
     private static func runGitOp(args: [String], cwd: URL) -> Bool {

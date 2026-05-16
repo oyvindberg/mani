@@ -175,17 +175,21 @@ final class ClaudeTaskSpecTests: XCTestCase {
             color: "#000",
             enabled: true,
             rootDir: URL(fileURLWithPath: "/p/main"),
-            worktrees: [
-                Worktree(
+            projects: [
+                Project(
                     id: UUID(),
-                    path: URL(fileURLWithPath: "/p/main"),
-                    kind: .folder,
-                    enabled: true,
-                    missing: false,
+                    name: "main",
+                    workspace: Workspace(
+                        path: URL(fileURLWithPath: "/p/main"),
+                        kind: .folder,
+                        missing: false
+                    ),
                     tasks: tasks,
+                    archivedAt: nil,
                     createdAt: Date()
                 )
             ],
+            externalConvos: [],
             createdAt: Date(),
             claudeInvocation: nil
         )

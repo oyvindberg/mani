@@ -20,28 +20,22 @@ final class ClaudeSessionStartTests: XCTestCase {
         )
     }
 
-    // MARK: - resume retargets the most-recently-created mismatched task
-
-    func test_route_resume_retargetsMatchingWorktreeTask() {
+    func test_route_resume_retargetsMatchingProjectTask() {
         let oldSid = "old-session-id"
         let newSid = "new-session-id"
         let repoId = UUID()
-        let worktreeId = UUID()
+        let projectId = UUID()
         let taskId = UUID()
-        let wtPath = URL(fileURLWithPath: "/Users/me/wt")
+        let wsPath = URL(fileURLWithPath: "/Users/me/wt")
         let state = stateWith(
             repoId: repoId,
-            worktreeId: worktreeId,
-            worktreePath: wtPath,
-            tasks: [
-                claudeTask(id: taskId, sid: oldSid, createdAt: Date())
-            ]
+            projectId: projectId,
+            workspacePath: wsPath,
+            tasks: [claudeTask(id: taskId, sid: oldSid, createdAt: Date())]
         )
         let payload = SessionStartPayload(
-            sessionId: newSid,
-            cwd: wtPath.path,
-            transcriptPath: nil,
-            source: .resume
+            sessionId: newSid, cwd: wsPath.path,
+            transcriptPath: nil, source: .resume
         )
 
         let action = routeSessionStart(
@@ -53,90 +47,22 @@ final class ClaudeSessionStartTests: XCTestCase {
         }
         XCTAssertEqual(sid, newSid)
         XCTAssertEqual(at.repo, repoId)
-        XCTAssertEqual(at.worktree, worktreeId)
+        XCTAssertEqual(at.project, projectId)
         XCTAssertEqual(at.task, taskId)
     }
 
-    func test_route_resume_withMultipleMismatches_picksMostRecent() {
-        let repoId = UUID()
-        let worktreeId = UUID()
-        let oldTask = claudeTask(id: UUID(), sid: "old-1", createdAt: Date(timeIntervalSinceReferenceDate: 1_000))
-        let newTask = claudeTask(id: UUID(), sid: "old-2", createdAt: Date(timeIntervalSinceReferenceDate: 9_000))
-        let state = stateWith(
-            repoId: repoId,
-            worktreeId: worktreeId,
-            worktreePath: URL(fileURLWithPath: "/wt"),
-            tasks: [oldTask, newTask]
-        )
-        let payload = SessionStartPayload(
-            sessionId: "new", cwd: "/wt", transcriptPath: nil, source: .resume
-        )
-
-        let action = routeSessionStart(
-            payload: payload, state: state, homePathToExclude: "/home"
-        )
-
-        guard case let .linkClaudeSession(at, _) = action else {
-            return XCTFail("expected linkClaudeSession")
-        }
-        XCTAssertEqual(at.task, newTask.id)
-    }
-
-    // MARK: - clear / compact route like resume
-
-    func test_route_clear_retargets() {
-        let task = claudeTask(id: UUID(), sid: "old", createdAt: Date())
-        let state = stateWith(
-            repoId: UUID(), worktreeId: UUID(),
-            worktreePath: URL(fileURLWithPath: "/wt"),
-            tasks: [task]
-        )
-        let payload = SessionStartPayload(
-            sessionId: "new", cwd: "/wt", transcriptPath: nil, source: .clear
-        )
-
-        let action = routeSessionStart(
-            payload: payload, state: state, homePathToExclude: "/home"
-        )
-
-        guard case .linkClaudeSession = action else {
-            return XCTFail("expected linkClaudeSession for clear")
-        }
-    }
-
-    func test_route_compact_retargets() {
-        let task = claudeTask(id: UUID(), sid: "old", createdAt: Date())
-        let state = stateWith(
-            repoId: UUID(), worktreeId: UUID(),
-            worktreePath: URL(fileURLWithPath: "/wt"),
-            tasks: [task]
-        )
-        let payload = SessionStartPayload(
-            sessionId: "new", cwd: "/wt", transcriptPath: nil, source: .compact
-        )
-
-        let action = routeSessionStart(
-            payload: payload, state: state, homePathToExclude: "/home"
-        )
-
-        guard case .linkClaudeSession = action else {
-            return XCTFail("expected linkClaudeSession for compact")
-        }
-    }
-
-    // MARK: - startup links to an unlinked .claude(nil) slot
-
     func test_route_startup_linksToUnlinkedSlot() {
         let repoId = UUID()
-        let worktreeId = UUID()
+        let projectId = UUID()
         let unlinkedId = UUID()
         let state = stateWith(
-            repoId: repoId, worktreeId: worktreeId,
-            worktreePath: URL(fileURLWithPath: "/wt"),
+            repoId: repoId, projectId: projectId,
+            workspacePath: URL(fileURLWithPath: "/wt"),
             tasks: [claudeTask(id: unlinkedId, sid: nil, createdAt: Date())]
         )
         let payload = SessionStartPayload(
-            sessionId: "fresh", cwd: "/wt", transcriptPath: nil, source: .startup
+            sessionId: "fresh", cwd: "/wt",
+            transcriptPath: nil, source: .startup
         )
 
         let action = routeSessionStart(
@@ -144,68 +70,71 @@ final class ClaudeSessionStartTests: XCTestCase {
         )
 
         guard case let .linkClaudeSession(at, sid) = action else {
-            return XCTFail("expected linkClaudeSession for startup")
+            return XCTFail("expected linkClaudeSession")
         }
         XCTAssertEqual(at.task, unlinkedId)
         XCTAssertEqual(sid, "fresh")
     }
 
-    func test_route_startup_withNoUnlinkedSlot_discovers() {
+    func test_route_startup_noUnlinkedSlot_discoversExternalConvo() {
+        let repoId = UUID()
         let state = stateWith(
-            repoId: UUID(), worktreeId: UUID(),
-            worktreePath: URL(fileURLWithPath: "/wt"),
+            repoId: repoId, projectId: UUID(),
+            workspacePath: URL(fileURLWithPath: "/wt"),
             tasks: []
         )
         let payload = SessionStartPayload(
-            sessionId: "fresh", cwd: "/wt", transcriptPath: nil, source: .startup
+            sessionId: "fresh", cwd: "/wt",
+            transcriptPath: nil, source: .startup
         )
 
         let action = routeSessionStart(
             payload: payload, state: state, homePathToExclude: "/home"
         )
 
-        guard case let .discoverClaudeSession(_, sid, cwd) = action else {
-            return XCTFail("expected discoverClaudeSession fallback")
+        guard case let .discoverExternalConvo(r, sid, cwd) = action else {
+            return XCTFail("expected discoverExternalConvo, got \(String(describing: action))")
         }
+        XCTAssertEqual(r, repoId)
         XCTAssertEqual(sid, "fresh")
         XCTAssertEqual(cwd.path, "/wt")
     }
 
-    // MARK: - fork always creates a sibling
-
-    func test_route_fork_createsSibling_evenWhenExistingClaudeTaskExists() {
+    func test_route_fork_alwaysDiscoversExternalConvo() {
+        let repoId = UUID()
         let existing = claudeTask(id: UUID(), sid: "original", createdAt: Date())
         let state = stateWith(
-            repoId: UUID(), worktreeId: UUID(),
-            worktreePath: URL(fileURLWithPath: "/wt"),
+            repoId: repoId, projectId: UUID(),
+            workspacePath: URL(fileURLWithPath: "/wt"),
             tasks: [existing]
         )
         let payload = SessionStartPayload(
-            sessionId: "forked", cwd: "/wt", transcriptPath: nil, source: .fork
+            sessionId: "forked", cwd: "/wt",
+            transcriptPath: nil, source: .fork
         )
 
         let action = routeSessionStart(
             payload: payload, state: state, homePathToExclude: "/home"
         )
 
-        guard case let .discoverClaudeSession(_, sid, _) = action else {
-            return XCTFail("expected discoverClaudeSession for fork")
+        guard case let .discoverExternalConvo(r, sid, _) = action else {
+            return XCTFail("expected discoverExternalConvo for fork")
         }
+        XCTAssertEqual(r, repoId)
         XCTAssertEqual(sid, "forked")
     }
-
-    // MARK: - idempotence
 
     func test_route_alreadyTrackedSid_returnsNil() {
         let sid = "live"
         let task = claudeTask(id: UUID(), sid: sid, createdAt: Date())
         let state = stateWith(
-            repoId: UUID(), worktreeId: UUID(),
-            worktreePath: URL(fileURLWithPath: "/wt"),
+            repoId: UUID(), projectId: UUID(),
+            workspacePath: URL(fileURLWithPath: "/wt"),
             tasks: [task]
         )
         let payload = SessionStartPayload(
-            sessionId: sid, cwd: "/wt", transcriptPath: nil, source: .resume
+            sessionId: sid, cwd: "/wt",
+            transcriptPath: nil, source: .resume
         )
 
         let action = routeSessionStart(
@@ -215,30 +144,27 @@ final class ClaudeSessionStartTests: XCTestCase {
         XCTAssertNil(action)
     }
 
-    // MARK: - cwd-not-matched and broad-cwd guards
-
-    func test_route_cwdDoesNotMatchWorktree_returnsNil() {
+    func test_route_cwdDoesNotMatchAnyRepo_returnsNil() {
         let state = stateWith(
-            repoId: UUID(), worktreeId: UUID(),
-            worktreePath: URL(fileURLWithPath: "/wt-a"),
+            repoId: UUID(), projectId: UUID(),
+            workspacePath: URL(fileURLWithPath: "/wt-a"),
             tasks: [claudeTask(id: UUID(), sid: "old", createdAt: Date())]
         )
         let payload = SessionStartPayload(
-            sessionId: "new", cwd: "/somewhere/else", transcriptPath: nil, source: .resume
+            sessionId: "new", cwd: "/somewhere/else",
+            transcriptPath: nil, source: .resume
         )
-
         let action = routeSessionStart(
             payload: payload, state: state, homePathToExclude: "/home"
         )
-
         XCTAssertNil(action)
     }
 
-    func test_route_worktreeAtHome_isSkipped_evenIfCwdMatches() {
+    func test_route_workspaceAtHome_isSkipped_evenIfCwdMatches() {
         let homePath = "/Users/me"
         let state = stateWith(
-            repoId: UUID(), worktreeId: UUID(),
-            worktreePath: URL(fileURLWithPath: homePath),
+            repoId: UUID(), projectId: UUID(),
+            workspacePath: URL(fileURLWithPath: homePath),
             tasks: [claudeTask(id: UUID(), sid: "old", createdAt: Date())]
         )
         let payload = SessionStartPayload(
@@ -257,12 +183,13 @@ final class ClaudeSessionStartTests: XCTestCase {
 
     func test_route_missingCwd_returnsNil() {
         let state = stateWith(
-            repoId: UUID(), worktreeId: UUID(),
-            worktreePath: URL(fileURLWithPath: "/wt"),
+            repoId: UUID(), projectId: UUID(),
+            workspacePath: URL(fileURLWithPath: "/wt"),
             tasks: [claudeTask(id: UUID(), sid: "old", createdAt: Date())]
         )
         let payload = SessionStartPayload(
-            sessionId: "new", cwd: nil, transcriptPath: nil, source: .resume
+            sessionId: "new", cwd: nil,
+            transcriptPath: nil, source: .resume
         )
 
         let action = routeSessionStart(
@@ -276,25 +203,29 @@ final class ClaudeSessionStartTests: XCTestCase {
 
     private func stateWith(
         repoId: UUID,
-        worktreeId: UUID,
-        worktreePath: URL,
+        projectId: UUID,
+        workspacePath: URL,
         tasks: [Task]
     ) -> AppState {
         AppState(
             schemaVersion: 2,
             repos: [
                 Repo(
-                    id: repoId, name: "p", color: "#000",
+                    id: repoId, name: "r", color: "#000",
                     enabled: true,
-                    rootDir: worktreePath,
-                    worktrees: [
-                        Worktree(
-                            id: worktreeId,
-                            path: worktreePath, kind: .folder,
-                            enabled: true, missing: false,
-                            tasks: tasks, createdAt: Date()
+                    rootDir: workspacePath,
+                    projects: [
+                        Project(
+                            id: projectId, name: "p",
+                            workspace: Workspace(
+                                path: workspacePath, kind: .folder, missing: false
+                            ),
+                            tasks: tasks,
+                            archivedAt: nil,
+                            createdAt: Date()
                         )
                     ],
+                    externalConvos: [],
                     createdAt: Date(),
                     claudeInvocation: nil
                 )

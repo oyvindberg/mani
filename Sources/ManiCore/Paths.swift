@@ -1,56 +1,70 @@
 import Foundation
 
-public struct WorktreePath: Codable, Equatable, Hashable {
+// Identifies a Project inside a Repo. Replaces the old WorktreePath.
+public struct ProjectPath: Codable, Equatable, Hashable {
     public let repo: UUID
-    public let worktree: UUID
+    public let project: UUID
 
-    public init(repo: UUID, worktree: UUID) {
+    public init(repo: UUID, project: UUID) {
         self.repo = repo
-        self.worktree = worktree
+        self.project = project
     }
 
-    private enum CodingKeys: String, CodingKey { case repo, worktree }
-    private enum LegacyKeys: String, CodingKey { case project }
+    private enum CodingKeys: String, CodingKey { case repo, project }
+    // Legacy: pre-refactor used `worktree` for the same slot.
+    private enum LegacyKeys: String, CodingKey { case worktree }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        if let r = try c.decodeIfPresent(UUID.self, forKey: .repo) {
-            self.repo = r
+        self.repo = try c.decode(UUID.self, forKey: .repo)
+        if let p = try c.decodeIfPresent(UUID.self, forKey: .project) {
+            self.project = p
         } else {
             let legacy = try decoder.container(keyedBy: LegacyKeys.self)
-            self.repo = try legacy.decode(UUID.self, forKey: .project)
+            self.project = try legacy.decode(UUID.self, forKey: .worktree)
         }
-        self.worktree = try c.decode(UUID.self, forKey: .worktree)
     }
 }
 
+// Identifies a Task inside a Project inside a Repo.
 public struct TaskPath: Codable, Equatable, Hashable {
     public let repo: UUID
-    public let worktree: UUID
+    public let project: UUID
     public let task: UUID
 
-    public init(repo: UUID, worktree: UUID, task: UUID) {
+    public init(repo: UUID, project: UUID, task: UUID) {
         self.repo = repo
-        self.worktree = worktree
+        self.project = project
         self.task = task
     }
 
-    public var worktreePath: WorktreePath {
-        WorktreePath(repo: repo, worktree: worktree)
+    public var projectPath: ProjectPath {
+        ProjectPath(repo: repo, project: project)
     }
 
-    private enum CodingKeys: String, CodingKey { case repo, worktree, task }
-    private enum LegacyKeys: String, CodingKey { case project }
+    private enum CodingKeys: String, CodingKey { case repo, project, task }
+    private enum LegacyKeys: String, CodingKey { case worktree }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        if let r = try c.decodeIfPresent(UUID.self, forKey: .repo) {
-            self.repo = r
+        self.repo = try c.decode(UUID.self, forKey: .repo)
+        self.task = try c.decode(UUID.self, forKey: .task)
+        if let p = try c.decodeIfPresent(UUID.self, forKey: .project) {
+            self.project = p
         } else {
             let legacy = try decoder.container(keyedBy: LegacyKeys.self)
-            self.repo = try legacy.decode(UUID.self, forKey: .project)
+            self.project = try legacy.decode(UUID.self, forKey: .worktree)
         }
-        self.worktree = try c.decode(UUID.self, forKey: .worktree)
-        self.task = try c.decode(UUID.self, forKey: .task)
+    }
+}
+
+// Identifies an ExternalConvo inside a Repo.
+public struct ExternalConvoPath: Codable, Equatable, Hashable {
+    public let repo: UUID
+    public let convo: UUID
+
+    public init(repo: UUID, convo: UUID) {
+        self.repo = repo
+        self.convo = convo
     }
 }

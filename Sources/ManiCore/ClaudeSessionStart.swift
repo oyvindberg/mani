@@ -1,10 +1,11 @@
 import Foundation
 
 // Decoded `SessionStart` hook payload from Claude Code. Claude fires
-// SessionStart on every session entry — fresh startup, --resume, /clear,
-// /compact, /fork. session_id is claude's authoritative id; `source`
-// distinguishes the entry kind. The payload reconciles a Mani Task's
-// `kind: .claude(sid)` with whatever claude actually ended up using.
+// SessionStart on every session entry — fresh startup, --resume,
+// /clear, /compact, /fork. session_id is claude's authoritative id;
+// `source` distinguishes the entry kind. The payload reconciles a
+// Mani Task's `kind: .claude(sid)` with whatever claude actually
+// ended up using.
 
 public struct SessionStartPayload: Equatable {
     public enum Source: Equatable {
@@ -41,18 +42,23 @@ public struct SessionStartPayload: Equatable {
     }
 }
 
-// Pure routing: given the current AppState and an incoming SessionStart
-// payload, return the Action that should be dispatched (or nil to ignore).
+// Pure routing: given the current AppState and an incoming
+// SessionStart payload, return the Action that should be dispatched
+// (or nil to ignore).
 //
-// Rules:
-//   - Ignore payloads whose cwd is missing OR is too broad ($HOME or "/").
-//   - Ignore if the matching worktree already tracks this sid.
-//   - source = resume / clear / compact: retarget the most-recently-created
-//     `.claude(*)` Task in the worktree whose sid differs from the payload.
-//   - source = startup: link to the first `.claude(nil)` Task in the
-//     worktree if any; else fall through to discover.
-//   - source = fork / other: discover (creates a sibling Task).
-//   - Fallback: discover.
+// Match priority:
+//   1. The hook's cwd is matched against project workspace paths
+//      first (so an exact match to a Mani-managed project wins).
+//   2. If no project workspace matches, fall back to matching the
+//      hook's cwd against a repo's rootDir or any descendant — that
+//      becomes an external convo under that repo.
+//
+// Rules per source after a project match:
+//   - resume / clear / compact: retarget the most-recently-created
+//     `.claude(*)` Task in the project whose sid differs.
+//   - startup: link to the first `.claude(nil)` Task in the project.
+//   - fork / other: discover as external (a fork creates a sibling
+//     conversation, not a new managed task).
 public func routeSessionStart(
     payload: SessionStartPayload,
     state: AppState,
@@ -61,17 +67,19 @@ public func routeSessionStart(
     guard let cwd = payload.cwd else { return nil }
     let cwdURL = URL(fileURLWithPath: cwd).resolvingSymlinksInPath()
     let tooBroad: Set<String> = [homePathToExclude, "/"]
+    let cwdPath = cwdURL.path
 
+    // Pass 1: exact / descendant match against any project's workspace.
     for repo in state.repos {
-        for worktree in repo.worktrees {
-            let wtPath = worktree.path.resolvingSymlinksInPath().path
-            if tooBroad.contains(wtPath) { continue }
-            guard cwdURL.path == wtPath || cwdURL.path.hasPrefix(wtPath + "/") else {
+        for project in repo.projects {
+            let wsPath = project.workspace.path.resolvingSymlinksInPath().path
+            if tooBroad.contains(wsPath) { continue }
+            guard cwdPath == wsPath || cwdPath.hasPrefix(wsPath + "/") else {
                 continue
             }
-            let wtPathStruct = WorktreePath(repo: repo.id, worktree: worktree.id)
+            let projectPath = ProjectPath(repo: repo.id, project: project.id)
 
-            let alreadyTracked = worktree.tasks.contains { task in
+            let alreadyTracked = project.tasks.contains { task in
                 if case let .claude(sid) = task.kind, sid == payload.sessionId {
                     return true
                 }
@@ -79,7 +87,7 @@ public func routeSessionStart(
             }
             if alreadyTracked { return nil }
 
-            let claudeTasks = worktree.tasks.filter { task in
+            let claudeTasks = project.tasks.filter { task in
                 if case .claude = task.kind { return true }
                 return false
             }
@@ -90,7 +98,7 @@ public func routeSessionStart(
                     in: claudeTasks, sessionId: payload.sessionId
                 ) {
                     let taskPath = TaskPath(
-                        repo: repo.id, worktree: worktree.id, task: target.id
+                        repo: repo.id, project: project.id, task: target.id
                     )
                     return .linkClaudeSession(at: taskPath, sessionId: payload.sessionId)
                 }
@@ -101,21 +109,39 @@ public func routeSessionStart(
                     return false
                 }) {
                     let taskPath = TaskPath(
-                        repo: repo.id, worktree: worktree.id, task: unlinked.id
+                        repo: repo.id, project: project.id, task: unlinked.id
                     )
                     return .linkClaudeSession(at: taskPath, sessionId: payload.sessionId)
                 }
 
             case .fork, .other:
-                break // discover below
+                break
             }
 
-            return .discoverClaudeSession(
-                at: wtPathStruct,
+            // No project-level Task to link/retarget — fall through to
+            // discovery as an external convo under this repo.
+            _ = projectPath
+            return .discoverExternalConvo(
+                repoId: repo.id,
                 sessionId: payload.sessionId,
                 cwd: URL(fileURLWithPath: cwd)
             )
         }
+    }
+
+    // Pass 2: the cwd falls under a repo's rootDir but didn't match
+    // any project. Discover as a repo-level external convo.
+    for repo in state.repos {
+        let rootPath = repo.rootDir.resolvingSymlinksInPath().path
+        if tooBroad.contains(rootPath) { continue }
+        guard cwdPath == rootPath || cwdPath.hasPrefix(rootPath + "/") else {
+            continue
+        }
+        return .discoverExternalConvo(
+            repoId: repo.id,
+            sessionId: payload.sessionId,
+            cwd: URL(fileURLWithPath: cwd)
+        )
     }
     return nil
 }

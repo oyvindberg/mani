@@ -5,15 +5,17 @@ public struct Repo: Codable, Equatable, Identifiable {
     public var name: String
     public var color: String
     public var enabled: Bool
-    // The repo's main path. `git worktree add` and any "where
-    // does this repo live" question resolve from here. The
-    // primary workspace (rendered like any other worktree row in the
-    // sidebar) is the worktree whose `path` equals this rootDir.
+    // The repo's main path. `git worktree add` and any "where does
+    // this repo live" question resolve from here.
     public var rootDir: URL
-    public var worktrees: [Worktree]
+    public var projects: [Project]
+    // Claude conversations discovered outside Mani (via the FSEvents
+    // watcher on ~/.claude/projects). They sit alongside projects
+    // until the user adopts one into a project.
+    public var externalConvos: [ExternalConvo]
     public var createdAt: Date
-    // Optional override for the claude binary invocation used by this
-    // repo's tasks. nil = inherit Settings.claudeInvocation.
+    // Optional override for the claude binary invocation. nil =
+    // inherit Settings.claudeInvocation.
     public var claudeInvocation: String?
 
     public init(
@@ -22,7 +24,8 @@ public struct Repo: Codable, Equatable, Identifiable {
         color: String,
         enabled: Bool,
         rootDir: URL,
-        worktrees: [Worktree],
+        projects: [Project],
+        externalConvos: [ExternalConvo],
         createdAt: Date,
         claudeInvocation: String?
     ) {
@@ -31,59 +34,119 @@ public struct Repo: Codable, Equatable, Identifiable {
         self.color = color
         self.enabled = enabled
         self.rootDir = rootDir
-        self.worktrees = worktrees
+        self.projects = projects
+        self.externalConvos = externalConvos
         self.createdAt = createdAt
         self.claudeInvocation = claudeInvocation
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, color, enabled, rootDir, worktrees, createdAt, claudeInvocation
+        case id, name, color, enabled, rootDir
+        case projects, externalConvos
+        case createdAt, claudeInvocation
     }
 
-    // Backward-compat decode for two historical shapes:
-    //   1. Pre-rootDir-removal: Repo had `rootDir` (this is what
-    //      we're now re-adding) — round-trips cleanly.
-    //   2. Post-rootDir-removal: Repo had no rootDir but each
-    //      Worktree carried a `primary: Bool`. The migration here
-    //      digs that bool out of the raw worktree JSON and uses the
-    //      primary worktree's path as the repo rootDir. If no
-    //      worktree had primary=true, we fall back to the first
-    //      worktree's path. Last resort (no worktrees at all):
-    //      ~/Mani so the field is at least non-empty.
+    // Legacy shape: Repo had `worktrees: [Worktree]`. Each Worktree
+    // had its own tasks list, mixing Mani-spawned and external claude
+    // tasks. The migration here:
+    //   - Each Worktree becomes a Project with the same UUID, name
+    //     defaulted to the workspace dir basename.
+    //   - Mani-spawned tasks stay in Project.tasks.
+    //   - External-claude tasks (spec.command == "(external claude)")
+    //     are pulled out and re-shaped as Repo.externalConvos.
+    private enum LegacyKeys: String, CodingKey {
+        case worktrees
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try c.decode(UUID.self, forKey: .id)
         self.name = try c.decode(String.self, forKey: .name)
         self.color = try c.decode(String.self, forKey: .color)
         self.enabled = try c.decode(Bool.self, forKey: .enabled)
-        self.worktrees = try c.decode([Worktree].self, forKey: .worktrees)
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
         self.claudeInvocation = try? c.decodeIfPresent(String.self, forKey: .claudeInvocation)
+        self.rootDir = try c.decode(URL.self, forKey: .rootDir)
 
-        if let stored = try? c.decodeIfPresent(URL.self, forKey: .rootDir) {
-            self.rootDir = stored
+        if let projects = try c.decodeIfPresent([Project].self, forKey: .projects) {
+            self.projects = projects
+            self.externalConvos = (try? c.decodeIfPresent(
+                [ExternalConvo].self, forKey: .externalConvos
+            )) ?? []
         } else {
-            // Migration from the post-rootDir-removal model: pull
-            // the primary worktree's path out of the raw decode.
-            // We re-parse the worktrees as a permissive dict-of-
-            // dicts so we can read the dropped `primary` field.
-            let rawWorktrees = (try? c.decode([RawWorktree].self, forKey: .worktrees)) ?? []
-            let primaryPath = rawWorktrees.first(where: { $0.primary == true })?.path
-                ?? rawWorktrees.first?.path
-            if let primaryPath {
-                self.rootDir = primaryPath
-            } else {
-                self.rootDir = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent("Mani")
+            let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+            let worktrees = try legacy.decode([LegacyWorktree].self, forKey: .worktrees)
+            var projects: [Project] = []
+            var convos: [ExternalConvo] = []
+            for wt in worktrees {
+                var keep: [Task] = []
+                for t in wt.tasks {
+                    if t.spec.command == "(external claude)",
+                       case let .claude(sid?) = t.kind {
+                        convos.append(ExternalConvo(
+                            id: t.id,
+                            sessionId: sid,
+                            cwd: t.spec.cwd,
+                            firstSeenAt: t.createdAt
+                        ))
+                    } else {
+                        keep.append(t)
+                    }
+                }
+                let kind: WorkspaceKind
+                switch wt.kind {
+                case .folder:
+                    kind = .folder
+                case let .git(branch, baseRef):
+                    kind = .gitWorktree(branch: branch, baseRef: baseRef)
+                }
+                projects.append(Project(
+                    id: wt.id,
+                    name: URL(fileURLWithPath: wt.path.path).lastPathComponent,
+                    workspace: Workspace(path: wt.path, kind: kind, missing: wt.missing),
+                    tasks: keep,
+                    archivedAt: nil,
+                    createdAt: wt.createdAt
+                ))
             }
+            self.projects = projects
+            self.externalConvos = convos
         }
     }
+}
 
-    // Permissive shape used solely by the rootDir-migration path. We
-    // only care about path + primary; everything else is decoded by
-    // the real Worktree initializer.
-    private struct RawWorktree: Decodable {
-        let path: URL
-        let primary: Bool?
+// Decode-only shadow of the pre-refactor Worktree. Used by the Repo
+// migration path; the real Worktree type is gone.
+private struct LegacyWorktree: Decodable {
+    let id: UUID
+    let path: URL
+    let kind: LegacyKind
+    let missing: Bool
+    let tasks: [Task]
+    let createdAt: Date
+
+    enum LegacyKind: Codable, Equatable {
+        case folder
+        case git(branch: String, baseRef: String?)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, path, kind, missing, tasks, createdAt
+    }
+    private enum LegacyTasksKeys: String, CodingKey { case jobs }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.path = try c.decode(URL.self, forKey: .path)
+        self.kind = try c.decode(LegacyKind.self, forKey: .kind)
+        self.missing = try c.decode(Bool.self, forKey: .missing)
+        self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+        if let t = try c.decodeIfPresent([Task].self, forKey: .tasks) {
+            self.tasks = t
+        } else {
+            let legacy = try decoder.container(keyedBy: LegacyTasksKeys.self)
+            self.tasks = (try? legacy.decodeIfPresent([Task].self, forKey: .jobs)) ?? []
+        }
     }
 }

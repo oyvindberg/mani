@@ -35,19 +35,19 @@ struct ReadyClaudesBar: View {
     }
 
     // Aggregate signals across the whole AppState. Recomputed on
-    // every body invocation; cheap (O(repos × worktrees × tasks))
+    // every body invocation; cheap (O(repos × projects × tasks))
     // and SwiftUI only invokes body when its observed sources change.
     private var readyEntries: [ReadyEntry] {
         var out: [ReadyEntry] = []
         for repo in store.state.repos {
-            for worktree in repo.worktrees {
-                for task in worktree.tasks {
+            for project in repo.projects {
+                for task in project.tasks {
                     guard case let .claude(sid) = task.kind, let sid else { continue }
                     if activityTracker.isThinking(sid: sid) { continue }
                     guard task.unread > 0 else { continue }
                     out.append(ReadyEntry(
                         repo: repo,
-                        worktree: worktree,
+                        project: project,
                         task: task,
                         sessionId: sid,
                         settledAt: activityTracker.settledAt[sid],
@@ -68,8 +68,8 @@ struct ReadyClaudesBar: View {
     private var thinkingCount: Int {
         var n = 0
         for repo in store.state.repos {
-            for worktree in repo.worktrees {
-                for task in worktree.tasks {
+            for project in repo.projects {
+                for task in project.tasks {
                     guard case let .claude(sid) = task.kind, let sid else { continue }
                     if activityTracker.isThinking(sid: sid) { n += 1 }
                 }
@@ -114,7 +114,7 @@ struct ReadyClaudesBar: View {
         let entries = readyEntries
         if !entries.isEmpty {
             let tip = entries
-                .map { "\($0.repo.name) › \($0.worktree.displayName) › \($0.task.name)" }
+                .map { "\($0.repo.name) › \($0.project.name) › \($0.task.name)" }
                 .joined(separator: "\n")
             HStack(spacing: 3) {
                 Image(systemName: "bell.badge.fill")
@@ -133,7 +133,7 @@ struct ReadyClaudesBar: View {
 // composable: ReadyPill stays a pure renderer with no env deps.
 struct ReadyEntry {
     let repo: Repo
-    let worktree: Worktree
+    let project: Project
     let task: Task
     let sessionId: String
     let settledAt: Date?
@@ -182,7 +182,7 @@ private struct ReadyPill: View {
         .onChange(of: entry.isJustReady) { _, newValue in
             animatePulse = newValue
         }
-        .help("\(entry.repo.name) › \(entry.worktree.displayName) › \(entry.task.name)")
+        .help("\(entry.repo.name) › \(entry.project.name) › \(entry.task.name)")
     }
 }
 

@@ -4,61 +4,59 @@ public enum Action {
     // MARK: Repo
     case createRepo(name: String, color: String, rootDir: URL)
     case renameRepo(id: UUID, name: String)
-    case setProjectEnabled(id: UUID, enabled: Bool)
-    case setProjectColor(id: UUID, color: String)
-    case setProjectClaudeInvocation(id: UUID, invocation: String?)
-    // Promote the worktree at this path to be the repo's rootDir.
-    case setProjectRootDir(at: WorktreePath)
+    case setRepoEnabled(id: UUID, enabled: Bool)
+    case setRepoColor(id: UUID, color: String)
+    case setRepoClaudeInvocation(id: UUID, invocation: String?)
+    case setRepoRootDir(at: ProjectPath)
     case deleteRepo(id: UUID)
 
-    // MARK: Worktree
-    case createWorktree(repoId: UUID, kind: WorktreeKind, path: URL)
-    case setWorktreeEnabled(at: WorktreePath, enabled: Bool)
-    case markWorktreeMissing(at: WorktreePath)
-    case deleteWorktree(at: WorktreePath)
+    // MARK: Project
+    // `workspace` may point at an existing user-chosen folder or at a
+    // path Mani is about to create via `git worktree add`. The reducer
+    // emits a createGitWorktree effect when workspace.kind is
+    // .gitWorktree, otherwise it trusts the caller to have already
+    // verified the directory exists.
+    case createProject(repoId: UUID, name: String, workspace: Workspace)
+    case renameProject(at: ProjectPath, name: String)
+    case archiveProject(at: ProjectPath)
+    case unarchiveProject(at: ProjectPath)
+    case markProjectWorkspaceMissing(at: ProjectPath)
+    case deleteProject(at: ProjectPath)
 
     // MARK: Task
     // `autoSelect: true` is the user-initiated path — the new task
     // becomes the focused selection. `false` keeps the current
-    // selection (used by boot-time diff-task creators that mustn't
-    // yank focus from whatever the user last had open).
-    case createTask(at: WorktreePath, name: String, kind: TaskKind, spec: ProcessSpec, autoSelect: Bool)
+    // selection (used by background creators that mustn't yank focus
+    // from whatever the user last had open).
+    case createTask(at: ProjectPath, name: String, kind: TaskKind, spec: ProcessSpec, autoSelect: Bool)
     case setTaskEnabled(at: TaskPath, enabled: Bool)
     case renameTask(at: TaskPath, name: String)
     case deleteTask(at: TaskPath)
     case completeTask(at: TaskPath)
     case linkClaudeSession(at: TaskPath, sessionId: String)
-    // Externally-running claude session discovered via the FSEvents watcher.
-    // Creates a Task with runtime = .neverStarted (we don't own the process).
-    case discoverClaudeSession(at: WorktreePath, sessionId: String, cwd: URL)
     case bumpUnread(at: TaskPath, by: Int)
     case markRead(at: TaskPath)
-    // Re-spawn the agent for this Task with the current spec. Used by the
-    // "Restart" button on a stopped task. New spec (for claude tasks that
-    // need re-resolved --resume) flows via setTaskSpec first if needed.
     case restartTask(at: TaskPath)
-    // Overwrite a Task's spec in place. Used by the Restart button on
-    // claude tasks so we re-derive `claude --resume <sid>` against the
-    // current repo/settings invocation rather than reusing a stale
-    // persisted spec.
     case setTaskSpec(at: TaskPath, spec: ProcessSpec)
 
+    // MARK: External convos
+    // Discovered via the FSEvents watcher on ~/.claude/projects. The
+    // matched repo is identified by cwd ⊆ repo.rootDir.
+    case discoverExternalConvo(repoId: UUID, sessionId: String, cwd: URL)
+    case dismissExternalConvo(at: ExternalConvoPath)
+    // Adopt an external convo into a project: spawn a Mani-managed
+    // claude agent that --resumes the sid, and remove the convo
+    // from the external list.
+    case adoptExternalConvo(at: ExternalConvoPath, into: ProjectPath, name: String)
+
     // MARK: Selection
-    // Currently focused task in the UI. nil deselects. The reducer also
-    // auto-emits selection changes when the selected task is created,
-    // deleted, or its containing worktree/repo is deleted.
+    // Currently focused task in the UI. nil deselects. The reducer
+    // also auto-emits selection changes when the selected task,
+    // its project, or its repo is deleted.
     case selectTask(at: TaskPath?)
 
     // MARK: Runtime lifecycle (dispatched by EffectRunner / boot reconcile)
-    // The agent for this Task has been spawned; reducer flips runtime
-    // to .running.
     case taskSpawned(at: TaskPath, when: Date)
-    // The agent for this Task has exited (or its socket has gone away).
-    // Reducer flips runtime to .exited. May be dispatched by:
-    //   - The AgentClient's onExit (identity-checked).
-    //   - Any UI code that observes connect refused / EOF on first attach.
-    //   - Boot reconciliation, for tasks in state with runtime = .running
-    //     but no live agent on disk.
     case taskExited(at: TaskPath, when: Date, code: Int32)
 
     // MARK: Settings

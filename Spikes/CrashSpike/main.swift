@@ -37,34 +37,38 @@ func randomAction(state: AppState, rng: inout LCG) -> Action? {
 
     let repo = state.repos[Int(rng.next() % UInt64(state.repos.count))]
 
-    if repo.worktrees.isEmpty || r < 45 {
+    if repo.projects.isEmpty || r < 45 {
         let id = rng.next() % 100_000
-        return .createWorktree(
+        return .createProject(
             repoId: repo.id,
-            kind: .folder,
-            path: URL(fileURLWithPath: "/tmp/w\(id)")
+            name: "p\(id)",
+            workspace: Workspace(
+                path: URL(fileURLWithPath: "/tmp/w\(id)"),
+                kind: .folder,
+                missing: false
+            )
         )
     }
 
-    let worktree = repo.worktrees[Int(rng.next() % UInt64(repo.worktrees.count))]
-    let wtPath = WorktreePath(repo: repo.id, worktree: worktree.id)
+    let project = repo.projects[Int(rng.next() % UInt64(repo.projects.count))]
+    let projectPath = ProjectPath(repo: repo.id, project: project.id)
 
-    if worktree.tasks.isEmpty || r < 70 {
+    if project.tasks.isEmpty || r < 70 {
         let spec = ProcessSpec(
             command: "/bin/zsh", args: [], env: [:],
             cwd: URL(fileURLWithPath: "/tmp"),
             initialInput: nil
         )
-        return .createTask(at: wtPath, name: "t", kind: .shell, spec: spec, autoSelect: false)
+        return .createTask(at: projectPath, name: "t", kind: .shell, spec: spec, autoSelect: false)
     }
 
-    let task = worktree.tasks[Int(rng.next() % UInt64(worktree.tasks.count))]
-    let taskPath = TaskPath(repo: repo.id, worktree: worktree.id, task: task.id)
+    let task = project.tasks[Int(rng.next() % UInt64(project.tasks.count))]
+    let taskPath = TaskPath(repo: repo.id, project: project.id, task: task.id)
 
     if r < 78 { return .completeTask(at: taskPath) }
     if r < 84 { return .renameRepo(id: repo.id, name: "renamed-\(rng.next() % 1000)") }
-    if r < 89 { return .markWorktreeMissing(at: wtPath) }
-    if r < 94 { return .deleteWorktree(at: wtPath) }
+    if r < 89 { return .markProjectWorkspaceMissing(at: projectPath) }
+    if r < 94 { return .deleteProject(at: projectPath) }
     return .deleteRepo(id: repo.id)
 }
 
@@ -83,14 +87,14 @@ func validate(_ state: AppState) -> [String] {
         if !repo.createdAt.timeIntervalSince1970.isFinite {
             errors.append("repo \(repo.id) createdAt non-finite")
         }
-        for worktree in repo.worktrees {
-            if !ids.insert(worktree.id).inserted {
-                errors.append("dup worktree id \(worktree.id)")
+        for project in repo.projects {
+            if !ids.insert(project.id).inserted {
+                errors.append("dup project id \(project.id)")
             }
-            if !worktree.createdAt.timeIntervalSince1970.isFinite {
-                errors.append("worktree \(worktree.id) createdAt non-finite")
+            if !project.createdAt.timeIntervalSince1970.isFinite {
+                errors.append("project \(project.id) createdAt non-finite")
             }
-            for task in worktree.tasks {
+            for task in project.tasks {
                 if !ids.insert(task.id).inserted {
                     errors.append("dup task id \(task.id)")
                 }

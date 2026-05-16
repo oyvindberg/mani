@@ -62,9 +62,9 @@ final class SessionArchiveCache: ObservableObject {
         entriesByRepo[repoId] ?? []
     }
 
-    // Split a repo's entries into "originating worktree still
-    // present" vs. "archived worktree". The caller (sidebar) passes
-    // the live worktree paths; this is recomputed on every render so
+    // Split a repo's entries into "originating project still
+    // present" vs. "archived project". The caller (sidebar) passes
+    // the live project paths; this is recomputed on every render so
     // it always reflects current state.
     func entriesByPresence(
         for repoId: UUID, worktreePaths: [String]
