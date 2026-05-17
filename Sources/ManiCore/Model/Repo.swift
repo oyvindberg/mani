@@ -102,7 +102,12 @@ public struct Repo: Codable, Equatable, Identifiable {
                 }
                 projects.append(Project(
                     id: wt.id,
-                    name: URL(fileURLWithPath: wt.path.path).lastPathComponent,
+                    // Default to "wip" so migrated entries get a
+                    // placeholder name. The directory basename was a
+                    // poor default — the new model treats a project
+                    // as a unit of user intent, not a folder mirror,
+                    // and the user should rename to reflect that.
+                    name: "wip",
                     workspace: Workspace(path: wt.path, kind: kind, missing: wt.missing),
                     tasks: keep,
                     archivedAt: nil,

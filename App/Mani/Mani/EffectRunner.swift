@@ -270,8 +270,42 @@ actor EffectRunner {
                 baseRef: baseRef
             )
 
+        case let .fetchAndResetToDefault(at):
+            await Self.runFetchAndResetToDefault(at: at)
+
         case .watchClaudeProjects:
             break
+        }
+    }
+
+    // git fetch then `git reset --hard origin/<default>` where
+    // <default> is main if it exists on origin, else master. No-op
+    // (with a log) if the dir isn't a git checkout or neither branch
+    // is on origin — archiving a non-git workspace shouldn't error.
+    private static func runFetchAndResetToDefault(at path: URL) async {
+        let gitDir = path.appendingPathComponent(".git")
+        guard FileManager.default.fileExists(atPath: gitDir.path) else {
+            NSLog("[mani] archive fetch+reset skipped: \(path.path) is not a git checkout")
+            return
+        }
+        let fetch = await runGit(args: ["fetch", "--prune"], cwd: path)
+        if fetch.exit != 0 {
+            NSLog("[mani] archive fetch failed exit=\(fetch.exit) stderr=\(fetch.stderr)")
+            return
+        }
+        let mainExists = await runGit(args: ["show-ref", "--verify", "--quiet", "refs/remotes/origin/main"], cwd: path)
+        let masterExists = await runGit(args: ["show-ref", "--verify", "--quiet", "refs/remotes/origin/master"], cwd: path)
+        let target: String?
+        if mainExists.exit == 0 { target = "origin/main" }
+        else if masterExists.exit == 0 { target = "origin/master" }
+        else { target = nil }
+        guard let target else {
+            NSLog("[mani] archive reset skipped: neither origin/main nor origin/master exists at \(path.path)")
+            return
+        }
+        let reset = await runGit(args: ["reset", "--hard", target], cwd: path)
+        if reset.exit != 0 {
+            NSLog("[mani] archive reset failed exit=\(reset.exit) stderr=\(reset.stderr)")
         }
     }
 

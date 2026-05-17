@@ -10,6 +10,11 @@ struct ContentView: View {
     @State private var showingNewWorktree = false
     @State private var showingNewTask = false
     @State private var showingSearch = false
+    // Selecting an external convo in the sidebar opens its detail
+    // view (with an Adopt button). Mutually exclusive with task
+    // selection — picking one clears the other. View-local for now;
+    // can be promoted to reducer state later if needed.
+    @State private var selectedExternalConvoId: UUID?
 
     // Selection is reducer-owned in `store.state.selectedTaskPath`.
     // These helpers expose it as the UUID-keyed view the sidebar /
@@ -25,18 +30,42 @@ struct ContentView: View {
         } else {
             path = nil
         }
+        selectedExternalConvoId = nil
         _Concurrency.Task { await store.dispatch(.selectTask(at: path)) }
     }
 
     private func selectTask(at path: TaskPath?) {
+        selectedExternalConvoId = nil
         _Concurrency.Task { await store.dispatch(.selectTask(at: path)) }
+    }
+
+    private func selectExternalConvo(_ convoId: UUID?) {
+        selectedExternalConvoId = convoId
+        if convoId != nil {
+            _Concurrency.Task { await store.dispatch(.selectTask(at: nil)) }
+        }
+    }
+
+    // Find the (repo, convo) for the currently-selected external
+    // convo id. Returns nil if the id no longer exists in state
+    // (the convo was dismissed or adopted).
+    private func selectedExternalConvo() -> (Repo, ExternalConvo)? {
+        guard let id = selectedExternalConvoId else { return nil }
+        for repo in store.state.repos {
+            if let convo = repo.externalConvos.first(where: { $0.id == id }) {
+                return (repo, convo)
+            }
+        }
+        return nil
     }
 
     var body: some View {
         NavigationSplitView {
             SidebarView(
                 selectedJobId: selectedJobId,
-                onSelect: { taskId in selectTask(taskId: taskId) }
+                selectedExternalConvoId: selectedExternalConvoId,
+                onSelect: { taskId in selectTask(taskId: taskId) },
+                onSelectConvo: { convoId in selectExternalConvo(convoId) }
             )
                 .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 400)
                 .toolbar {
@@ -56,7 +85,29 @@ struct ContentView: View {
                     }
                 }
         } detail: {
-            if let path = selectedJobPath, let context = breadcrumbContext() {
+            if let (repo, convo) = selectedExternalConvo() {
+                VStack(spacing: 0) {
+                    Rectangle()
+                        .fill(SwiftUI.Color(hex: repo.color))
+                        .frame(height: 7)
+                    HStack(spacing: 4) {
+                        Text(repo.name)
+                            .foregroundStyle(SwiftUI.Color(hex: repo.color))
+                        Text("›").foregroundStyle(.secondary)
+                        Text("external convo")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .font(.system(size: 12))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    Divider()
+                    ExternalConvoView(repo: repo, convo: convo, onAdopted: {
+                        selectedExternalConvoId = nil
+                    })
+                    .id(convo.id)
+                }
+            } else if let path = selectedJobPath, let context = breadcrumbContext() {
                 VStack(spacing: 0) {
                     Rectangle()
                         .fill(SwiftUI.Color(hex: context.repo.color))
@@ -91,6 +142,10 @@ struct ContentView: View {
                     .font(.system(size: 12))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
+                    WorkspaceInfoBar(
+                        repo: context.repo,
+                        project: context.project
+                    )
                     Divider()
                     if isExternalClaudeTask(context.task) {
                         ExternalClaudeView(
@@ -362,12 +417,21 @@ struct SidebarView: View {
     @EnvironmentObject var archiveCache: SessionArchiveCache
     @EnvironmentObject var activityTracker: TaskActivityTracker
     let selectedJobId: UUID?
+    let selectedExternalConvoId: UUID?
     let onSelect: (UUID?) -> Void
+    let onSelectConvo: (UUID?) -> Void
     @State private var resumeContext: ResumeContext?
     @State private var renameContext: RenameContext?
-    @State private var collapsedProjects: Set<UUID> = []
-    @State private var collapsedWorktrees: Set<UUID> = []
-    @State private var expandedPastSessions: Set<UUID> = []
+    @State private var renameProjectContext: RenameProjectContext?
+    @State private var renameRepoContext: RenameRepoContext?
+    @State private var collapsedRepos: Set<UUID> = []
+    // External convo folders default-collapsed too, mirroring projects.
+    @State private var expandedExternalConvoFolders: Set<UUID> = []
+    @State private var expandedFinishedFolders: Set<UUID> = []
+    // Projects are collapsed by default. Empty set = none expanded =
+    // every project starts closed. The user opens what they're
+    // actively touching.
+    @State private var expandedProjects: Set<UUID> = []
     @State private var expandedArchivedProjects: Set<UUID> = []
     @State private var colorPickerProjectId: UUID?
     @State private var newWorktreeForRepo: Repo?
@@ -382,6 +446,18 @@ struct SidebarView: View {
     struct RenameContext: Identifiable {
         let id = UUID()
         let taskPath: TaskPath
+        let currentName: String
+    }
+
+    struct RenameProjectContext: Identifiable {
+        let id = UUID()
+        let projectPath: ProjectPath
+        let currentName: String
+    }
+
+    struct RenameRepoContext: Identifiable {
+        let id = UUID()
+        let repoId: UUID
         let currentName: String
     }
 
@@ -447,6 +523,28 @@ struct SidebarView: View {
                 isPresented: Binding(
                     get: { renameContext != nil },
                     set: { if !$0 { renameContext = nil } }
+                )
+            )
+        }
+        .sheet(item: $renameProjectContext) { ctx in
+            RenameProjectSheet(
+                store: store,
+                projectPath: ctx.projectPath,
+                currentName: ctx.currentName,
+                isPresented: Binding(
+                    get: { renameProjectContext != nil },
+                    set: { if !$0 { renameProjectContext = nil } }
+                )
+            )
+        }
+        .sheet(item: $renameRepoContext) { ctx in
+            RenameRepoSheet(
+                store: store,
+                repoId: ctx.repoId,
+                currentName: ctx.currentName,
+                isPresented: Binding(
+                    get: { renameRepoContext != nil },
+                    set: { if !$0 { renameRepoContext = nil } }
                 )
             )
         }
@@ -518,6 +616,12 @@ struct SidebarView: View {
     @ViewBuilder
     private func projectMenu(repo: Repo, project: Project) -> some View {
         let path = ProjectPath(repo: repo.id, project: project.id)
+        Button("Rename project…") {
+            renameProjectContext = RenameProjectContext(
+                projectPath: path, currentName: project.name
+            )
+        }
+        Divider()
         Button("New shell here") {
             _Concurrency.Task {
                 await Self.spawnShell(at: path, cwd: project.workspace.path, store: store)
@@ -725,7 +829,7 @@ struct SidebarView: View {
             if case .diff = task.kind { return false }
             return true
         }
-        let repoExpanded = !collapsedProjects.contains(repo.id)
+        let repoExpanded = !collapsedRepos.contains(repo.id)
         let color = SwiftUI.Color(hex: repo.color)
         return HStack(spacing: 0) {
             // Single continuous color bar spans the entire repo
@@ -745,14 +849,20 @@ struct SidebarView: View {
                     anyChildJustReady: repoAnyJustReady(repo)
                 ) {
                     withAnimation(.easeInOut(duration: 0.15)) {
-                        if repoExpanded { collapsedProjects.insert(repo.id) }
-                        else { collapsedProjects.remove(repo.id) }
+                        if repoExpanded { collapsedRepos.insert(repo.id) }
+                        else { collapsedRepos.remove(repo.id) }
                     }
+                } onRename: {
+                    renameRepoContext = RenameRepoContext(
+                        repoId: repo.id, currentName: repo.name
+                    )
                 } onContextMenu: {
                     AnyView(repoMenu(repo: repo))
                 }
                 if repoExpanded {
-                    ForEach(Array(repo.projects.enumerated()), id: \.element.id) { idx, project in
+                    let active = repo.projects.filter { !$0.isArchived }
+                    let archived = repo.projects.filter { $0.isArchived }
+                    ForEach(Array(active.enumerated()), id: \.element.id) { idx, project in
                         if idx > 0 {
                             Rectangle()
                                 .fill(color.opacity(0.22))
@@ -760,6 +870,22 @@ struct SidebarView: View {
                                 .padding(.leading, 6)
                         }
                         worktreeGroup(repo: repo, project: project)
+                    }
+                    // Orphan external convos: cwd doesn't fall inside
+                    // any current project's workspace. Surface at
+                    // repo level so they're not lost.
+                    let orphans = orphanConvos(repo: repo)
+                    if !orphans.isEmpty {
+                        externalConvosFolder(
+                            repo: repo,
+                            folderId: repo.id,
+                            title: "External convos (no matching workspace)",
+                            convos: orphans,
+                            indent: 12
+                        )
+                    }
+                    if !archived.isEmpty {
+                        finishedProjectsFolder(repo: repo, archived: archived)
                     }
                     archivedWorktreesGroup(repo: repo)
                 }
@@ -870,7 +996,7 @@ struct SidebarView: View {
             if case .diff = $0.kind { return true }
             return false
         })?.id
-        let worktreeExpanded = !collapsedWorktrees.contains(project.id)
+        let worktreeExpanded = expandedProjects.contains(project.id)
         let visibleTasks = project.tasks.filter { task in
             if case .diff = task.kind { return false }
             return true
@@ -888,9 +1014,13 @@ struct SidebarView: View {
                 anyChildJustReady: worktreeAnyJustReady(project)
             ) {
                 withAnimation(.easeInOut(duration: 0.15)) {
-                    if worktreeExpanded { collapsedWorktrees.insert(project.id) }
-                    else { collapsedWorktrees.remove(project.id) }
+                    if worktreeExpanded { expandedProjects.remove(project.id) }
+                    else { expandedProjects.insert(project.id) }
                 }
+            } onRename: {
+                renameProjectContext = RenameProjectContext(
+                    projectPath: wtPath, currentName: project.name
+                )
             } onSelectDiff: {
                 if let diffJobId { onSelect(diffJobId) }
             } onNewShell: {
@@ -905,23 +1035,35 @@ struct SidebarView: View {
                 AnyView(projectMenu(repo: repo, project: project))
             }
             if worktreeExpanded {
-                let (managed, externals) = partitionVisibleTasks(visibleTasks)
-                ForEach(managed) { task in
+                ForEach(visibleTasks) { task in
                     TaskRow(
                         repo: repo,
                         task: task,
                         selected: selectedJobId == task.id
                     ) {
                         onSelect(task.id)
+                    } onRename: {
+                        let taskPath = TaskPath(
+                            repo: repo.id, project: project.id, task: task.id
+                        )
+                        renameContext = RenameContext(
+                            taskPath: taskPath, currentName: task.name
+                        )
                     } onContextMenu: {
                         AnyView(taskMenu(repo: repo, project: project, task: task))
                     }
                 }
-                if !externals.isEmpty {
-                    pastSessionsGroup(
+                // External convos whose cwd falls inside THIS project's
+                // workspace: render here so they live with the project
+                // they came from.
+                let inProject = convosForProject(repo: repo, project: project)
+                if !inProject.isEmpty {
+                    externalConvosFolder(
                         repo: repo,
-                        project: project,
-                        externals: externals
+                        folderId: project.id,
+                        title: "External convos",
+                        convos: inProject,
+                        indent: 24
                     )
                 }
             }
@@ -979,29 +1121,44 @@ struct SidebarView: View {
         repo.projects.contains { worktreeAnyJustReady($0) }
     }
 
-    // Split tasks into "managed" (Mani-spawned, full-row treatment) and
-    // "external" (discovered claude transcripts that go under a compact
-    // collapsible). External marker: command is "(external claude)".
-    private func partitionVisibleTasks(_ tasks: [Task]) -> ([Task], [Task]) {
-        var managed: [Task] = []
-        var externals: [Task] = []
-        for task in tasks {
-            if task.spec.command == "(external claude)" {
-                externals.append(task)
-            } else {
-                managed.append(task)
-            }
+    // External convos whose cwd falls inside the given project's
+    // workspace (or any descendant directory). Used to nest the convo
+    // rows under the project they originated from.
+    private func convosForProject(repo: Repo, project: Project) -> [ExternalConvo] {
+        let wsPath = project.workspace.path.resolvingSymlinksInPath().path
+        return repo.externalConvos.filter { convo in
+            let cwdPath = convo.cwd.resolvingSymlinksInPath().path
+            return cwdPath == wsPath || cwdPath.hasPrefix(wsPath + "/")
         }
-        return (managed, externals)
     }
 
+    // External convos whose cwd matches NO current project workspace.
+    // Rendered at the repo level so a convo from a removed worktree
+    // (or one never tracked) doesn't vanish.
+    private func orphanConvos(repo: Repo) -> [ExternalConvo] {
+        let workspacePaths = repo.projects.map {
+            $0.workspace.path.resolvingSymlinksInPath().path
+        }
+        return repo.externalConvos.filter { convo in
+            let cwdPath = convo.cwd.resolvingSymlinksInPath().path
+            return !workspacePaths.contains { wsPath in
+                cwdPath == wsPath || cwdPath.hasPrefix(wsPath + "/")
+            }
+        }
+    }
+
+    // Collapsible folder of ExternalConvoRows. Used by both the
+    // in-project nesting (matched convos) and the repo-level
+    // orphan group.
     @ViewBuilder
-    private func pastSessionsGroup(
+    private func externalConvosFolder(
         repo: Repo,
-        project: Project,
-        externals: [Task]
+        folderId: UUID,
+        title: String,
+        convos: [ExternalConvo],
+        indent: CGFloat
     ) -> some View {
-        let isExpanded = expandedPastSessions.contains(project.id)
+        let isExpanded = expandedExternalConvoFolders.contains(folderId)
         HStack(spacing: 6) {
             Image(systemName: "chevron.right")
                 .font(.system(size: 9, weight: .semibold))
@@ -1011,53 +1168,101 @@ struct SidebarView: View {
             Image(systemName: "clock.arrow.circlepath")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
-            Text("Past sessions")
+            Text(title)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            Text("(\(externals.count))")
+            Text("(\(convos.count))")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
             Spacer()
         }
-        .padding(.leading, 24)
+        .padding(.leading, indent)
         .padding(.trailing, 10)
         .padding(.vertical, 2)
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.15)) {
-                if isExpanded { expandedPastSessions.remove(project.id) }
-                else { expandedPastSessions.insert(project.id) }
+                if isExpanded { expandedExternalConvoFolders.remove(folderId) }
+                else { expandedExternalConvoFolders.insert(folderId) }
             }
         }
         if isExpanded {
-            // Sort externals newest-first by lastMessageAt (from the
-            // info cache); fall back to UUID order otherwise.
+            // Sort newest-first by the info-cache lastMessageAt.
             let cache = ExternalSessionInfoCache.shared
-            let sorted = externals.sorted { a, b in
-                let aSid: String? = {
-                    if case let .claude(s) = a.kind { return s }
-                    return nil
-                }()
-                let bSid: String? = {
-                    if case let .claude(s) = b.kind { return s }
-                    return nil
-                }()
-                let aWhen = aSid.flatMap { cache.entries[$0]?.lastMessageAt }
-                    ?? .distantPast
-                let bWhen = bSid.flatMap { cache.entries[$0]?.lastMessageAt }
-                    ?? .distantPast
+            let sorted = convos.sorted { a, b in
+                let aWhen = cache.entries[a.sessionId]?.lastMessageAt ?? .distantPast
+                let bWhen = cache.entries[b.sessionId]?.lastMessageAt ?? .distantPast
                 return aWhen > bWhen
             }
-            ForEach(sorted) { task in
-                PastSessionRow(
+            ForEach(sorted) { convo in
+                ExternalConvoRow(
                     repo: repo,
-                    task: task,
-                    selected: selectedJobId == task.id
-                ) {
-                    onSelect(task.id)
-                } onContextMenu: {
-                    AnyView(taskMenu(repo: repo, project: project, task: task))
-                }
+                    convo: convo,
+                    selected: selectedExternalConvoId == convo.id,
+                    onTap: { onSelectConvo(convo.id) },
+                    onContextMenu: {
+                        AnyView(externalConvoMenu(repo: repo, convo: convo))
+                    },
+                    indent: indent + 8
+                )
+            }
+        }
+    }
+
+    // Collapsible folder of archived (finished) projects under a
+    // repo. Same shape as externalConvosFolder but the rows are
+    // regular project rows so the user can still drill in to read
+    // task scrollback or unarchive.
+    @ViewBuilder
+    private func finishedProjectsFolder(repo: Repo, archived: [Project]) -> some View {
+        let isExpanded = expandedFinishedFolders.contains(repo.id)
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.tertiary)
+                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                .frame(width: 10)
+            Image(systemName: "archivebox")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Text("Finished projects")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text("(\(archived.count))")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Spacer()
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 10)
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                if isExpanded { expandedFinishedFolders.remove(repo.id) }
+                else { expandedFinishedFolders.insert(repo.id) }
+            }
+        }
+        if isExpanded {
+            // Newest-archived first so the recently-finished item is
+            // at the top of the section.
+            let sorted = archived.sorted {
+                ($0.archivedAt ?? .distantPast) > ($1.archivedAt ?? .distantPast)
+            }
+            ForEach(sorted) { project in
+                worktreeGroup(repo: repo, project: project)
+                    .padding(.leading, 12)
+                    .opacity(0.7)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func externalConvoMenu(repo: Repo, convo: ExternalConvo) -> some View {
+        Button("Dismiss") {
+            let path = ExternalConvoPath(repo: repo.id, convo: convo.id)
+            _Concurrency.Task {
+                await store.dispatch(.dismissExternalConvo(at: path))
             }
         }
     }
@@ -1286,7 +1491,7 @@ private struct ExternalClaudeView: View {
             .split(separator: "/", omittingEmptySubsequences: true)
             .joined(separator: "-")
         return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/repos")
+            .appendingPathComponent(".claude/projects")
             .appendingPathComponent(slug)
             .appendingPathComponent("\(sid).jsonl")
     }
@@ -1522,6 +1727,11 @@ struct TerminalPane: NSViewRepresentable {
         private var renderer: LibGhosttyRenderer?
         private weak var pty: TaskIO?
         private var taskPath: TaskPath?
+        private var keyMonitor: Any?
+
+        deinit {
+            if let monitor = keyMonitor { NSEvent.removeMonitor(monitor) }
+        }
 
         func attach(renderer: LibGhosttyRenderer, store: Store, taskPath: TaskPath) {
             self.renderer = renderer
@@ -1538,6 +1748,7 @@ struct TerminalPane: NSViewRepresentable {
                     )
                 }
             }
+            installKeyMonitor()
 
             _Concurrency.Task {
                 for _ in 0..<200 {
@@ -1546,6 +1757,33 @@ struct TerminalPane: NSViewRepresentable {
                         return
                     }
                     try? await _Concurrency.Task.sleep(nanoseconds: 25_000_000)
+                }
+            }
+        }
+
+        // fn+Up / fn+Down → scroll the terminal's scrollback instead
+        // of forwarding PageUp/PageDown to the inner shell. macOS
+        // delivers fn+Up as `specialKey == .pageUp` with the
+        // `.function` modifier set — we gate on the modifier so a
+        // bare PageUp (from a keyboard with a dedicated PgUp key)
+        // still reaches the inner process.
+        private func installKeyMonitor() {
+            guard keyMonitor == nil else { return }
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self,
+                      let renderer = self.renderer,
+                      event.window?.firstResponder === renderer.view,
+                      event.modifierFlags.contains(.function)
+                else { return event }
+                switch event.specialKey {
+                case .pageUp:
+                    renderer.performBindingAction("scroll_page_up")
+                    return nil
+                case .pageDown:
+                    renderer.performBindingAction("scroll_page_down")
+                    return nil
+                default:
+                    return event
                 }
             }
         }
@@ -1582,6 +1820,233 @@ struct TerminalPane: NSViewRepresentable {
                 return nil
             }
             return data
+        }
+    }
+}
+
+// MARK: - Workspace info bar
+
+// Thin info strip below the breadcrumb. Surfaces the things that
+// used to clutter the sidebar — workspace path, current git branch,
+// ahead/behind, dirty marker. Click the path to reveal the workspace
+// in Finder.
+private struct WorkspaceInfoBar: View {
+    let repo: Repo
+    let project: Project
+    @ObservedObject private var statsCache = WorktreeStatsCache.shared
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting(
+                    [project.workspace.path]
+                )
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10))
+                    Text(displayPath)
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Reveal in Finder — \(project.workspace.path.path)")
+            if project.workspace.path == repo.rootDir {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.yellow)
+                    .help("Repo root")
+            }
+            if project.workspace.missing {
+                HStack(spacing: 3) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                    Text("missing")
+                }
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
+            if let stats = statsCache.stats[project.id] {
+                if let branch = stats.branch {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 10))
+                        Text(branch)
+                            .font(.caption.monospaced())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                if stats.ahead > 0 {
+                    Text("↑\(stats.ahead)")
+                        .font(.caption.monospaced().weight(.medium))
+                        .foregroundStyle(.green)
+                        .help("Commits ahead of \(stats.upstream ?? "upstream")")
+                }
+                if stats.behind > 0 {
+                    Text("↓\(stats.behind)")
+                        .font(.caption.monospaced().weight(.medium))
+                        .foregroundStyle(.orange)
+                        .help("Commits behind \(stats.upstream ?? "upstream")")
+                }
+                if stats.hasUncommitted {
+                    HStack(spacing: 3) {
+                        Image(systemName: "pencil.tip")
+                            .font(.system(size: 10))
+                        Text("dirty")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.yellow)
+                    .help("Uncommitted changes")
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+    }
+
+    // Show the path tilde-collapsed if it's under $HOME — easier to
+    // scan than a full absolute path for the usual case.
+    private var displayPath: String {
+        let raw = project.workspace.path.path
+        let home = NSHomeDirectory()
+        if raw == home { return "~" }
+        if raw.hasPrefix(home + "/") {
+            return "~" + raw.dropFirst(home.count)
+        }
+        return raw
+    }
+}
+
+// MARK: - External convo detail view
+
+// Shown in the detail pane when an external convo is selected in the
+// sidebar. Surfaces the session metadata from the FSEvents-watcher
+// cache and offers an Adopt button. Adoption spawns a Mani-managed
+// `claude --resume <sid>` against a target project and removes the
+// convo from the external list.
+private struct ExternalConvoView: View {
+    let repo: Repo
+    let convo: ExternalConvo
+    let onAdopted: () -> Void
+    @EnvironmentObject var store: Store
+    @EnvironmentObject var watcher: ClaudeWatcher
+    @ObservedObject private var infoCache = ExternalSessionInfoCache.shared
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        return f
+    }()
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                Divider()
+                summary
+                HStack {
+                    Spacer()
+                    Button("Adopt into Mani") { adopt() }
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(adoptTargetProject() == nil)
+                }
+                if adoptTargetProject() == nil {
+                    Text("No project in this repo to adopt into. Create one first.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: 760)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 28))
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("External Claude session")
+                    .font(.title3.weight(.semibold))
+                Text("Discovered on disk — Mani isn't running this one. Adopt it to take over (Mani spawns `claude --resume <sid>` against the matching project).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+    }
+
+    @ViewBuilder
+    private var summary: some View {
+        let info = infoCache.entries[convo.sessionId]
+        let session = watcher.sessions[convo.sessionId]
+        let messageCount = info?.messageCount ?? session?.messageCount
+        let lastMessageAt = info?.lastMessageAt ?? session?.lastMessageAt
+        VStack(alignment: .leading, spacing: 4) {
+            labelled("Session", convo.sessionId)
+            labelled("cwd", convo.cwd.path)
+            labelled("First seen", Self.relativeFormatter.localizedString(
+                for: convo.firstSeenAt, relativeTo: Date()
+            ))
+            if let messageCount {
+                labelled("Messages", "\(messageCount)")
+            }
+            if let lastMessageAt {
+                labelled("Last activity", Self.relativeFormatter.localizedString(
+                    for: lastMessageAt, relativeTo: Date()
+                ))
+            }
+            if let first = info?.firstUserMessage, !first.isEmpty {
+                labelled("First user message", first)
+            }
+            if let target = adoptTargetProject() {
+                labelled("Adopt into", target.name)
+            }
+        }
+    }
+
+    private func labelled(_ key: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(key).font(.caption).foregroundStyle(.secondary).frame(width: 130, alignment: .trailing)
+            Text(value).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+            Spacer()
+        }
+    }
+
+    // Prefer a project whose workspace path contains the convo's cwd
+    // (or equals it). Falls back to the first project so adoption is
+    // possible even if the convo lives in a now-orphaned directory.
+    private func adoptTargetProject() -> Project? {
+        let cwdPath = convo.cwd.resolvingSymlinksInPath().path
+        if let match = repo.projects.first(where: { project in
+            let p = project.workspace.path.resolvingSymlinksInPath().path
+            return cwdPath == p || cwdPath.hasPrefix(p + "/")
+        }) {
+            return match
+        }
+        return repo.projects.first
+    }
+
+    private func adopt() {
+        guard let target = adoptTargetProject() else { return }
+        let convoPath = ExternalConvoPath(repo: repo.id, convo: convo.id)
+        let projectPath = ProjectPath(repo: repo.id, project: target.id)
+        let suffix = String(convo.sessionId.prefix(6))
+        let name = "claude (adopted \(suffix))"
+        _Concurrency.Task {
+            await store.dispatch(.adoptExternalConvo(
+                at: convoPath, into: projectPath, name: name
+            ))
+            await MainActor.run { onAdopted() }
         }
     }
 }

@@ -30,32 +30,27 @@ final class SessionArchiveCache: ObservableObject {
     func loadFromDisk(for repoId: UUID, store: SafekeepingStore) {
         let index = store.loadIndex(for: repoId)
         entriesByRepo[repoId] = index.entries
-        // Mirror into the legacy cache so PastSessionRow keeps working
-        // unchanged.
-        for entry in index.entries {
-            ExternalSessionInfoCache.shared.record(
-                sid: entry.sessionId,
-                info: ExternalSessionInfoCache.Info(
-                    firstUserMessage: entry.firstUserMessage,
-                    lastMessageAt: entry.lastMessageAt,
-                    messageCount: entry.messageCount
-                )
-            )
-        }
+        mirrorToInfoCache(index.entries)
     }
 
     func replace(entries: [SessionIndexEntry], for repoId: UUID) {
         entriesByRepo[repoId] = entries
-        for entry in entries {
-            ExternalSessionInfoCache.shared.record(
-                sid: entry.sessionId,
-                info: ExternalSessionInfoCache.Info(
-                    firstUserMessage: entry.firstUserMessage,
-                    lastMessageAt: entry.lastMessageAt,
-                    messageCount: entry.messageCount
-                )
-            )
+        mirrorToInfoCache(entries)
+    }
+
+    private func mirrorToInfoCache(_ entries: [SessionIndexEntry]) {
+        // Single @Published update across all entries so SwiftUI
+        // re-renders once instead of N times. Per-entry record()
+        // calls during a sweep used to thrash the sidebar.
+        let pairs = entries.map { entry in
+            (sid: entry.sessionId,
+             info: ExternalSessionInfoCache.Info(
+                firstUserMessage: entry.firstUserMessage,
+                lastMessageAt: entry.lastMessageAt,
+                messageCount: entry.messageCount
+             ))
         }
+        ExternalSessionInfoCache.shared.recordBatch(pairs)
     }
 
     func entries(for repoId: UUID) -> [SessionIndexEntry] {

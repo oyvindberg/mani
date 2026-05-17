@@ -27,6 +27,18 @@ final class ExternalSessionInfoCache: ObservableObject {
         entries[sid] = info
     }
 
+    // Bulk write: builds the new dict locally, then swaps in one
+    // shot so SwiftUI sees a single @Published update. Used by the
+    // safekeep sweep, which can replay hundreds of entries per
+    // tick — per-key writes triggered hundreds of re-render
+    // passes and made the UI feel locked during a sweep.
+    func recordBatch(_ pairs: [(sid: String, info: Info)]) {
+        guard !pairs.isEmpty else { return }
+        var copy = entries
+        for (sid, info) in pairs { copy[sid] = info }
+        entries = copy
+    }
+
     func touch(sid: String, lastMessageAt: Date, messageCount: Int) {
         if let existing = entries[sid] {
             entries[sid] = Info(

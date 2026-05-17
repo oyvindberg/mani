@@ -15,7 +15,8 @@ final class SessionIndexTests: XCTestCase {
                     lastMessageAt: Date(timeIntervalSince1970: 1_700_000_000),
                     messageCount: 42,
                     transcriptBytes: 12345,
-                    archivedAt: Date(timeIntervalSince1970: 1_700_000_100)
+                    archivedAt: Date(timeIntervalSince1970: 1_700_000_100),
+                    sourceFileMtime: Date(timeIntervalSince1970: 1_700_000_050)
                 ),
                 SessionIndexEntry(
                     sessionId: "def-456",
@@ -25,7 +26,8 @@ final class SessionIndexTests: XCTestCase {
                     lastMessageAt: nil,
                     messageCount: 0,
                     transcriptBytes: 0,
-                    archivedAt: nil
+                    archivedAt: nil,
+                    sourceFileMtime: nil
                 ),
             ]
         )

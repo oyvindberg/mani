@@ -7,11 +7,11 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
 
     case let .createRepo(name, color, rootDir):
         // A newly-created repo starts with one Project whose workspace
-        // IS the rootDir. The user is going to do at least one thing
-        // here, and the empty-state otherwise looks broken.
+        // IS the rootDir. Default name is "wip" — the user renames to
+        // reflect their actual intent.
         let initialProject = Project(
             id: UUID(),
-            name: URL(fileURLWithPath: rootDir.path).lastPathComponent,
+            name: "wip",
             workspace: Workspace(path: rootDir, kind: .folder, missing: false),
             tasks: [],
             archivedAt: nil,
@@ -121,6 +121,10 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         effects.append(contentsOf: project.tasks.map { task in
             .terminate(at: TaskPath(repo: at.repo, project: at.project, task: task.id))
         })
+        // Reset the workspace to the remote default branch so the next
+        // person to look here doesn't see leftover state. Runner
+        // checks if it's a git checkout and which default branch exists.
+        effects.append(.fetchAndResetToDefault(at: project.workspace.path))
         return (events, effects)
 
     case let .unarchiveProject(at):

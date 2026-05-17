@@ -110,7 +110,7 @@ final class TaskStatsPoller {
             .split(separator: "/", omittingEmptySubsequences: true)
             .joined(separator: "-")
         return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/repos")
+            .appendingPathComponent(".claude/projects")
             .appendingPathComponent(slug)
             .appendingPathComponent("\(sid).jsonl")
     }

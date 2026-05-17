@@ -67,6 +67,7 @@ struct RepoHeaderRow: View {
     let anyChildReady: Bool
     let anyChildJustReady: Bool
     let onToggle: () -> Void
+    let onRename: () -> Void
     let onContextMenu: () -> AnyView
 
     @State private var hovered = false
@@ -115,7 +116,8 @@ struct RepoHeaderRow: View {
         )
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
-        .onTapGesture(perform: onToggle)
+        .onTapGesture(count: 2, perform: onRename)
+        .onTapGesture(count: 1, perform: onToggle)
         .contextMenu { onContextMenu() }
     }
 }
@@ -132,6 +134,7 @@ struct WorktreeHeaderRow: View {
     let anyChildReady: Bool
     let anyChildJustReady: Bool
     let onToggle: () -> Void
+    let onRename: () -> Void
     let onSelectDiff: () -> Void
     let onNewShell: () -> Void
     let onNewClaude: () -> Void
@@ -173,7 +176,11 @@ struct WorktreeHeaderRow: View {
         )
         .contentShape(Rectangle())
         .onHover { headerHovered = $0 }
-        .onTapGesture(perform: onToggle)
+        // Double-click → rename. SwiftUI waits for the double-tap
+        // window before firing the single-tap, so collapse/expand
+        // still works correctly on a normal click.
+        .onTapGesture(count: 2, perform: onRename)
+        .onTapGesture(count: 1, perform: onToggle)
         .contextMenu { onContextMenu() }
     }
 
@@ -192,11 +199,23 @@ struct WorktreeHeaderRow: View {
                 .opacity((!project.isArchived) ? 1 : 0.5)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            if project.workspace.path == repo.rootDir {
-                Image(systemName: "star.fill")
-                    .font(.system(size: 8))
-                    .foregroundStyle(.yellow)
-                    .help("Repo root — `git project add` anchors here")
+            if !isExpanded {
+                let count = visibleTaskCount
+                if count > 0 {
+                    let tint = SwiftUI.Color(hex: repo.color)
+                    Text("\(count)")
+                        .font(.caption.monospaced().weight(.semibold))
+                        .foregroundStyle(tint)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 1.5)
+                        .background(
+                            Capsule().fill(tint.opacity(0.15))
+                        )
+                        .overlay(
+                            Capsule().strokeBorder(tint.opacity(0.35), lineWidth: 0.5)
+                        )
+                        .help("\(count) task\(count == 1 ? "" : "s")")
+                }
             }
             if project.workspace.missing {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -204,17 +223,21 @@ struct WorktreeHeaderRow: View {
                     .foregroundStyle(.orange)
                     .help("Path no longer exists")
             }
-            gitBadges
             Spacer(minLength: 4)
-            actionButton(systemImage: "terminal", help: "New shell here", action: onNewShell)
-            actionButton(systemImage: "sparkles", help: "New Claude task", action: onNewClaude)
-            if let diffJobId {
-                actionButton(
-                    systemImage: "arrow.left.arrow.right",
-                    help: "Diff workspace",
-                    tint: selectedJobId == diffJobId ? .accentColor : .secondary,
-                    action: onSelectDiff
-                )
+            // Action buttons only on hover — keeps the sidebar quiet
+            // by default; git stats / workspace info move to the
+            // top bar.
+            if headerHovered {
+                actionButton(systemImage: "terminal", help: "New shell here", action: onNewShell)
+                actionButton(systemImage: "sparkles", help: "New Claude task", action: onNewClaude)
+                if let diffJobId {
+                    actionButton(
+                        systemImage: "arrow.left.arrow.right",
+                        help: "Diff workspace",
+                        tint: selectedJobId == diffJobId ? .accentColor : .secondary,
+                        action: onSelectDiff
+                    )
+                }
             }
         }
     }
@@ -271,10 +294,21 @@ struct WorktreeHeaderRow: View {
         )
     }
 
+    // Leading icon stays the same regardless of workspace type —
+    // it identifies "this is a Project" (a unit of user intent).
+    // The workspace's git-vs-folder nature is conveyed by the git
+    // badges (branch name, ahead/behind, dirty marker) to the right.
     private var worktreeIcon: String {
-        switch project.workspace.kind {
-        case .gitWorktree: return "arrow.triangle.branch"
-        case .folder: return "folder.fill"
+        "briefcase.fill"
+    }
+
+    // Tasks the user actually sees in the expanded view. Excludes
+    // the diff fixture so the badge matches what the user will get
+    // when they expand the project.
+    private var visibleTaskCount: Int {
+        project.tasks.reduce(0) { acc, task in
+            if case .diff = task.kind { return acc }
+            return acc + 1
         }
     }
 }
@@ -286,6 +320,7 @@ struct TaskRow: View {
     let task: Task
     let selected: Bool
     let onTap: () -> Void
+    let onRename: () -> Void
     let onContextMenu: () -> AnyView
 
     @ObservedObject private var statsCache = TaskStatsCache.shared
@@ -359,7 +394,9 @@ struct TaskRow: View {
         )
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
-        .onTapGesture(perform: onTap)
+        // Double-click → rename. Single-click still selects the task.
+        .onTapGesture(count: 2, perform: onRename)
+        .onTapGesture(count: 1, perform: onTap)
         .contextMenu { onContextMenu() }
     }
 
@@ -680,5 +717,83 @@ struct ArchivedSessionRow: View {
         .background(hovered ? SwiftUI.Color.secondary.opacity(0.08) : .clear)
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
+    }
+}
+
+// MARK: - External convo row
+
+// Compact row for an ExternalConvo (claude session running outside
+// Mani). Same density as PastSessionRow but driven directly by the
+// reducer-owned ExternalConvo struct rather than a Task wrapper.
+struct ExternalConvoRow: View {
+    let repo: Repo
+    let convo: ExternalConvo
+    let selected: Bool
+    let onTap: () -> Void
+    let onContextMenu: () -> AnyView
+    let indent: CGFloat
+
+    @ObservedObject private var infoCache = ExternalSessionInfoCache.shared
+    @State private var hovered = false
+
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
+    var body: some View {
+        let info = infoCache.entries[convo.sessionId]
+        HStack(spacing: 8) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 10))
+                .foregroundStyle(.orange.opacity(0.7))
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 6) {
+                    if let when = info?.lastMessageAt {
+                        Text(Self.relativeFormatter.localizedString(
+                            for: when, relativeTo: Date()
+                        ))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Text("session \(convo.sessionId.prefix(8))")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.tertiary)
+                    }
+                    if let count = info?.messageCount, count > 0 {
+                        Text("\(count) msg\(count == 1 ? "" : "s")")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    Spacer()
+                }
+                if let preview = info?.firstUserMessage, !preview.isEmpty {
+                    Text(preview)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                } else {
+                    Text("(no user message)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .italic()
+                }
+            }
+        }
+        .padding(.leading, indent)
+        .padding(.trailing, 10)
+        .padding(.vertical, 2)
+        .background(
+            selected
+                ? SwiftUI.Color.accentColor.opacity(0.18)
+                : (hovered ? SwiftUI.Color.secondary.opacity(0.10) : .clear)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+        .onTapGesture(perform: onTap)
+        .contextMenu { onContextMenu() }
     }
 }

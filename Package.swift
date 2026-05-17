@@ -9,7 +9,11 @@ let package = Package(
     ],
     targets: [
         .target(name: "ManiCore"),
-        .testTarget(name: "ManiCoreTests", dependencies: ["ManiCore"]),
+        .testTarget(
+            name: "ManiCoreTests",
+            dependencies: ["ManiCore"],
+            resources: [.copy("Fixtures")]
+        ),
         .executableTarget(
             name: "mani-agent",
             dependencies: ["ManiCore"],

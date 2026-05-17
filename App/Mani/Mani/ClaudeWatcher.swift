@@ -1,7 +1,7 @@
 import Foundation
 import CoreServices
 
-// FSEvents-driven tail-tracker over ~/.claude/repos/. Validated by
+// FSEvents-driven tail-tracker over ~/.claude/projects/. Validated by
 // Spike 6 (docs/spikes.md): kFSEventStreamCreateFlagUseCFTypes is required;
 // anchor the next read offset on bytes-actually-read, not stat size, to
 // avoid double-counting under concurrent writes.

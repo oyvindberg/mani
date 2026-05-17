@@ -21,6 +21,13 @@ public enum Effect {
         path: URL,
         baseRef: String?
     )
+    // After archiving a project, fast-forward the workspace to the
+    // remote's default branch (main / master / whichever exists) so
+    // the next time the user expects "fresh main" they get it. The
+    // runner picks the branch by checking `origin/main` first, then
+    // `origin/master`, and silently no-ops if neither exists or the
+    // dir isn't a git checkout.
+    case fetchAndResetToDefault(at: URL)
     case watchClaudeProjects(URL)
     case userNotification(title: String, body: String)
 }

@@ -3,7 +3,7 @@ import ManiCore
 import SwiftUI
 
 // Background process that:
-//   1. Walks ~/.claude/repos/-<slug>/*.jsonl
+//   1. Walks ~/.claude/projects/-<slug>/*.jsonl
 //   2. Matches each session file's recorded cwd to the longest-prefix
 //      project across all repos in the live AppState.
 //   3. For settled files (mtime > 5 min) without a safekept copy:
@@ -132,7 +132,7 @@ enum SafekeepingSweepWorker {
         progress: (String) -> Void
     ) -> [UUID: [SessionIndexEntry]] {
         let claudeRoot = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/repos")
+            .appendingPathComponent(".claude/projects")
         guard let slugDirs = try? FileManager.default.contentsOfDirectory(
             at: claudeRoot, includingPropertiesForKeys: nil
         ) else { return [:] }
@@ -172,61 +172,146 @@ enum SafekeepingSweepWorker {
 
             progress(slugDir.lastPathComponent)
 
+            // Phase 1: claude's own sessions-index.json — fast (no
+            // JSONL parsing), gives us metadata even for sessions
+            // whose JSONL has been rotated away.
+            var seenSids: Set<String> = []
             let claudeIndexURL = slugDir
                 .appendingPathComponent("sessions-index.json", isDirectory: false)
-            guard FileManager.default.fileExists(atPath: claudeIndexURL.path),
-                  let data = try? Data(contentsOf: claudeIndexURL),
-                  let parsed = ClaudeOwnSessionsIndex.parse(data: data)
-            else { continue }
+            if FileManager.default.fileExists(atPath: claudeIndexURL.path),
+               let data = try? Data(contentsOf: claudeIndexURL),
+               let parsed = ClaudeOwnSessionsIndex.parse(data: data) {
+                for record in parsed.entries {
+                    let cwd = record.cwd
+                    if cwd == homePath || cwd == "/" { continue }
+                    guard let match = bestMatch(cwd: cwd, repos: repos)
+                    else { continue }
+                    let repoId = match.id
 
-            for record in parsed.entries {
-                let cwd = record.repoPath
+                    let fullPath = URL(fileURLWithPath: record.fullPath)
+                    let transcriptExists = FileManager.default
+                        .fileExists(atPath: fullPath.path)
+                    let alreadySafekept = archive.hasTranscript(
+                        sessionId: record.sessionId, for: repoId
+                    )
+                    let prior = priorArchived[repoId]?[record.sessionId]
+                    var archivedAt: Date? = prior?.archivedAt
+                    var transcriptBytes: Int = prior?.transcriptBytes ?? 0
+                    if transcriptExists, !alreadySafekept {
+                        do {
+                            let bytes = try archive.archiveTranscript(
+                                from: fullPath, sessionId: record.sessionId,
+                                for: repoId
+                            )
+                            archivedAt = Date()
+                            transcriptBytes = bytes
+                        } catch {
+                            NSLog("[mani] safekeeping archive failed for \(record.sessionId): \(error)")
+                        }
+                    }
+                    let entry = SessionIndexEntry(
+                        sessionId: record.sessionId,
+                        originatingCwd: cwd,
+                        originatingWorktreeName: URL(fileURLWithPath: cwd).lastPathComponent,
+                        firstUserMessage: record.firstPrompt ?? record.summary,
+                        lastMessageAt: record.modified,
+                        messageCount: record.messageCount ?? 0,
+                        transcriptBytes: transcriptBytes,
+                        archivedAt: archivedAt,
+                        sourceFileMtime: prior?.sourceFileMtime
+                    )
+                    var idx = indexes[repoId] ?? .empty
+                    idx.entries.append(entry)
+                    indexes[repoId] = idx
+                    seenSids.insert(record.sessionId)
+                    if prior != entry { changed.insert(repoId) }
+                }
+            }
+
+            // Phase 2: JSONL files at the slug root that claude's
+            // index doesn't list. claude rotates sessions in/out of
+            // its index lazily; the unindexed JSONLs are usually the
+            // freshest conversations the user is still actively in.
+            //
+            // Fast path: if we've already parsed this sid AND the
+            // file's mtime is unchanged since then, reuse the prior
+            // entry verbatim. Parsing a multi-MB JSONL takes hundreds
+            // of ms; we run a sweep every 5 min, so unchanged files
+            // get scanned hundreds of times needlessly otherwise.
+            guard let slugContents = try? FileManager.default.contentsOfDirectory(
+                at: slugDir, includingPropertiesForKeys: [.contentModificationDateKey]
+            ) else { continue }
+            for jsonl in slugContents where jsonl.pathExtension == "jsonl" {
+                let sid = jsonl.deletingPathExtension().lastPathComponent
+                if seenSids.contains(sid) { continue }
+
+                let attrs = try? FileManager.default.attributesOfItem(atPath: jsonl.path)
+                let mtime = attrs?[.modificationDate] as? Date
+
+                // Look up prior across ALL repos by sid — the file
+                // hasn't moved repos, so we can find it without
+                // knowing repoId yet (cwd parsing happens below).
+                var priorAcrossRepos: SessionIndexEntry?
+                var priorRepoId: UUID?
+                for r in repos {
+                    if let p = priorArchived[r.id]?[sid] {
+                        priorAcrossRepos = p
+                        priorRepoId = r.id
+                        break
+                    }
+                }
+                if let prior = priorAcrossRepos,
+                   let priorMtime = prior.sourceFileMtime,
+                   let mtime, mtime <= priorMtime,
+                   let repoId = priorRepoId {
+                    // Fast path: file unchanged since last sweep,
+                    // reuse the prior entry verbatim.
+                    var idx = indexes[repoId] ?? .empty
+                    idx.entries.append(prior)
+                    indexes[repoId] = idx
+                    seenSids.insert(sid)
+                    continue
+                }
+
+                // Slow path: parse the JSONL to get cwd + metadata.
+                guard let session = ClaudeHistoryScanner.parsePublic(jsonl: jsonl),
+                      let cwd = session.cwd
+                else { continue }
                 if cwd == homePath || cwd == "/" { continue }
                 guard let match = bestMatch(cwd: cwd, repos: repos)
                 else { continue }
                 let repoId = match.id
 
-                let fullPath = URL(fileURLWithPath: record.fullPath)
-                let transcriptExists = FileManager.default
-                    .fileExists(atPath: fullPath.path)
-                let alreadySafekept = archive.hasTranscript(
-                    sessionId: record.sessionId, for: repoId
-                )
-                // Content-gone (no JSONL, no gzip) → skip; nothing
-                // actionable for the user.
-                if !transcriptExists, !alreadySafekept { continue }
-
-                let prior = priorArchived[repoId]?[record.sessionId]
+                let alreadySafekept = archive.hasTranscript(sessionId: sid, for: repoId)
+                let prior = priorArchived[repoId]?[sid]
                 var archivedAt: Date? = prior?.archivedAt
                 var transcriptBytes: Int = prior?.transcriptBytes ?? 0
-
-                if transcriptExists, !alreadySafekept {
+                if !alreadySafekept {
                     do {
                         let bytes = try archive.archiveTranscript(
-                            from: fullPath, sessionId: record.sessionId,
-                            for: repoId
+                            from: jsonl, sessionId: sid, for: repoId
                         )
                         archivedAt = Date()
                         transcriptBytes = bytes
                     } catch {
-                        NSLog("[mani] safekeeping archive failed for \(record.sessionId): \(error)")
+                        NSLog("[mani] safekeeping archive failed for \(sid): \(error)")
                     }
                 }
-
                 let entry = SessionIndexEntry(
-                    sessionId: record.sessionId,
+                    sessionId: sid,
                     originatingCwd: cwd,
                     originatingWorktreeName: URL(fileURLWithPath: cwd).lastPathComponent,
-                    firstUserMessage: record.firstPrompt ?? record.summary,
-                    lastMessageAt: record.modified,
-                    messageCount: record.messageCount ?? 0,
+                    firstUserMessage: session.firstUserMessage,
+                    lastMessageAt: session.lastMessageAt,
+                    messageCount: session.messageCount,
                     transcriptBytes: transcriptBytes,
-                    archivedAt: archivedAt
+                    archivedAt: archivedAt,
+                    sourceFileMtime: mtime
                 )
-
                 var idx = indexes[repoId] ?? .empty
                 idx.entries.append(entry)
                 indexes[repoId] = idx
+                seenSids.insert(sid)
                 if prior != entry { changed.insert(repoId) }
             }
         }
@@ -239,7 +324,7 @@ enum SafekeepingSweepWorker {
             do {
                 try archive.writeIndex(idx, for: repoId)
             } catch {
-                NSLog("[mani] safekeeping index write failed: \(error)")
+                NSLog("[mani] safekeep index write failed for repo \(repoId): \(error)")
             }
         }
 
@@ -312,58 +397,5 @@ enum SafekeepingSweepWorker {
     }
 }
 
-// Reader for claude's own sessions-index.json file (one per slug
-// dir). Format example:
-//   { "version": 1, "entries": [
-//       { "sessionId": "...", "fullPath": "...", "firstPrompt": "...",
-//         "summary": "...", "messageCount": 58, "modified": "...",
-//         "repoPath": "...", ... }
-//   ]}
-// We only pluck the fields we need; missing ones decode as nil.
-enum ClaudeOwnSessionsIndex {
-
-    struct Record {
-        let sessionId: String
-        let fullPath: String
-        let firstPrompt: String?
-        let summary: String?
-        let messageCount: Int?
-        let modified: Date?
-        let repoPath: String
-    }
-
-    struct Parsed {
-        let entries: [Record]
-    }
-
-    static func parse(data: Data) -> Parsed? {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        guard let entriesRaw = root["entries"] as? [[String: Any]] else { return nil }
-        let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let isoNoFrac = ISO8601DateFormatter()
-        isoNoFrac.formatOptions = [.withInternetDateTime]
-
-        var out: [Record] = []
-        for raw in entriesRaw {
-            guard let sid = raw["sessionId"] as? String,
-                  let fullPath = raw["fullPath"] as? String,
-                  let repoPath = raw["repoPath"] as? String
-            else { continue }
-            let modified: Date? = (raw["modified"] as? String).flatMap {
-                iso.date(from: $0) ?? isoNoFrac.date(from: $0)
-            }
-            out.append(Record(
-                sessionId: sid,
-                fullPath: fullPath,
-                firstPrompt: raw["firstPrompt"] as? String,
-                summary: raw["summary"] as? String,
-                messageCount: raw["messageCount"] as? Int,
-                modified: modified,
-                repoPath: repoPath
-            ))
-        }
-        return Parsed(entries: out)
-    }
-}
+// ClaudeOwnSessionsIndex moved to ManiCore so its parsing logic is
+// unit-testable in isolation. See Sources/ManiCore/ClaudeOwnSessionsIndex.swift.

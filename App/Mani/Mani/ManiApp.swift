@@ -42,7 +42,7 @@ struct ManiApp: App {
         _store = StateObject(wrappedValue: store)
 
         let claudeProjects = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/repos")
+            .appendingPathComponent(".claude/projects")
             .path
         _watcher = StateObject(wrappedValue: ClaudeWatcher(reposDir: claudeProjects))
 
@@ -492,7 +492,7 @@ struct ManiApp: App {
     }
 
     // Walk all .claude(sid) tasks and delete any whose <sid>.jsonl is
-    // missing under ~/.claude/repos/<slug>/. Covers:
+    // missing under ~/.claude/projects/<slug>/. Covers:
     //   - External claude tasks whose transcript was pruned by claude's
     //     retention (and we can no longer adopt them).
     //   - Mani-spawned claude tasks whose `claude --resume <sid>` failed

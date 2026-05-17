@@ -14,7 +14,7 @@ import SwiftUI
 //      been moved/deleted to keep showing up under their repo. We
 //      copy + compress to a place WE control.
 //   2. discoverHistoricalClaudeSessions previously walked every
-//      ~/.claude/repos/*.jsonl on every boot — hundreds of MB of
+//      ~/.claude/projects/*.jsonl on every boot — hundreds of MB of
 //      file I/O. Reading sessions-index.json instead is microseconds.
 //
 // Atomicity:
@@ -24,17 +24,23 @@ import SwiftUI
 //     half-written .tmp is invisible (we only ever look for the final
 //     name) and harmless.
 //
-// We never delete the source ~/.claude/repos/*.jsonl — claude itself
+// We never delete the source ~/.claude/projects/*.jsonl — claude itself
 // uses those for --resume. We safe-guard a copy.
 final class SafekeepingStore: ObservableObject {
-    let reposRoot: URL
+    let root: URL
 
     init(appSupportRoot: URL) throws {
-        let url = appSupportRoot.appendingPathComponent("repos", isDirectory: true)
+        // Layout (per repo):
+        //   <root>/<repoId>/sessions-index.json
+        //   <root>/<repoId>/sessions/<sid>.jsonl.gz
+        // `safekeep/` is the directory name we settled on — it
+        // describes what's IN it (gzipped transcripts + their
+        // per-repo index) rather than what owns it.
+        let url = appSupportRoot.appendingPathComponent("safekeep", isDirectory: true)
         try FileManager.default.createDirectory(
             at: url, withIntermediateDirectories: true
         )
-        self.reposRoot = url
+        self.root = url
     }
 
     // MARK: - Index
@@ -182,7 +188,7 @@ final class SafekeepingStore: ObservableObject {
     // MARK: - Paths
 
     private func repoDir(_ repoId: UUID) -> URL {
-        reposRoot.appendingPathComponent(
+        root.appendingPathComponent(
             repoId.uuidString, isDirectory: true
         )
     }

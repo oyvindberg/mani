@@ -42,7 +42,7 @@ struct NewProjectSheet: View {
                             rootDir: url
                         ))
                         // Kick the safekeep sweeper immediately so
-                        // existing ~/.claude/repos sessions for
+                        // existing ~/.claude/projects sessions for
                         // this rootDir get matched + surfaced now,
                         // not on the next 5-min tick.
                         await sweeper.runOnce()
@@ -80,6 +80,7 @@ struct NewWorktreeSheet: View {
         var id: String { rawValue }
     }
 
+    @State private var name: String = "wip"
     @State private var path: String = NSHomeDirectory()
     @State private var kind: Kind = .folder
     @State private var branch: String = ""
@@ -94,6 +95,7 @@ struct NewWorktreeSheet: View {
             }
             .pickerStyle(.segmented)
             Form {
+                TextField("Name", text: $name)
                 HStack {
                     TextField("Path", text: $path)
                     Button("Choose…") { pickFolder() }
@@ -104,7 +106,7 @@ struct NewWorktreeSheet: View {
                 }
                 Toggle("Add a default shell task", isOn: $addShellTask)
             }
-            Text("The project's directory name + current branch identify it in the sidebar.")
+            Text("A project is a unit of intent — name it for what you're working on. The workspace path is just where it lives on disk.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
@@ -118,10 +120,12 @@ struct NewWorktreeSheet: View {
                     let pathURL = URL(fileURLWithPath: path)
                     let wantShell = addShellTask
                     let repoId = repoId
+                    let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let finalName = trimmedName.isEmpty ? "wip" : trimmedName
                     _Concurrency.Task {
                         await store.dispatch(.createProject(
                             repoId: repoId,
-                            name: pathURL.lastPathComponent,
+                            name: finalName,
                             workspace: Workspace(
                                 path: pathURL,
                                 kind: worktreeKind,
@@ -220,6 +224,88 @@ struct RenameJobSheet: View {
         let final = trimmedName
         _Concurrency.Task {
             await store.dispatch(.renameTask(at: taskPath, name: final))
+            isPresented = false
+        }
+    }
+}
+
+struct RenameRepoSheet: View {
+    let store: Store
+    let repoId: UUID
+    let currentName: String
+    @Binding var isPresented: Bool
+    @State private var name: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Rename repo").font(.headline)
+            TextField("Name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { commit() }
+            HStack {
+                Spacer()
+                Button("Cancel") { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Rename") { commit() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(trimmedName.isEmpty || trimmedName == currentName)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+        .onAppear { name = currentName }
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func commit() {
+        guard !trimmedName.isEmpty, trimmedName != currentName else { return }
+        let final = trimmedName
+        _Concurrency.Task {
+            await store.dispatch(.renameRepo(id: repoId, name: final))
+            isPresented = false
+        }
+    }
+}
+
+struct RenameProjectSheet: View {
+    let store: Store
+    let projectPath: ProjectPath
+    let currentName: String
+    @Binding var isPresented: Bool
+    @State private var name: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Rename project").font(.headline)
+            TextField("Name", text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { commit() }
+            HStack {
+                Spacer()
+                Button("Cancel") { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Rename") { commit() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(trimmedName.isEmpty || trimmedName == currentName)
+            }
+        }
+        .padding(20)
+        .frame(width: 360)
+        .onAppear { name = currentName }
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func commit() {
+        guard !trimmedName.isEmpty, trimmedName != currentName else { return }
+        let final = trimmedName
+        _Concurrency.Task {
+            await store.dispatch(.renameProject(at: projectPath, name: final))
             isPresented = false
         }
     }

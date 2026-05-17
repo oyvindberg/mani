@@ -1,6 +1,6 @@
 import Foundation
 
-// Looks up Claude Code session JSONL files under ~/.claude/repos/<slug>/
+// Looks up Claude Code session JSONL files under ~/.claude/projects/<slug>/
 // for a given cwd. Mostly the same parsing logic as Spikes/JSONLSpike, but
 // stops once it has the few fields the resume picker needs (id, cwd, first
 // user message, last timestamp, message count). Sorted most-recent-first.
@@ -138,7 +138,7 @@ enum ClaudeHistoryScanner {
     }
 
     // Exposed for SafekeepingSweepWorker, which already has the URL
-    // in hand (it's iterating ~/.claude/repos directly) and just
+    // in hand (it's iterating ~/.claude/projects directly) and just
     // wants the same summary as sessions(forCwd:) produces per file.
     static func parsePublic(jsonl: URL) -> Session? {
         parse(jsonl: jsonl)
@@ -151,7 +151,7 @@ enum ClaudeHistoryScanner {
             .split(separator: "/", omittingEmptySubsequences: true)
             .joined(separator: "-")
         let dir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/repos").appendingPathComponent(slug)
+            .appendingPathComponent(".claude/projects").appendingPathComponent(slug)
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: dir, includingPropertiesForKeys: nil
         ) else { return [] }

@@ -2,7 +2,7 @@ import Foundation
 import CoreServices
 import Darwin
 
-// Spike 6: FSEvents on a sandboxed ~/.claude/repos directory.
+// Spike 6: FSEvents on a sandboxed ~/.claude/projects directory.
 // Goal per docs/spikes.md: validate that an FSEventStream sees every line
 // claude writes, with no duplicates and no decode failures.
 //
@@ -12,7 +12,7 @@ import Darwin
 // what's actually on disk.
 
 let spikeHome = "/tmp/mani-watcher-spike-home"
-let reposDir = "\(spikeHome)/.claude/repos"
+let reposDir = "\(spikeHome)/.claude/projects"
 
 // MARK: - File-tail tracker
 
