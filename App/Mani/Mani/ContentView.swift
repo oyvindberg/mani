@@ -87,21 +87,25 @@ struct ContentView: View {
         } detail: {
             if let (repo, convo) = selectedExternalConvo() {
                 VStack(spacing: 0) {
+                    let repoColor = SwiftUI.Color(hex: repo.color)
                     Rectangle()
-                        .fill(SwiftUI.Color(hex: repo.color))
-                        .frame(height: 7)
-                    HStack(spacing: 4) {
-                        Text(repo.name)
-                            .foregroundStyle(SwiftUI.Color(hex: repo.color))
-                        Text("›").foregroundStyle(.secondary)
+                        .fill(repoColor)
+                        .frame(height: 1.5)
+                    HStack(spacing: 6) {
+                        BreadcrumbSegment(
+                            text: repo.name,
+                            tint: repoColor,
+                            weight: .medium
+                        )
+                        BreadcrumbDivider()
                         Text("external convo")
+                            .font(.system(.subheadline, design: .rounded).italic())
                             .foregroundStyle(.secondary)
                         Spacer()
                     }
-                    .font(.system(size: 12))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    Divider()
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    Divider().opacity(0.4)
                     ExternalConvoView(repo: repo, convo: convo, onAdopted: {
                         selectedExternalConvoId = nil
                     })
@@ -109,18 +113,28 @@ struct ContentView: View {
                 }
             } else if let path = selectedJobPath, let context = breadcrumbContext() {
                 VStack(spacing: 0) {
+                    let repoColor = SwiftUI.Color(hex: context.repo.color)
                     Rectangle()
-                        .fill(SwiftUI.Color(hex: context.repo.color))
-                        .frame(height: 7)
-                    HStack(spacing: 4) {
-                        Text(context.repo.name)
-                            .foregroundStyle(SwiftUI.Color(hex: context.repo.color))
-                        Text("›").foregroundStyle(.secondary)
-                        Text(context.project.name)
-                            .foregroundStyle(SwiftUI.Color(hex: context.repo.color))
-                        Text("›").foregroundStyle(.secondary)
-                        Text(context.task.name).bold()
-                            .foregroundStyle(SwiftUI.Color(hex: context.repo.color))
+                        .fill(repoColor)
+                        .frame(height: 1.5)
+                    HStack(spacing: 6) {
+                        BreadcrumbSegment(
+                            text: context.repo.name,
+                            tint: repoColor,
+                            weight: .medium
+                        )
+                        BreadcrumbDivider()
+                        BreadcrumbSegment(
+                            text: context.project.name,
+                            tint: repoColor,
+                            weight: .medium
+                        )
+                        BreadcrumbDivider()
+                        BreadcrumbSegment(
+                            text: context.task.name,
+                            tint: repoColor,
+                            weight: .semibold
+                        )
                         Spacer()
                         ReadyClaudesBar(onSelect: { taskId in
                             selectTask(taskId: taskId)
@@ -139,14 +153,14 @@ struct ContentView: View {
                         .keyboardShortcut("f", modifiers: [.command])
                         .help("Search scrollback (⌘F)")
                     }
-                    .font(.system(size: 12))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 8)
+                    .padding(.bottom, 4)
                     WorkspaceInfoBar(
                         repo: context.repo,
                         project: context.project
                     )
-                    Divider()
+                    Divider().opacity(0.4)
                     if isExternalClaudeTask(context.task) {
                         ExternalClaudeView(
                             task: context.task,
@@ -171,20 +185,36 @@ struct ContentView: View {
                 }
             } else {
                 if store.state.repos.isEmpty {
-                    VStack(spacing: 14) {
+                    VStack(spacing: 16) {
                         Image(systemName: "rectangle.stack.badge.plus")
-                            .font(.system(size: 40))
-                            .foregroundStyle(.secondary)
-                        Text("Create your first repo")
-                            .font(.headline)
+                            .font(.system(size: 44, weight: .light))
+                            .foregroundStyle(.tertiary)
+                        VStack(spacing: 4) {
+                            Text("No repos yet")
+                                .font(.system(.title3, design: .rounded).weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Text("⇧⌘P  to add one")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
                         Button("New Repo…") { showingNewRepo = true }
                             .keyboardShortcut("p", modifiers: [.command, .shift])
+                            .controlSize(.large)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    Text("Select a task in the sidebar")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(spacing: 12) {
+                        Image(systemName: "sidebar.left")
+                            .font(.system(size: 32, weight: .light))
+                            .foregroundStyle(.quaternary)
+                        Text("Select a task")
+                            .font(.system(.title3, design: .rounded).weight(.medium))
+                            .foregroundStyle(.secondary)
+                        Text("pick one from the sidebar to get started")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
@@ -1055,7 +1085,9 @@ struct SidebarView: View {
                 }
                 // External convos whose cwd falls inside THIS project's
                 // workspace: render here so they live with the project
-                // they came from.
+                // they came from. Top padding sets it apart from the
+                // task rows above so it doesn't read as a child of the
+                // last task.
                 let inProject = convosForProject(repo: repo, project: project)
                 if !inProject.isEmpty {
                     externalConvosFolder(
@@ -1065,6 +1097,7 @@ struct SidebarView: View {
                         convos: inProject,
                         indent: 24
                     )
+                    .padding(.top, 6)
                 }
             }
         }
@@ -1159,26 +1192,29 @@ struct SidebarView: View {
         indent: CGFloat
     ) -> some View {
         let isExpanded = expandedExternalConvoFolders.contains(folderId)
+        // Section-label styling rather than list-row styling so the
+        // folder reads as a group heading, not as another peer of the
+        // tasks above it. Macros: smaller, uppercase, dimmer; the
+        // chevron stays for the collapse affordance.
         HStack(spacing: 6) {
             Image(systemName: "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 8, weight: .semibold))
                 .foregroundStyle(.tertiary)
                 .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 .frame(width: 10)
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
             Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("(\(convos.count))")
-                .font(.caption2)
+                .font(.system(size: 10, weight: .semibold))
+                .textCase(.uppercase)
+                .tracking(0.6)
                 .foregroundStyle(.tertiary)
+            Text("\(convos.count)")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary.opacity(0.7))
             Spacer()
         }
         .padding(.leading, indent)
         .padding(.trailing, 10)
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.15)) {
@@ -1218,24 +1254,24 @@ struct SidebarView: View {
         let isExpanded = expandedFinishedFolders.contains(repo.id)
         HStack(spacing: 6) {
             Image(systemName: "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 8, weight: .semibold))
                 .foregroundStyle(.tertiary)
                 .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 .frame(width: 10)
-            Image(systemName: "archivebox")
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-            Text("Finished projects")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("(\(archived.count))")
-                .font(.caption2)
+            Text("Finished")
+                .font(.system(size: 10, weight: .semibold))
+                .textCase(.uppercase)
+                .tracking(0.6)
                 .foregroundStyle(.tertiary)
+            Text("\(archived.count)")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.tertiary.opacity(0.7))
             Spacer()
         }
         .padding(.leading, 12)
         .padding(.trailing, 10)
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
+        .padding(.top, 6)
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.15)) {
@@ -1830,23 +1866,51 @@ struct TerminalPane: NSViewRepresentable {
 // used to clutter the sidebar — workspace path, current git branch,
 // ahead/behind, dirty marker. Click the path to reveal the workspace
 // in Finder.
+// One name segment in the detail-pane masthead. SF Pro Rounded for
+// the characterful display face; tinted in repo color so the leaf
+// segment reads as the "you are here" anchor.
+private struct BreadcrumbSegment: View {
+    let text: String
+    let tint: SwiftUI.Color
+    let weight: Font.Weight
+
+    var body: some View {
+        Text(text)
+            .font(.system(.subheadline, design: .rounded).weight(weight))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .truncationMode(.middle)
+    }
+}
+
+// Mono slash between breadcrumb segments. Chevrons read as
+// navigation arrows ("click here to go back"); slashes read as
+// path delimiters, which is what they are here.
+private struct BreadcrumbDivider: View {
+    var body: some View {
+        Text("/")
+            .font(.system(.subheadline, design: .monospaced))
+            .foregroundStyle(.tertiary)
+    }
+}
+
 private struct WorkspaceInfoBar: View {
     let repo: Repo
     let project: Project
     @ObservedObject private var statsCache = WorktreeStatsCache.shared
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting(
                     [project.workspace.path]
                 )
             } label: {
-                HStack(spacing: 4) {
+                HStack(spacing: 5) {
                     Image(systemName: "folder")
                         .font(.system(size: 10))
                     Text(displayPath)
-                        .font(.system(.caption, design: .monospaced))
+                        .font(.system(size: 11, design: .monospaced))
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -1857,25 +1921,25 @@ private struct WorkspaceInfoBar: View {
             if project.workspace.path == repo.rootDir {
                 Image(systemName: "star.fill")
                     .font(.system(size: 9))
-                    .foregroundStyle(.yellow)
+                    .foregroundStyle(.yellow.opacity(0.85))
                     .help("Repo root")
             }
             if project.workspace.missing {
-                HStack(spacing: 3) {
+                HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 10))
                     Text("missing")
+                        .font(.system(size: 11, design: .rounded))
                 }
-                .font(.caption)
                 .foregroundStyle(.orange)
             }
             if let stats = statsCache.stats[project.id] {
                 if let branch = stats.branch {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 4) {
                         Image(systemName: "arrow.triangle.branch")
                             .font(.system(size: 10))
                         Text(branch)
-                            .font(.caption.monospaced())
+                            .font(.system(size: 11, design: .monospaced))
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
@@ -1883,31 +1947,31 @@ private struct WorkspaceInfoBar: View {
                 }
                 if stats.ahead > 0 {
                     Text("↑\(stats.ahead)")
-                        .font(.caption.monospaced().weight(.medium))
-                        .foregroundStyle(.green)
+                        .font(.system(size: 11, design: .monospaced).weight(.medium))
+                        .foregroundStyle(.green.opacity(0.85))
                         .help("Commits ahead of \(stats.upstream ?? "upstream")")
                 }
                 if stats.behind > 0 {
                     Text("↓\(stats.behind)")
-                        .font(.caption.monospaced().weight(.medium))
-                        .foregroundStyle(.orange)
+                        .font(.system(size: 11, design: .monospaced).weight(.medium))
+                        .foregroundStyle(.orange.opacity(0.85))
                         .help("Commits behind \(stats.upstream ?? "upstream")")
                 }
                 if stats.hasUncommitted {
-                    HStack(spacing: 3) {
+                    HStack(spacing: 4) {
                         Image(systemName: "pencil.tip")
                             .font(.system(size: 10))
                         Text("dirty")
+                            .font(.system(size: 11, design: .rounded))
                     }
-                    .font(.caption)
-                    .foregroundStyle(.yellow)
+                    .foregroundStyle(.yellow.opacity(0.9))
                     .help("Uncommitted changes")
                 }
             }
             Spacer()
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 4)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 8)
     }
 
     // Show the path tilde-collapsed if it's under $HOME — easier to

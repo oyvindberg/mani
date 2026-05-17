@@ -81,27 +81,28 @@ struct RepoHeaderRow: View {
                 .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 .frame(width: 12)
             Text(repo.name)
-                .font(.system(.headline, design: .rounded))
+                .font(.system(.headline, design: .rounded).weight(.semibold))
+                .tracking(-0.3)
                 .foregroundStyle(repo.enabled ? color : color.opacity(0.55))
                 .strikethrough(!repo.enabled)
             Spacer()
             if taskCount > 0 {
                 Text("\(taskCount)")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(color)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 0)
+                    .font(.system(size: 11, design: .monospaced).weight(.medium))
+                    .foregroundStyle(color.opacity(0.9))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
                     .background(
-                        Capsule().fill(color.opacity(0.18))
+                        Capsule().fill(color.opacity(0.15))
                     )
             }
         }
-        .padding(.leading, 6)
+        .padding(.leading, 10)
         .padding(.trailing, 10)
-        .padding(.vertical, 5)
+        .padding(.vertical, 6)
         .background(
             ZStack {
-                if hovered { color.opacity(0.10) }
+                if hovered { SwiftUI.Color.secondary.opacity(0.06) }
                 // .subtle so the per-task pulse remains the strongest
                 // signal — the repo row is more of an aggregate
                 // breathing.
@@ -114,6 +115,16 @@ struct RepoHeaderRow: View {
                 )
             }
         )
+        // The repo-color spine. Persistent (not hover-gated) and runs
+        // along the leading edge so the same stripe visually connects
+        // every row in the repo — header, projects, tasks. The repo
+        // identity becomes a continuous thread instead of scattered
+        // tints.
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(color)
+                .frame(width: 2)
+        }
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
         .onTapGesture(count: 2, perform: onRename)
@@ -140,26 +151,21 @@ struct WorktreeHeaderRow: View {
     let onNewClaude: () -> Void
     let onContextMenu: () -> AnyView
 
-    @ObservedObject private var statsCache = WorktreeStatsCache.shared
     @State private var headerHovered = false
 
     private var displayName: String {
         project.name
     }
 
-    private var gitStats: WorktreeGitStats? {
-        statsCache.stats[project.id]
-    }
-
     var body: some View {
         singleLine
-        .padding(.leading, 8)
+        .padding(.leading, 10)
         .padding(.trailing, 10)
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
         .background(
             ZStack {
                 if headerHovered {
-                    SwiftUI.Color.secondary.opacity(0.08)
+                    SwiftUI.Color.secondary.opacity(0.06)
                 }
                 // Dimmer overlay than per-task: this is the aggregate
                 // signal across all child claudes in the project, so
@@ -174,6 +180,12 @@ struct WorktreeHeaderRow: View {
                 )
             }
         )
+        // Continuation of the repo-color spine through the project row.
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(SwiftUI.Color(hex: repo.color))
+                .frame(width: 2)
+        }
         .contentShape(Rectangle())
         .onHover { headerHovered = $0 }
         // Double-click → rename. SwiftUI waits for the double-tap
@@ -185,17 +197,17 @@ struct WorktreeHeaderRow: View {
     }
 
     private var singleLine: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 7) {
             Image(systemName: "chevron.right")
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.tertiary)
                 .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 .frame(width: 10)
-            Image(systemName: worktreeIcon)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+            // Project name in SF Pro Rounded — distinguishes the
+            // "project as unit of intent" face from the technical
+            // mono used for paths/branches/counts in this hierarchy.
             Text(displayName)
-                .font(.system(.subheadline, design: .default).weight(.semibold))
+                .font(.system(.subheadline, design: .rounded).weight(.medium))
                 .opacity((!project.isArchived) ? 1 : 0.5)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -204,15 +216,12 @@ struct WorktreeHeaderRow: View {
                 if count > 0 {
                     let tint = SwiftUI.Color(hex: repo.color)
                     Text("\(count)")
-                        .font(.caption.monospaced().weight(.semibold))
-                        .foregroundStyle(tint)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 1.5)
+                        .font(.system(size: 10, design: .monospaced).weight(.semibold))
+                        .foregroundStyle(tint.opacity(0.85))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
                         .background(
-                            Capsule().fill(tint.opacity(0.15))
-                        )
-                        .overlay(
-                            Capsule().strokeBorder(tint.opacity(0.35), lineWidth: 0.5)
+                            Capsule().fill(tint.opacity(0.13))
                         )
                         .help("\(count) task\(count == 1 ? "" : "s")")
                 }
@@ -224,10 +233,11 @@ struct WorktreeHeaderRow: View {
                     .help("Path no longer exists")
             }
             Spacer(minLength: 4)
-            // Action buttons only on hover — keeps the sidebar quiet
-            // by default; git stats / workspace info move to the
-            // top bar.
-            if headerHovered {
+            // Action buttons are always laid out — only their opacity
+            // and hit-testing flip on hover. Conditional rendering
+            // caused the name/pill to shift when the buttons appeared
+            // (the spacer had to give up width), which was jarring.
+            HStack(spacing: 4) {
                 actionButton(systemImage: "terminal", help: "New shell here", action: onNewShell)
                 actionButton(systemImage: "sparkles", help: "New Claude task", action: onNewClaude)
                 if let diffJobId {
@@ -239,47 +249,9 @@ struct WorktreeHeaderRow: View {
                     )
                 }
             }
-        }
-    }
-
-    @ViewBuilder
-    private var gitBadges: some View {
-        if let stats = gitStats {
-            if let branch = stats.branch {
-                HStack(spacing: 3) {
-                    Image(systemName: "arrow.triangle.branch")
-                        .font(.system(size: 9))
-                    Text(branch)
-                        .font(.caption2.monospaced())
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1)
-                .background(
-                    Capsule().fill(SwiftUI.Color.secondary.opacity(0.10))
-                )
-                .help("Current branch")
-            }
-            if stats.ahead > 0 {
-                Text("↑\(stats.ahead)")
-                    .font(.caption2.monospaced().weight(.medium))
-                    .foregroundStyle(.green)
-                    .help("Commits ahead of \(stats.upstream ?? "upstream")")
-            }
-            if stats.behind > 0 {
-                Text("↓\(stats.behind)")
-                    .font(.caption2.monospaced().weight(.medium))
-                    .foregroundStyle(.orange)
-                    .help("Commits behind \(stats.upstream ?? "upstream")")
-            }
-            if stats.hasUncommitted {
-                Image(systemName: "pencil.tip")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.yellow)
-                    .help("Uncommitted changes")
-            }
+            .opacity(headerHovered ? 1 : 0)
+            .allowsHitTesting(headerHovered)
+            .animation(.easeOut(duration: 0.12), value: headerHovered)
         }
     }
 
@@ -292,14 +264,6 @@ struct WorktreeHeaderRow: View {
         SidebarActionButton(
             systemImage: systemImage, help: help, tint: tint, action: action
         )
-    }
-
-    // Leading icon stays the same regardless of workspace type —
-    // it identifies "this is a Project" (a unit of user intent).
-    // The workspace's git-vs-folder nature is conveyed by the git
-    // badges (branch name, ahead/behind, dirty marker) to the right.
-    private var worktreeIcon: String {
-        "briefcase.fill"
     }
 
     // Tasks the user actually sees in the expanded view. Excludes
@@ -346,7 +310,17 @@ struct TaskRow: View {
     var body: some View {
         HStack(spacing: 8) {
             TaskKindIcon(kind: task.kind, size: 18)
-            VStack(alignment: .leading, spacing: 0) {
+                .overlay(alignment: .topTrailing) {
+                    // Status dot anchored to icon corner — small,
+                    // out-of-the-way, but visible. Replaces the
+                    // mid-row floating dot that was easy to miss.
+                    Circle()
+                        .fill(task.statusColor)
+                        .frame(width: 5, height: 5)
+                        .overlay(Circle().strokeBorder(.background, lineWidth: 1))
+                        .offset(x: 2, y: -2)
+                }
+            VStack(alignment: .leading, spacing: 1) {
                 Text(task.name)
                     .font(.system(.callout, design: .default))
                     .strikethrough(!task.enabled)
@@ -354,21 +328,18 @@ struct TaskRow: View {
                     .truncationMode(.tail)
                 if let subtitle = subtitle {
                     Text(subtitle)
-                        .font(.caption2)
+                        .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
             }
             Spacer()
-            Image(systemName: task.statusSymbol)
-                .font(.system(size: 7))
-                .foregroundStyle(task.statusColor)
             if task.unread > 0 {
                 Text("\(task.unread)")
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 0)
+                    .font(.system(size: 10, design: .monospaced).weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
                     .foregroundStyle(.white)
                     .background(Capsule().fill(.tint))
             }
@@ -376,13 +347,13 @@ struct TaskRow: View {
         .padding(.leading, 24)
         .padding(.trailing, 10)
         .opacity(task.enabled ? 1 : 0.55)
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
         .background(
             ZStack {
                 if selected {
                     SwiftUI.Color.accentColor.opacity(0.18)
                 } else if hovered {
-                    SwiftUI.Color.secondary.opacity(0.10)
+                    SwiftUI.Color.secondary.opacity(0.08)
                 }
                 ActivityOverlay(
                     repoColor: SwiftUI.Color(hex: repo.color),
@@ -392,6 +363,12 @@ struct TaskRow: View {
                 )
             }
         )
+        // Continuation of the repo-color spine through task rows.
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(SwiftUI.Color(hex: repo.color))
+                .frame(width: 2)
+        }
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
         // Double-click → rename. Single-click still selects the task.
@@ -605,8 +582,8 @@ struct ActivityOverlay: View {
 
     private var maxThinkingOpacity: Double {
         switch intensity {
-        case .normal: return 0.22
-        case .subtle: return 0.12
+        case .normal: return 0.18
+        case .subtle: return 0.10
         }
     }
     private var minThinkingOpacity: Double {
@@ -617,14 +594,14 @@ struct ActivityOverlay: View {
     }
     private var justReadyOpacity: Double {
         switch intensity {
-        case .normal: return 0.28
-        case .subtle: return 0.16
+        case .normal: return 0.22
+        case .subtle: return 0.13
         }
     }
     private var readyOpacity: Double {
         switch intensity {
-        case .normal: return 0.10
-        case .subtle: return 0.05
+        case .normal: return 0.08
+        case .subtle: return 0.04
         }
     }
 
