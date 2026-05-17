@@ -80,6 +80,13 @@ struct ManiApp: App {
         WindowGroup {
             ContentView()
                 .frame(minWidth: 800, minHeight: 500)
+                // Make the title bar background transparent so the
+                // sidebar's vibrant material and the masthead's
+                // repo-color rule extend up to the window's top
+                // edge. Window dragging still works on any non-
+                // interactive area of the toolbar; the traffic-light
+                // buttons remain in their standard position.
+                .toolbarBackground(.hidden, for: .windowToolbar)
                 .environmentObject(store)
                 .environmentObject(watcher)
                 .environmentObject(hookListener)
@@ -161,6 +168,7 @@ struct ManiApp: App {
                     Self.startSnapshotTimer(store: store)
                 }
         }
+        .windowStyle(.hiddenTitleBar)
         Settings {
             SettingsView()
                 .environmentObject(store)

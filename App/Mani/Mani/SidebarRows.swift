@@ -74,14 +74,17 @@ struct RepoHeaderRow: View {
 
     var body: some View {
         let color = SwiftUI.Color(hex: repo.color)
-        HStack(spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
             Image(systemName: "chevron.right")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(color.opacity(0.7))
                 .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 .frame(width: 12)
+            // New York serif for repo names — the editorial display
+            // face that ships with macOS but nobody uses. Distinctive
+            // vs every other SwiftUI app's SF Pro.
             Text(repo.name)
-                .font(.system(.headline, design: .rounded).weight(.semibold))
+                .font(.system(.title3, design: .serif).weight(.bold))
                 .tracking(-0.3)
                 .foregroundStyle(repo.enabled ? color : color.opacity(0.55))
                 .strikethrough(!repo.enabled)
@@ -97,8 +100,8 @@ struct RepoHeaderRow: View {
                     )
             }
         }
-        .padding(.leading, 10)
-        .padding(.trailing, 10)
+        .padding(.leading, 12)
+        .padding(.trailing, 12)
         .padding(.vertical, 6)
         .background(
             ZStack {
@@ -159,8 +162,8 @@ struct WorktreeHeaderRow: View {
 
     var body: some View {
         singleLine
-        .padding(.leading, 10)
-        .padding(.trailing, 10)
+        .padding(.leading, 12)
+        .padding(.trailing, 12)
         .padding(.vertical, 4)
         .background(
             ZStack {
@@ -197,35 +200,29 @@ struct WorktreeHeaderRow: View {
     }
 
     private var singleLine: some View {
-        HStack(spacing: 7) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.tertiary)
                 .rotationEffect(.degrees(isExpanded ? 90 : 0))
                 .frame(width: 10)
-            // Project name in SF Pro Rounded — distinguishes the
-            // "project as unit of intent" face from the technical
-            // mono used for paths/branches/counts in this hierarchy.
+            // Project name in New York serif — the editorial display
+            // face shared with the repo header above. Same face,
+            // different weight: bold on repos, semibold on projects.
+            // Hard-clip on overflow rather than ellipsis-truncate.
+            // .fixedSize(.horizontal) makes the Text render at its
+            // natural width with no `…`; the surrounding frame +
+            // .clipped() crops what doesn't fit. Other HStack items
+            // (pill, triangle, action buttons) keep their natural
+            // positions on the right; the text just gets cut.
             Text(displayName)
-                .font(.system(.subheadline, design: .rounded).weight(.medium))
+                .font(.system(.body, design: .serif).weight(.semibold))
+                .tracking(-0.2)
                 .opacity((!project.isArchived) ? 1 : 0.5)
                 .lineLimit(1)
-                .truncationMode(.middle)
-            if !isExpanded {
-                let count = visibleTaskCount
-                if count > 0 {
-                    let tint = SwiftUI.Color(hex: repo.color)
-                    Text("\(count)")
-                        .font(.system(size: 10, design: .monospaced).weight(.semibold))
-                        .foregroundStyle(tint.opacity(0.85))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 1)
-                        .background(
-                            Capsule().fill(tint.opacity(0.13))
-                        )
-                        .help("\(count) task\(count == 1 ? "" : "s")")
-                }
-            }
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .clipped()
             if project.workspace.missing {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 9))
@@ -252,6 +249,24 @@ struct WorktreeHeaderRow: View {
             .opacity(headerHovered ? 1 : 0)
             .allowsHitTesting(headerHovered)
             .animation(.easeOut(duration: 0.12), value: headerHovered)
+            // Pill goes last so it sits at the row's right edge —
+            // matching the repo-header pill above it. The action
+            // buttons live to its left, opacity-gated on hover.
+            if !isExpanded {
+                let count = visibleTaskCount
+                if count > 0 {
+                    let tint = SwiftUI.Color(hex: repo.color)
+                    Text("\(count)")
+                        .font(.system(size: 10, design: .monospaced).weight(.semibold))
+                        .foregroundStyle(tint.opacity(0.85))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(
+                            Capsule().fill(tint.opacity(0.13))
+                        )
+                        .help("\(count) task\(count == 1 ? "" : "s")")
+                }
+            }
         }
     }
 
@@ -344,14 +359,17 @@ struct TaskRow: View {
                     .background(Capsule().fill(.tint))
             }
         }
-        .padding(.leading, 24)
+        .padding(.leading, 28)
         .padding(.trailing, 10)
         .opacity(task.enabled ? 1 : 0.55)
-        .padding(.vertical, 3)
+        .padding(.vertical, 4)
         .background(
             ZStack {
                 if selected {
-                    SwiftUI.Color.accentColor.opacity(0.18)
+                    // Selection in repo color, not accent blue — the
+                    // selected row "claims" the repo identity rather
+                    // than overriding it with a system color.
+                    SwiftUI.Color(hex: repo.color).opacity(0.16)
                 } else if hovered {
                     SwiftUI.Color.secondary.opacity(0.08)
                 }
@@ -363,11 +381,14 @@ struct TaskRow: View {
                 )
             }
         )
-        // Continuation of the repo-color spine through task rows.
+        // The repo-color spine becomes a chunky "tab" for the selected
+        // task — 4pt wide vs the standard 2pt on neighboring rows.
+        // The spine swells where the user is looking, claiming the
+        // edge of the panel.
         .overlay(alignment: .leading) {
             Rectangle()
                 .fill(SwiftUI.Color(hex: repo.color))
-                .frame(width: 2)
+                .frame(width: selected ? 4 : 2)
         }
         .contentShape(Rectangle())
         .onHover { hovered = $0 }

@@ -59,6 +59,26 @@ struct ContentView: View {
         return nil
     }
 
+    // First repo whose tasks include a thinking claude session.
+    // Drives the soft top-of-window ambient gradient — the whole
+    // app "breathes" the color of whatever's currently working.
+    // If multiple repos have thinking tasks, the iteration order
+    // wins; cheap to evaluate (most repos have 0–few claudes).
+    private var ambientThinkingColor: SwiftUI.Color? {
+        for repo in store.state.repos {
+            for project in repo.projects {
+                for task in project.tasks {
+                    if case let .claude(sid) = task.kind,
+                       let sid,
+                       activityTracker.isThinking(sid: sid) {
+                        return SwiftUI.Color(hex: repo.color)
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
     var body: some View {
         NavigationSplitView {
             SidebarView(
@@ -67,7 +87,15 @@ struct ContentView: View {
                 onSelect: { taskId in selectTask(taskId: taskId) },
                 onSelectConvo: { convoId in selectExternalConvo(convoId) }
             )
-                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 400)
+                .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 420)
+                .scrollContentBackground(.hidden)
+                .background(
+                    VisualEffectView(
+                        material: .underWindowBackground,
+                        blendingMode: .behindWindow
+                    )
+                    .ignoresSafeArea()
+                )
                 .toolbar {
                     ToolbarItem(placement: .primaryAction) {
                         Menu {
@@ -99,7 +127,7 @@ struct ContentView: View {
                         )
                         BreadcrumbDivider()
                         Text("external convo")
-                            .font(.system(.subheadline, design: .rounded).italic())
+                            .font(.system(.title3, design: .serif).italic())
                             .foregroundStyle(.secondary)
                         Spacer()
                     }
@@ -185,16 +213,17 @@ struct ContentView: View {
                 }
             } else {
                 if store.state.repos.isEmpty {
-                    VStack(spacing: 16) {
+                    VStack(spacing: 18) {
                         Image(systemName: "rectangle.stack.badge.plus")
-                            .font(.system(size: 44, weight: .light))
+                            .font(.system(size: 52, weight: .light))
                             .foregroundStyle(.tertiary)
-                        VStack(spacing: 4) {
+                        VStack(spacing: 6) {
                             Text("No repos yet")
-                                .font(.system(.title3, design: .rounded).weight(.semibold))
+                                .font(.system(.largeTitle, design: .serif).weight(.semibold))
+                                .tracking(-0.5)
                                 .foregroundStyle(.secondary)
                             Text("⇧⌘P  to add one")
-                                .font(.system(size: 11, design: .monospaced))
+                                .font(.system(size: 12, design: .monospaced))
                                 .foregroundStyle(.tertiary)
                         }
                         Button("New Repo…") { showingNewRepo = true }
@@ -203,21 +232,41 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    VStack(spacing: 12) {
+                    VStack(spacing: 14) {
                         Image(systemName: "sidebar.left")
-                            .font(.system(size: 32, weight: .light))
+                            .font(.system(size: 36, weight: .light))
                             .foregroundStyle(.quaternary)
                         Text("Select a task")
-                            .font(.system(.title3, design: .rounded).weight(.medium))
+                            .font(.system(.largeTitle, design: .serif).weight(.medium))
+                            .tracking(-0.5)
                             .foregroundStyle(.secondary)
                         Text("pick one from the sidebar to get started")
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(.tertiary)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
         }
+        .overlay(alignment: .top) {
+            // Ambient activity tint: when any task is thinking, a
+            // soft gradient in that repo's color hangs at the top
+            // edge of the window. The app subtly "breathes" the
+            // color of whatever's currently working. Pure
+            // atmosphere — doesn't gate interaction.
+            if let activeColor = ambientThinkingColor {
+                LinearGradient(
+                    colors: [activeColor.opacity(0.18), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 120)
+                .allowsHitTesting(false)
+                .ignoresSafeArea(edges: .top)
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.5), value: ambientThinkingColor)
         .background(readyShortcuts)
         // No onAppear auto-select. The reducer-owned selection
         // already restored from state.json — if it's nil, the user
@@ -1866,9 +1915,34 @@ struct TerminalPane: NSViewRepresentable {
 // used to clutter the sidebar — workspace path, current git branch,
 // ahead/behind, dirty marker. Click the path to reveal the workspace
 // in Finder.
-// One name segment in the detail-pane masthead. SF Pro Rounded for
-// the characterful display face; tinted in repo color so the leaf
-// segment reads as the "you are here" anchor.
+// NSVisualEffectView bridged to SwiftUI so we can give the sidebar
+// a richer material than the default NavigationSplitView column
+// background. The .underWindowBackground material is darker and
+// more atmospheric than .sidebar — it sits "below" the window,
+// reading as an excavated panel rather than a layered surface.
+struct VisualEffectView: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+    let blendingMode: NSVisualEffectView.BlendingMode
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = material
+        view.blendingMode = blendingMode
+        view.state = .followsWindowActiveState
+        view.isEmphasized = true
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
+        nsView.blendingMode = blendingMode
+    }
+}
+
+// One name segment in the detail-pane masthead. New York serif —
+// same editorial face used by the sidebar rows, so the masthead
+// reads as a continuation of the sidebar's typographic system
+// rather than its own visual world.
 private struct BreadcrumbSegment: View {
     let text: String
     let tint: SwiftUI.Color
@@ -1876,7 +1950,8 @@ private struct BreadcrumbSegment: View {
 
     var body: some View {
         Text(text)
-            .font(.system(.subheadline, design: .rounded).weight(weight))
+            .font(.system(.title3, design: .serif).weight(weight))
+            .tracking(-0.2)
             .foregroundStyle(tint)
             .lineLimit(1)
             .truncationMode(.middle)
@@ -1889,8 +1964,8 @@ private struct BreadcrumbSegment: View {
 private struct BreadcrumbDivider: View {
     var body: some View {
         Text("/")
-            .font(.system(.subheadline, design: .monospaced))
-            .foregroundStyle(.tertiary)
+            .font(.system(.title3, design: .monospaced))
+            .foregroundStyle(.tertiary.opacity(0.6))
     }
 }
 
