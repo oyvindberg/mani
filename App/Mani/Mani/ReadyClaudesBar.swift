@@ -116,15 +116,24 @@ struct ReadyClaudesBar: View {
             let tip = entries
                 .map { "\($0.repo.name) › \($0.project.name) › \($0.task.name)" }
                 .joined(separator: "\n")
-            HStack(spacing: 3) {
-                Image(systemName: "bell.badge.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.orange)
-                Text("\(entries.count) ready")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.primary)
+            // Clicking the counter pops the "Standing by." overlay —
+            // same content, dedicated surface. The bar gives at-a-
+            // glance signal; the overlay gives keyboard-driven
+            // navigation across all awaiting work.
+            Button {
+                StandingByPanelController.shared.show()
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "bell.badge.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                    Text("\(entries.count) ready")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.primary)
+                }
             }
-            .help(tip)
+            .buttonStyle(.plain)
+            .help(tip + "\n\n⌘⇧M to open Standing by overlay")
         }
     }
 }

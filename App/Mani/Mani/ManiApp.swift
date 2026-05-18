@@ -124,6 +124,16 @@ struct ManiApp: App {
                             await Self.handleSessionStart(payload, store: store)
                         }
                     }
+                    hookListener.onStop = { [tracker] payload in
+                        // Skip claude's internal stop-hook re-entries
+                        // (stop_hook_active=true) — those are part of
+                        // claude's own hook chain, not a user-visible
+                        // "turn finished" signal.
+                        guard !payload.stopHookActive else { return }
+                        _Concurrency.Task { @MainActor in
+                            tracker.markAwaitingInput(sid: payload.sessionId)
+                        }
+                    }
                     watcher.start()
                     hookListener.start()
                     // Boot reconciliation: drop any .running tasks whose
@@ -166,9 +176,29 @@ struct ManiApp: App {
                     worktreeStatsPoller.start()
                     taskStatsPoller.start()
                     Self.startSnapshotTimer(store: store)
+                    // "Standing by." overlay — hand the controller
+                    // live references and register the global
+                    // ⌘⇧M hotkey. configure() is idempotent so
+                    // calling it from .task is safe across
+                    // window restoration.
+                    StandingByPanelController.shared.configure(
+                        store: store,
+                        tracker: activityTracker
+                    )
                 }
         }
         .windowStyle(.hiddenTitleBar)
+        .commands {
+            // Menu entry stays for discoverability. The shortcut
+            // is registered globally via Carbon (GlobalHotkey),
+            // so we deliberately omit .keyboardShortcut here to
+            // avoid double-firing or competing reservations.
+            CommandMenu("Standing by") {
+                Button("Show / hide overlay  ⌘⇧M") {
+                    StandingByPanelController.shared.toggle()
+                }
+            }
+        }
         Settings {
             SettingsView()
                 .environmentObject(store)

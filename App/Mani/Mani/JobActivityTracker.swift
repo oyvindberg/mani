@@ -46,6 +46,22 @@ final class TaskActivityTracker: ObservableObject {
     // thinking. Used to drive the brief "just became ready" pulse.
     @Published private(set) var settledAt: [String: Date] = [:]
 
+    // Sessions whose last observed lifecycle event was claude's
+    // `Stop` hook — claude finished its turn, control returned to
+    // the user, no further bytes will arrive until the user types
+    // a new prompt. The latch persists until claude resumes work
+    // (recordActivity clears it) or the user explicitly dismisses.
+    //
+    // This is the "this claude is waiting for me" signal — the
+    // main feature surface. Separate from unread (which clears on
+    // view) and thinking (which clears on silence).
+    @Published private(set) var awaitingInputSessions: Set<String> = []
+
+    // When each awaiting-input transition happened. Lets the UI
+    // sort "needs attention" rows oldest-waiting-first so the
+    // session that's been hanging longest is most prominent.
+    @Published private(set) var awaitingInputSince: [String: Date] = [:]
+
     private var lastByteAt: [String: Date] = [:]
     private var tickTask: _Concurrency.Task<Void, Never>?
 
@@ -66,6 +82,10 @@ final class TaskActivityTracker: ObservableObject {
 
     // Called whenever ClaudeWatcher observes new bytes on a session's
     // JSONL. Idempotent: re-recording just updates the timestamp.
+    //
+    // Also clears the awaiting-input latch: if claude is producing
+    // bytes again, it has resumed work, so any previously latched
+    // "waiting for you" state is stale and should drop.
     func recordActivity(sid: String) {
         lastByteAt[sid] = Date()
         if !thinkingSessions.contains(sid) {
@@ -74,6 +94,36 @@ final class TaskActivityTracker: ObservableObject {
             // of the LAST transition out of thinking, used for the
             // "just-ready" pulse window.
         }
+        if awaitingInputSessions.contains(sid) {
+            awaitingInputSessions.remove(sid)
+            awaitingInputSince.removeValue(forKey: sid)
+        }
+    }
+
+    // Called when claude's `Stop` hook fires for `sid` — the
+    // assistant turn completed and control returned to the user.
+    // Latches awaitingInput for this session until activity resumes.
+    //
+    // We deliberately do NOT also clear `thinkingSessions` here: the
+    // silence-threshold tick still owns that transition. Stop and
+    // the final byte often arrive within milliseconds of each other,
+    // and racing the two transitions would cause flicker in the UI.
+    // Letting `tick()` settle thinkingSessions on its own keeps the
+    // existing "just became ready" pulse intact and adds the
+    // awaiting-input latch as a separate concern.
+    func markAwaitingInput(sid: String) {
+        if !awaitingInputSessions.contains(sid) {
+            awaitingInputSessions.insert(sid)
+            awaitingInputSince[sid] = Date()
+        }
+    }
+
+    // Manual clear — e.g. the user explicitly dismisses the
+    // "needs attention" badge from the UI without typing a prompt.
+    // Idempotent.
+    func clearAwaitingInput(sid: String) {
+        awaitingInputSessions.remove(sid)
+        awaitingInputSince.removeValue(forKey: sid)
     }
 
     // Convenience for callers reading from sparse TaskKind without
@@ -81,6 +131,19 @@ final class TaskActivityTracker: ObservableObject {
     func isThinking(sid: String?) -> Bool {
         guard let sid else { return false }
         return thinkingSessions.contains(sid)
+    }
+
+    func isAwaitingInput(sid: String?) -> Bool {
+        guard let sid else { return false }
+        return awaitingInputSessions.contains(sid)
+    }
+
+    // Wall-clock instant the session entered the awaiting-input
+    // state. Lets the UI render "waiting 3 m ago" subtitles and sort
+    // a global "needs attention" list oldest-first.
+    func awaitingInputSince(sid: String?) -> Date? {
+        guard let sid else { return nil }
+        return awaitingInputSince[sid]
     }
 
     // True iff the session settled within the last justReadyWindow.

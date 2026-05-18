@@ -24,6 +24,7 @@ final class HookListenerService: ObservableObject {
     @Published private(set) var lastEnvelope: ReceivedEnvelope?
 
     var onSessionStart: ((SessionStartPayload) -> Void)?
+    var onStop: ((StopPayload) -> Void)?
 
     let socketPath: String
     private var sock: Int32 = -1
@@ -122,6 +123,7 @@ final class HookListenerService: ObservableObject {
         let inner = HookListenerService.innerJSON(payload: payload)
         let summary = HookListenerService.summarise(inner: inner, fallback: payload)
         let sessionStart = HookListenerService.parseSessionStart(inner: inner)
+        let stop = HookListenerService.parseStop(inner: inner)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.receivedCount += 1
@@ -132,6 +134,9 @@ final class HookListenerService: ObservableObject {
             )
             if let sessionStart {
                 self.onSessionStart?(sessionStart)
+            }
+            if let stop {
+                self.onStop?(stop)
             }
         }
     }
@@ -154,6 +159,20 @@ final class HookListenerService: ObservableObject {
     private static func summarise(inner: [String: Any]?, fallback: String) -> String {
         if let event = inner?["hook_event_name"] as? String { return event }
         return String(fallback.prefix(80))
+    }
+
+    private static func parseStop(inner: [String: Any]?) -> StopPayload? {
+        guard let inner,
+              (inner["hook_event_name"] as? String) == "Stop",
+              let sid = inner["session_id"] as? String
+        else { return nil }
+        let transcript = inner["transcript_path"] as? String
+        let active = (inner["stop_hook_active"] as? Bool) ?? false
+        return StopPayload(
+            sessionId: sid,
+            transcriptPath: transcript,
+            stopHookActive: active
+        )
     }
 
     private static func parseSessionStart(inner: [String: Any]?) -> SessionStartPayload? {
