@@ -1883,12 +1883,58 @@ struct TerminalPane: NSViewRepresentable {
             // and reattach looks blank. Then subscribe with
             // replayCaptured: false — the disk content already covers
             // every byte the AgentClient has captured this attach.
+            guard let renderer else { return }
             if let path = taskPath, let history = readScrollback(taskId: path.task) {
-                renderer?.feed(history)
-                renderer?.attachToPTY(pty, replayCaptured: false)
+                // Cap the pre-feed: scrollback above the visible
+                // viewport is invisible anyway, and large logs (>10 MB)
+                // hang libghostty's surface_write_buffer — the synchronous
+                // ghostty FFI parks on a Zig futex waiting for the
+                // consumer to drain a queue it can't drain fast enough.
+                // 512 KB ~= a few thousand lines of output, plenty for
+                // any human-visible scrollback. Start at a CR/LF
+                // boundary near the cap so we don't slice mid-escape-
+                // sequence and render junk briefly.
+                let capped = capScrollback(history, maxBytes: 512 * 1024)
+                let chunks = chunked(capped, chunkSize: 64 * 1024)
+                _Concurrency.Task { @MainActor [weak self] in
+                    for chunk in chunks {
+                        // Bail if the Coordinator detached / a different
+                        // task got selected before we finished feeding.
+                        guard let self, self.renderer === renderer else { return }
+                        renderer.feed(chunk)
+                        await _Concurrency.Task.yield()
+                    }
+                    guard let self, self.renderer === renderer else { return }
+                    renderer.attachToPTY(pty, replayCaptured: false)
+                }
             } else {
-                renderer?.attachToPTY(pty)
+                renderer.attachToPTY(pty)
             }
+        }
+
+        // Trim from the head so the tail of the log is intact.
+        // Skips to the first newline past the cut so we don't begin
+        // mid-escape-sequence.
+        private func capScrollback(_ data: Data, maxBytes: Int) -> Data {
+            guard data.count > maxBytes else { return data }
+            let tail = data.suffix(maxBytes)
+            if let lf = tail.firstIndex(of: 0x0A) {
+                return Data(tail[(lf + 1)...])
+            }
+            return Data(tail)
+        }
+
+        private func chunked(_ data: Data, chunkSize: Int) -> [Data] {
+            guard chunkSize > 0, !data.isEmpty else { return data.isEmpty ? [] : [data] }
+            var out: [Data] = []
+            out.reserveCapacity((data.count + chunkSize - 1) / chunkSize)
+            var idx = data.startIndex
+            while idx < data.endIndex {
+                let end = data.index(idx, offsetBy: chunkSize, limitedBy: data.endIndex) ?? data.endIndex
+                out.append(Data(data[idx..<end]))
+                idx = end
+            }
+            return out
         }
 
         // Path mirrors EffectRunner's scrollback layout:
