@@ -13,6 +13,13 @@ public struct Repo: Codable, Equatable, Identifiable {
     // watcher on ~/.claude/projects). They sit alongside projects
     // until the user adopts one into a project.
     public var externalConvos: [ExternalConvo]
+    // Workspace directories that belong to the repo but aren't
+    // bound to an active project right now (typically: orphaned by
+    // archiving a manual-worktree project). Surface them at the
+    // repo level so the user can spawn a new project against the
+    // same directory without re-discovering it from the
+    // filesystem.
+    public var availableWorktrees: [AvailableWorktree]
     public var createdAt: Date
     // Optional override for the claude binary invocation. nil =
     // inherit Settings.claudeInvocation.
@@ -26,6 +33,7 @@ public struct Repo: Codable, Equatable, Identifiable {
         rootDir: URL,
         projects: [Project],
         externalConvos: [ExternalConvo],
+        availableWorktrees: [AvailableWorktree],
         createdAt: Date,
         claudeInvocation: String?
     ) {
@@ -36,13 +44,14 @@ public struct Repo: Codable, Equatable, Identifiable {
         self.rootDir = rootDir
         self.projects = projects
         self.externalConvos = externalConvos
+        self.availableWorktrees = availableWorktrees
         self.createdAt = createdAt
         self.claudeInvocation = claudeInvocation
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, color, enabled, rootDir
-        case projects, externalConvos
+        case projects, externalConvos, availableWorktrees
         case createdAt, claudeInvocation
     }
 
@@ -67,6 +76,10 @@ public struct Repo: Codable, Equatable, Identifiable {
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
         self.claudeInvocation = try? c.decodeIfPresent(String.self, forKey: .claudeInvocation)
         self.rootDir = try c.decode(URL.self, forKey: .rootDir)
+
+        self.availableWorktrees = (try? c.decodeIfPresent(
+            [AvailableWorktree].self, forKey: .availableWorktrees
+        )) ?? []
 
         if let projects = try c.decodeIfPresent([Project].self, forKey: .projects) {
             self.projects = projects

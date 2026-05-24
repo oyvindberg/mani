@@ -25,6 +25,7 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             rootDir: rootDir,
             projects: [initialProject],
             externalConvos: [],
+            availableWorktrees: [],
             createdAt: Date(),
             claudeInvocation: nil
         )
@@ -114,6 +115,28 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         if project.archivedAt != nil { return ([], []) }
         let when = Date()
         var events: [Event] = [.projectArchived(at: at, when: when)]
+        // Manual `.folder` workspaces don't go through Mani-managed
+        // git lifecycle (`git worktree add` / `remove`), so the
+        // directory stays on disk indefinitely. Surface it as an
+        // AvailableWorktree under the repo so the user can spawn a
+        // new project against the same path without re-pointing
+        // through the picker. .gitWorktree paths are skipped — those
+        // get fetched + reset below and the user typically wants
+        // them gone or treats the archived project itself as the
+        // bookmark.
+        if case .folder = project.workspace.kind,
+           state.repos.first(where: { $0.id == at.repo })?
+               .availableWorktrees
+               .contains(where: { $0.path == project.workspace.path }) == false
+        {
+            let avail = AvailableWorktree(
+                id: UUID(),
+                path: project.workspace.path,
+                kind: project.workspace.kind,
+                addedAt: when
+            )
+            events.append(.availableWorktreeAdded(repoId: at.repo, avail))
+        }
         if let sel = state.selectedTaskPath, sel.projectPath == at {
             events.append(.taskSelectionChanged(nil))
         }
@@ -243,6 +266,34 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         let event = Event.taskSpecChanged(at: at, spec: spec)
         return ([event], [.persistEvents([event])])
 
+    case let .moveTask(from, to):
+        guard let sourceRepo = state.repos.first(where: { $0.id == from.repo }),
+              let sourceProject = sourceRepo.projects.first(where: { $0.id == from.project }),
+              sourceProject.tasks.contains(where: { $0.id == from.task })
+        else { return ([], []) }
+        // Cross-repo moves are out of scope: process cwd, agent
+        // socket, scrollback dir are all keyed by the original
+        // repo's app-support layout. Keep it intra-repo.
+        guard to.repo == from.repo else { return ([], []) }
+        guard let targetProject = sourceRepo.projects.first(where: { $0.id == to.project })
+        else { return ([], []) }
+        // Same workspace requirement: the running process's cwd
+        // is sourceProject.workspace.path. Moving to a project
+        // with a different workspace would silently break the
+        // user's mental model — they'd see the task under a new
+        // project label that points elsewhere.
+        guard sourceProject.workspace.path == targetProject.workspace.path
+        else { return ([], []) }
+        // Same project = no-op rather than a confusing re-insert.
+        guard from.project != to.project else { return ([], []) }
+
+        let toFull = TaskPath(repo: to.repo, project: to.project, task: from.task)
+        var events: [Event] = [.taskMoved(from: from, to: toFull)]
+        if state.selectedTaskPath == from {
+            events.append(.taskSelectionChanged(toFull))
+        }
+        return (events, [.persistEvents(events)])
+
     case let .taskSpawned(at, when):
         guard findTask(state, at) != nil else { return ([], []) }
         let event = Event.taskSpawned(at: at, when: when)
@@ -261,6 +312,15 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             ))
         }
         return ([event], effects)
+
+    // MARK: Available worktrees
+
+    case let .removeAvailableWorktree(repoId, id):
+        guard let repo = state.repos.first(where: { $0.id == repoId }),
+              repo.availableWorktrees.contains(where: { $0.id == id })
+        else { return ([], []) }
+        let event = Event.availableWorktreeRemoved(repoId: repoId, id: id)
+        return ([event], [.persistEvents([event])])
 
     // MARK: External convos
 
@@ -446,6 +506,20 @@ public func apply(_ state: inout AppState, _ event: Event) {
             }
         }
 
+    case let .taskMoved(from, to):
+        // Same task id, different project. Remove from source's
+        // tasks array, insert into target's. The task's state
+        // (kind, runtime, unread, spec) is preserved verbatim.
+        guard let ri = state.repos.firstIndex(where: { $0.id == from.repo }),
+              let spi = state.repos[ri].projects.firstIndex(where: { $0.id == from.project }),
+              let task = state.repos[ri].projects[spi].tasks
+                  .first(where: { $0.id == from.task })
+        else { return }
+        state.repos[ri].projects[spi].tasks.removeAll(where: { $0.id == from.task })
+        if let tpi = state.repos[ri].projects.firstIndex(where: { $0.id == to.project }) {
+            state.repos[ri].projects[tpi].tasks.append(task)
+        }
+
     case let .externalConvoDiscovered(repoId, convo):
         if let i = state.repos.firstIndex(where: { $0.id == repoId }) {
             state.repos[i].externalConvos.append(convo)
@@ -454,6 +528,21 @@ public func apply(_ state: inout AppState, _ event: Event) {
     case let .externalConvoDismissed(at):
         if let i = state.repos.firstIndex(where: { $0.id == at.repo }) {
             state.repos[i].externalConvos.removeAll(where: { $0.id == at.convo })
+        }
+
+    case let .availableWorktreeAdded(repoId, worktree):
+        if let i = state.repos.firstIndex(where: { $0.id == repoId }) {
+            // Defensive dedupe by path — the reducer also guards
+            // against duplicates but apply() is the source of
+            // truth for state.json replay.
+            if !state.repos[i].availableWorktrees.contains(where: { $0.path == worktree.path }) {
+                state.repos[i].availableWorktrees.append(worktree)
+            }
+        }
+
+    case let .availableWorktreeRemoved(repoId, id):
+        if let i = state.repos.firstIndex(where: { $0.id == repoId }) {
+            state.repos[i].availableWorktrees.removeAll(where: { $0.id == id })
         }
 
     case let .taskSpawned(at, when):

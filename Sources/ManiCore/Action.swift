@@ -38,6 +38,20 @@ public enum Action {
     case markRead(at: TaskPath)
     case restartTask(at: TaskPath)
     case setTaskSpec(at: TaskPath, spec: ProcessSpec)
+    // Move a task from its current project to another. The target
+    // project must live in the same repo, and the workspace.path
+    // of source and target must match — the running process's cwd
+    // is the source workspace, and the task keeps running there.
+    // No process restart is needed; only the parent in the
+    // hierarchy changes.
+    case moveTask(from: TaskPath, to: ProjectPath)
+
+    // MARK: Available worktrees
+    // Workspace dirs left over from archived manual-worktree
+    // projects. The archive reducer auto-adds them; the user can
+    // remove from the sidebar list once they're truly done with
+    // the directory.
+    case removeAvailableWorktree(repoId: UUID, id: UUID)
 
     // MARK: External convos
     // Discovered via the FSEvents watcher on ~/.claude/projects. The

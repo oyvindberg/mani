@@ -202,6 +202,75 @@ final class ReducerTests: XCTestCase {
         XCTAssertTrue(events.isEmpty)
     }
 
+    func test_archiveProject_folderWorkspace_addsAvailableWorktree() {
+        let repoId = UUID()
+        let projectId = UUID()
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, projects: [
+                makeProject(id: projectId, tasks: [])
+            ])
+        ])
+        let path = ProjectPath(repo: repoId, project: projectId)
+        let (events, _) = reduce(state, .archiveProject(at: path))
+
+        let added = events.compactMap { event -> AvailableWorktree? in
+            if case let .availableWorktreeAdded(_, wt) = event { return wt }
+            return nil
+        }
+        XCTAssertEqual(added.count, 1)
+        XCTAssertEqual(added.first?.path.path, "/wt/main")
+        for e in events { apply(&state, e) }
+        XCTAssertEqual(state.repos[0].availableWorktrees.count, 1)
+        XCTAssertEqual(state.repos[0].availableWorktrees[0].path.path, "/wt/main")
+    }
+
+    func test_archiveProject_gitWorktree_doesNotAddAvailable() {
+        let repoId = UUID()
+        let projectId = UUID()
+        let project = Project(
+            id: projectId, name: "feat",
+            workspace: Workspace(
+                path: URL(fileURLWithPath: "/wt/feat"),
+                kind: .gitWorktree(branch: "feat", baseRef: "main"),
+                missing: false
+            ),
+            tasks: [], archivedAt: nil, createdAt: Date()
+        )
+        let state = stateWith(repos: [makeRepo(id: repoId, projects: [project])])
+        let path = ProjectPath(repo: repoId, project: projectId)
+        let (events, _) = reduce(state, .archiveProject(at: path))
+
+        let hasAvail = events.contains { event in
+            if case .availableWorktreeAdded = event { return true }
+            return false
+        }
+        XCTAssertFalse(hasAvail)
+    }
+
+    func test_archiveProject_doesNotDuplicateAvailableWorktree() {
+        let repoId = UUID()
+        let projectId = UUID()
+        let existing = AvailableWorktree(
+            id: UUID(),
+            path: URL(fileURLWithPath: "/wt/main"),
+            kind: .folder,
+            addedAt: Date()
+        )
+        var repo = makeRepo(id: repoId, projects: [
+            makeProject(id: projectId, tasks: [])
+        ])
+        repo.availableWorktrees = [existing]
+        let state = stateWith(repos: [repo])
+        let path = ProjectPath(repo: repoId, project: projectId)
+        let (events, _) = reduce(state, .archiveProject(at: path))
+
+        let added = events.contains { event in
+            if case .availableWorktreeAdded = event { return true }
+            return false
+        }
+        XCTAssertFalse(added)
+    }
+
     func test_unarchiveProject_revertsArchivedAt() {
         let repoId = UUID()
         let projectId = UUID()
@@ -604,6 +673,136 @@ final class ReducerTests: XCTestCase {
         ))
         XCTAssertTrue(events.isEmpty)
     }
+
+    // MARK: - moveTask
+
+    func test_moveTask_sameWorkspace_movesTaskAcrossProjects() {
+        let repoId = UUID()
+        let sourceId = UUID()
+        let targetId = UUID()
+        let taskId = UUID()
+        let workspace = Workspace(
+            path: URL(fileURLWithPath: "/wt/shared"),
+            kind: .folder,
+            missing: false
+        )
+        let source = Project(
+            id: sourceId, name: "old",
+            workspace: workspace,
+            tasks: [makeTask(id: taskId, runtime: .running(spawnedAt: Date()))],
+            archivedAt: nil, createdAt: Date()
+        )
+        let target = Project(
+            id: targetId, name: "new",
+            workspace: workspace,
+            tasks: [],
+            archivedAt: nil, createdAt: Date()
+        )
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, projects: [source, target])
+        ])
+        let from = TaskPath(repo: repoId, project: sourceId, task: taskId)
+        let to   = ProjectPath(repo: repoId, project: targetId)
+
+        let (events, _) = reduce(state, .moveTask(from: from, to: to))
+        XCTAssertEqual(events.count, 1)
+        guard case let .taskMoved(eFrom, eTo) = events[0] else {
+            return XCTFail("expected taskMoved, got \(events[0])")
+        }
+        XCTAssertEqual(eFrom, from)
+        XCTAssertEqual(eTo, TaskPath(repo: repoId, project: targetId, task: taskId))
+        for e in events { apply(&state, e) }
+        XCTAssertTrue(state.repos[0].projects[0].tasks.isEmpty)
+        XCTAssertEqual(state.repos[0].projects[1].tasks.map(\.id), [taskId])
+    }
+
+    func test_moveTask_differentWorkspace_isNoop() {
+        let repoId = UUID()
+        let sourceId = UUID()
+        let targetId = UUID()
+        let taskId = UUID()
+        let source = Project(
+            id: sourceId, name: "a",
+            workspace: Workspace(
+                path: URL(fileURLWithPath: "/wt/a"),
+                kind: .folder, missing: false
+            ),
+            tasks: [makeTask(id: taskId, runtime: .running(spawnedAt: Date()))],
+            archivedAt: nil, createdAt: Date()
+        )
+        let target = Project(
+            id: targetId, name: "b",
+            workspace: Workspace(
+                path: URL(fileURLWithPath: "/wt/b"),
+                kind: .folder, missing: false
+            ),
+            tasks: [],
+            archivedAt: nil, createdAt: Date()
+        )
+        let state = stateWith(repos: [
+            makeRepo(id: repoId, projects: [source, target])
+        ])
+        let from = TaskPath(repo: repoId, project: sourceId, task: taskId)
+        let to   = ProjectPath(repo: repoId, project: targetId)
+
+        let (events, _) = reduce(state, .moveTask(from: from, to: to))
+        XCTAssertTrue(events.isEmpty)
+    }
+
+    func test_moveTask_sameProject_isNoop() {
+        let repoId = UUID()
+        let projectId = UUID()
+        let taskId = UUID()
+        let state = stateWith(repos: [
+            makeRepo(id: repoId, projects: [
+                makeProject(id: projectId, tasks: [
+                    makeTask(id: taskId, runtime: .running(spawnedAt: Date()))
+                ])
+            ])
+        ])
+        let from = TaskPath(repo: repoId, project: projectId, task: taskId)
+        let to   = ProjectPath(repo: repoId, project: projectId)
+        let (events, _) = reduce(state, .moveTask(from: from, to: to))
+        XCTAssertTrue(events.isEmpty)
+    }
+
+    func test_moveTask_updatesSelectionIfMatchedTaskWasSelected() {
+        let repoId = UUID()
+        let sourceId = UUID()
+        let targetId = UUID()
+        let taskId = UUID()
+        let workspace = Workspace(
+            path: URL(fileURLWithPath: "/wt/shared"),
+            kind: .folder, missing: false
+        )
+        let source = Project(
+            id: sourceId, name: "old", workspace: workspace,
+            tasks: [makeTask(id: taskId, runtime: .running(spawnedAt: Date()))],
+            archivedAt: nil, createdAt: Date()
+        )
+        let target = Project(
+            id: targetId, name: "new", workspace: workspace,
+            tasks: [], archivedAt: nil, createdAt: Date()
+        )
+        let selected = TaskPath(repo: repoId, project: sourceId, task: taskId)
+        var state = stateWith(
+            repos: [makeRepo(id: repoId, projects: [source, target])],
+            selectedTaskPath: selected
+        )
+        let to = ProjectPath(repo: repoId, project: targetId)
+
+        let (events, _) = reduce(state, .moveTask(from: selected, to: to))
+        XCTAssertEqual(events.count, 2)
+        guard case let .taskSelectionChanged(newPath) = events[1] else {
+            return XCTFail("expected selectionChanged, got \(events[1])")
+        }
+        XCTAssertEqual(newPath, TaskPath(repo: repoId, project: targetId, task: taskId))
+        for e in events { apply(&state, e) }
+        XCTAssertEqual(
+            state.selectedTaskPath,
+            TaskPath(repo: repoId, project: targetId, task: taskId)
+        )
+    }
 }
 
 // MARK: - Helpers
@@ -649,6 +848,7 @@ private func makeRepo(id: UUID, projects: [Project]) -> Repo {
         rootDir: URL(fileURLWithPath: "/wt/main"),
         projects: projects,
         externalConvos: [],
+        availableWorktrees: [],
         createdAt: Date(),
         claudeInvocation: nil
     )

@@ -226,6 +226,7 @@ final class ClaudeSessionStartTests: XCTestCase {
                         )
                     ],
                     externalConvos: [],
+                    availableWorktrees: [],
                     createdAt: Date(),
                     claudeInvocation: nil
                 )

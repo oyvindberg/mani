@@ -190,6 +190,7 @@ final class ClaudeTaskSpecTests: XCTestCase {
                 )
             ],
             externalConvos: [],
+            availableWorktrees: [],
             createdAt: Date(),
             claudeInvocation: nil
         )

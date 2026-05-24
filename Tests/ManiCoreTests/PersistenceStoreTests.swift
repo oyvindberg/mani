@@ -35,6 +35,7 @@ final class PersistenceStoreTests: XCTestCase {
             rootDir: URL(fileURLWithPath: "/tmp/\(name)"),
             projects: [],
             externalConvos: [],
+            availableWorktrees: [],
             createdAt: Date(),
             claudeInvocation: nil
         ))

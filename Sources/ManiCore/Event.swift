@@ -28,6 +28,14 @@ public enum Event: Codable, Equatable {
     case taskDeleted(at: TaskPath)
     case taskSpecChanged(at: TaskPath, spec: ProcessSpec)
     case claudeSessionLinked(at: TaskPath, sessionId: String)
+    // `from` and `to` are full TaskPaths even though the task id
+    // is the same in both — apply() needs both project ids to
+    // remove from one and insert into the other.
+    case taskMoved(from: TaskPath, to: TaskPath)
+
+    // MARK: Available worktrees
+    case availableWorktreeAdded(repoId: UUID, AvailableWorktree)
+    case availableWorktreeRemoved(repoId: UUID, id: UUID)
 
     // MARK: External convos
     case externalConvoDiscovered(repoId: UUID, ExternalConvo)
