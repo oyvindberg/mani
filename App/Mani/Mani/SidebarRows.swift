@@ -1,5 +1,16 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import ManiCore
+
+// Drag-source info, shared between SidebarView (which owns the
+// @State), TaskRow (which sets it on .onDrag), and
+// WorktreeHeaderRow (which reads it on .onDrop for visual
+// feedback). Lives at module scope because two row structs
+// reference its type in their stored bindings.
+struct SidebarDragInfo: Equatable {
+    let taskPath: TaskPath
+    let workspace: URL
+}
 
 // Visual components shared by the new sidebar hierarchy. Three levels:
 //   RepoHeaderRow → WorktreeHeaderRow → TaskRow
@@ -153,11 +164,35 @@ struct WorktreeHeaderRow: View {
     let onNewShell: () -> Void
     let onNewClaude: () -> Void
     let onContextMenu: () -> AnyView
+    @Binding var dragInfo: SidebarDragInfo?
+    let onMoveTaskHere: (TaskPath) -> Void
 
+    @ObservedObject private var statsCache = WorktreeStatsCache.shared
     @State private var headerHovered = false
+    @State private var dropTargeted = false
+
+    // True iff there's an active drag AND its source workspace
+    // matches this project's AND it's not the same project (a
+    // move into the same project is a no-op the reducer rejects).
+    private var dropValid: Bool {
+        guard let info = dragInfo else { return false }
+        guard info.workspace == project.workspace.path else { return false }
+        return info.taskPath.project != project.id
+    }
+
+    // True iff there's an active drag but our workspace doesn't
+    // match — we render the "not allowed" hint so the user knows
+    // why the drop won't take.
+    private var dropInvalid: Bool {
+        dragInfo != nil && !dropValid
+    }
 
     private var displayName: String {
         project.name
+    }
+
+    private var gitStats: WorktreeGitStats? {
+        statsCache.stats[project.id]
     }
 
     var body: some View {
@@ -167,7 +202,14 @@ struct WorktreeHeaderRow: View {
         .padding(.vertical, 4)
         .background(
             ZStack {
-                if headerHovered {
+                // Drop highlight: repo-color tint when valid, red
+                // tint when the source workspace doesn't match.
+                // Both only render while the drag is over this row.
+                if dropTargeted && dropValid {
+                    SwiftUI.Color(hex: repo.color).opacity(0.22)
+                } else if dropTargeted && dropInvalid {
+                    SwiftUI.Color.red.opacity(0.16)
+                } else if headerHovered {
                     SwiftUI.Color.secondary.opacity(0.06)
                 }
                 // Dimmer overlay than per-task: this is the aggregate
@@ -189,6 +231,28 @@ struct WorktreeHeaderRow: View {
                 .fill(SwiftUI.Color(hex: repo.color))
                 .frame(width: 2)
         }
+        // Validity ring + glyph: a thin stroke and a corner badge
+        // make the accept/reject state unambiguous even when the
+        // row is partially obscured by the dragged item.
+        .overlay(
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .strokeBorder(
+                    dropTargeted && dropValid
+                        ? SwiftUI.Color(hex: repo.color).opacity(0.85)
+                        : (dropTargeted && dropInvalid
+                            ? SwiftUI.Color.red.opacity(0.75)
+                            : SwiftUI.Color.clear),
+                    lineWidth: 1
+                )
+        )
+        .overlay(alignment: .trailing) {
+            if dropTargeted && dropInvalid {
+                Image(systemName: "nosign")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.red)
+                    .padding(.trailing, 8)
+            }
+        }
         .contentShape(Rectangle())
         .onHover { headerHovered = $0 }
         // Double-click → rename. SwiftUI waits for the double-tap
@@ -197,6 +261,19 @@ struct WorktreeHeaderRow: View {
         .onTapGesture(count: 2, perform: onRename)
         .onTapGesture(count: 1, perform: onToggle)
         .contextMenu { onContextMenu() }
+        // Drop target. The reducer enforces the same checks we
+        // visualise here (same repo, same workspace, different
+        // project) but rejecting at the view layer too means
+        // invalid drops fail silently without dispatching.
+        .onDrop(of: [UTType.text], isTargeted: $dropTargeted) { _ in
+            guard let info = dragInfo, dropValid else {
+                dragInfo = nil
+                return false
+            }
+            onMoveTaskHere(info.taskPath)
+            dragInfo = nil
+            return true
+        }
     }
 
     private var singleLine: some View {
@@ -230,6 +307,14 @@ struct WorktreeHeaderRow: View {
                     .help("Path no longer exists")
             }
             Spacer(minLength: 4)
+            // Live git status — line diff bar + ahead/behind + conflict
+            // marker, all vs the upstream's default branch. Updated by
+            // WorktreeStatsPoller (5s local poll, 5min background fetch).
+            // Hidden by the .opacity below while action buttons are
+            // hovered so the row doesn't get visually crowded.
+            GitStatusBar(stats: gitStats)
+                .opacity(headerHovered ? 0 : 1)
+                .animation(.easeOut(duration: 0.12), value: headerHovered)
             // Action buttons are always laid out — only their opacity
             // and hit-testing flip on hover. Conditional rendering
             // caused the name/pill to shift when the buttons appeared
@@ -297,10 +382,13 @@ struct WorktreeHeaderRow: View {
 struct TaskRow: View {
     let repo: Repo
     let task: Task
+    let taskPath: TaskPath
+    let workspacePath: URL
     let selected: Bool
     let onTap: () -> Void
     let onRename: () -> Void
     let onContextMenu: () -> AnyView
+    @Binding var dragInfo: SidebarDragInfo?
 
     @ObservedObject private var statsCache = TaskStatsCache.shared
     @ObservedObject private var externalInfo = ExternalSessionInfoCache.shared
@@ -337,7 +425,10 @@ struct TaskRow: View {
                 }
             VStack(alignment: .leading, spacing: 1) {
                 Text(task.name)
-                    .font(.system(.callout, design: .default))
+                    .font(.system(
+                        .callout,
+                        design: .default
+                    ).weight(selected ? .semibold : .regular))
                     .strikethrough(!task.enabled)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -369,7 +460,7 @@ struct TaskRow: View {
                     // Selection in repo color, not accent blue — the
                     // selected row "claims" the repo identity rather
                     // than overriding it with a system color.
-                    SwiftUI.Color(hex: repo.color).opacity(0.16)
+                    SwiftUI.Color(hex: repo.color).opacity(0.24)
                 } else if hovered {
                     SwiftUI.Color.secondary.opacity(0.08)
                 }
@@ -382,20 +473,42 @@ struct TaskRow: View {
             }
         )
         // The repo-color spine becomes a chunky "tab" for the selected
-        // task — 4pt wide vs the standard 2pt on neighboring rows.
+        // task — 5pt wide vs the standard 2pt on neighboring rows.
         // The spine swells where the user is looking, claiming the
         // edge of the panel.
         .overlay(alignment: .leading) {
             Rectangle()
                 .fill(SwiftUI.Color(hex: repo.color))
-                .frame(width: selected ? 4 : 2)
+                .frame(width: selected ? 5 : 2)
         }
+        // Soft glow around the selected row so it reads as the
+        // current focus even on noisy backgrounds. Repo-tinted to
+        // match the spine + selection fill, not the system accent.
+        .shadow(
+            color: selected
+                ? SwiftUI.Color(hex: repo.color).opacity(0.22)
+                : SwiftUI.Color.clear,
+            radius: selected ? 6 : 0,
+            y: 0
+        )
         .contentShape(Rectangle())
         .onHover { hovered = $0 }
         // Double-click → rename. Single-click still selects the task.
         .onTapGesture(count: 2, perform: onRename)
         .onTapGesture(count: 1, perform: onTap)
         .contextMenu { onContextMenu() }
+        // Drag-source: capture the task path + originating workspace
+        // so any project that accepts the drop can validate that
+        // their workspace path matches. The NSItemProvider payload
+        // (the task id as a string) is required by SwiftUI but
+        // unused by the drop side — it reads `dragInfo` instead.
+        .onDrag {
+            dragInfo = SidebarDragInfo(
+                taskPath: taskPath,
+                workspace: workspacePath
+            )
+            return NSItemProvider(object: task.id.uuidString as NSString)
+        }
     }
 
     // Subtitle: for claude tasks, "N msgs · 1.2 MB" (data from the
@@ -414,6 +527,65 @@ struct TaskRow: View {
             return "session " + String(sid.prefix(8))
         }
         return parts.joined(separator: " · ")
+    }
+}
+
+// MARK: - Available worktree row
+
+// Compact display for a workspace dir under the repo that isn't
+// currently bound to an active project (left behind when a manual
+// .folder project is archived). Click → spawn a new project
+// against this path. Right-click → remove from the list.
+struct AvailableWorktreeRow: View {
+    let repo: Repo
+    let worktree: AvailableWorktree
+    let onClick: () -> Void
+    let onContextMenu: () -> AnyView
+
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "folder")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(worktree.displayName)
+                .font(.system(.subheadline, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 6)
+            Text("available")
+                .font(.system(size: 9, design: .monospaced).weight(.semibold))
+                .textCase(.uppercase)
+                .tracking(0.8)
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
+                .background(
+                    Capsule().fill(SwiftUI.Color.secondary.opacity(0.10))
+                )
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 12)
+        .padding(.vertical, 5)
+        .background(
+            hovered
+                ? SwiftUI.Color.secondary.opacity(0.06)
+                : SwiftUI.Color.clear
+        )
+        // Continuation of the repo-color spine through worktree rows.
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(SwiftUI.Color(hex: repo.color).opacity(0.5))
+                .frame(width: 2)
+        }
+        .contentShape(Rectangle())
+        .onHover { hovered = $0 }
+        .onTapGesture(perform: onClick)
+        .contextMenu { onContextMenu() }
+        .help("\(worktree.path.path) — click to start a new project here")
     }
 }
 

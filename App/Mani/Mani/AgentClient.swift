@@ -133,7 +133,12 @@ final class AgentClient: TaskIO, @unchecked Sendable {
             let totalAfter = capturedOutput.count + frame.payload.count
             if totalAfter > captureCap {
                 let drop = totalAfter - captureCap
-                capturedOutput = capturedOutput.dropFirst(drop) + Data()
+                // Wrap with Data(...) to force a fresh 0-indexed
+                // copy. `dropFirst(_:)` returns a slice that
+                // shares storage and reports a non-zero
+                // startIndex, which makes subsequent
+                // `subdata(in: 0..<n)` consumers trap.
+                capturedOutput = Data(capturedOutput.dropFirst(drop))
             }
             capturedOutput.append(frame.payload)
             let handlers = Array(outputHandlers.values)
@@ -167,15 +172,67 @@ final class AgentClient: TaskIO, @unchecked Sendable {
     ) -> IOSubscription {
         let id = UUID()
         outputHandlersLock.lock()
-        let snapshot = replayCaptured ? capturedOutput : Data()
+        // Force a contiguous Data with startIndex == 0. The
+        // capture-cap path reassigns capturedOutput via
+        // `dropFirst(...) + Data()`, which leaves Data with a
+        // non-zero startIndex. `subdata(in: 0..<n)` on a slice
+        // like that traps in Data._Representation.subscript
+        // (EXC_BREAKPOINT brk 1). Re-wrapping with Data(...)
+        // copies into a fresh allocation that's 0-indexed.
+        let snapshot = replayCaptured ? Data(capturedOutput) : Data()
         outputHandlers[id] = handler
         outputHandlersLock.unlock()
-        if !snapshot.isEmpty { handler(snapshot) }
+        if !snapshot.isEmpty {
+            Self.scheduleReplay(snapshot: snapshot, into: handler)
+        }
         return IOSubscription { [weak self] in
             guard let self else { return }
             self.outputHandlersLock.lock()
             self.outputHandlers.removeValue(forKey: id)
             self.outputHandlersLock.unlock()
+        }
+    }
+
+    // Replay a captured snapshot into a fresh handler without
+    // tying up the main thread.
+    //
+    // The naive approach — call handler(snapshot) once — passes a
+    // multi-100KB buffer into libghostty's surface_write_buffer
+    // in a single shot, and the writer parks on a Zig futex
+    // because the renderer's libxev consumer doesn't drain fast
+    // enough. Even chunking + calling handler in a tight loop
+    // doesn't help: the loop synchronously enqueues N main-async
+    // blocks, all of which then drain back-to-back, and the
+    // first overwhelmed feed still blocks.
+    //
+    // What does work is *spacing* the dispatches: each chunk
+    // arrives at main on its own runloop tick, so between
+    // arrivals the runloop services other events (including
+    // libghostty's renderer wakeups). asyncAfter with a small
+    // per-chunk delay gives the consumer time to drain between
+    // feeds and matches the cadence of normal live PTY data
+    // arriving via the agent socket.
+    private static func scheduleReplay(
+        snapshot: Data,
+        into handler: @escaping (Data) -> Void
+    ) {
+        let chunkSize = 4096
+        let perChunkDelay: TimeInterval = 0.002  // 2 ms
+        // Use startIndex/endIndex rather than 0/count so this
+        // stays correct even if a future caller passes a Data
+        // slice. Defensive — addOutputHandler already normalises
+        // its snapshot, but a stray slice escaping here would
+        // re-introduce the brk-1 bounds trap.
+        var offset = snapshot.startIndex
+        var delay: TimeInterval = 0
+        while offset < snapshot.endIndex {
+            let end = Swift.min(offset + chunkSize, snapshot.endIndex)
+            let chunk = snapshot.subdata(in: offset..<end)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                handler(chunk)
+            }
+            delay += perChunkDelay
+            offset = end
         }
     }
 }

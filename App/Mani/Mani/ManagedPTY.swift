@@ -48,10 +48,32 @@ final class ManagedPTY: @unchecked Sendable, TaskIO {
     ) -> IOSubscription {
         let id = UUID()
         outputHandlersLock.lock()
-        let snapshot = replayCaptured ? capturedOutput : Data()
+        // Normalise to a 0-indexed Data — see AgentClient for the
+        // brk-1 bounds-trap rationale: capturedOutput is reassigned
+        // via dropFirst-then-append in the cap path, leaving it as
+        // a non-zero-startIndex slice that traps on subdata(0..<n).
+        let snapshot = replayCaptured ? Data(capturedOutput) : Data()
         outputHandlers[id] = handler
         outputHandlersLock.unlock()
-        if !snapshot.isEmpty { handler(snapshot) }
+        if !snapshot.isEmpty {
+            // Same staggered-asyncAfter replay as AgentClient —
+            // 4KB chunks spaced 2ms apart so libghostty's renderer
+            // gets cycles to drain between feeds. A tight in-line
+            // chunking loop here would still hang the main thread.
+            let chunkSize = 4096
+            let perChunkDelay: TimeInterval = 0.002
+            var offset = snapshot.startIndex
+            var delay: TimeInterval = 0
+            while offset < snapshot.endIndex {
+                let end = Swift.min(offset + chunkSize, snapshot.endIndex)
+                let chunk = snapshot.subdata(in: offset..<end)
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    handler(chunk)
+                }
+                delay += perChunkDelay
+                offset = end
+            }
+        }
         return IOSubscription { [weak self] in
             guard let self else { return }
             self.outputHandlersLock.lock()

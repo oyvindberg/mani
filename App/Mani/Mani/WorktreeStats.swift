@@ -9,10 +9,15 @@ import SwiftUI
 
 struct WorktreeGitStats: Equatable {
     var branch: String?           // current branch name; nil when detached
-    var upstream: String?         // tracking ref, e.g. "origin/main"
-    var ahead: Int                // local commits not in upstream
-    var behind: Int               // upstream commits not in local
+    var defaultBranch: String?    // "origin/main" or "origin/master" or
+                                  //  whatever origin/HEAD points to
+    var ahead: Int                // local commits not in defaultBranch
+    var behind: Int               // defaultBranch commits not in local
+    var insertions: Int           // lines added vs defaultBranch
+    var deletions: Int            // lines removed vs defaultBranch
     var hasUncommitted: Bool      // anything in `git status --porcelain`
+    var hasConflicts: Bool        // unmerged paths from `ls-files -u`
+                                  //  (mid-merge / mid-rebase / mid-cherry)
     var lastCheckedAt: Date
 }
 
@@ -89,21 +94,20 @@ final class WorktreeStatsPoller {
 
     private static func statsFor(path: URL) -> WorktreeGitStats {
         let branch = runGit(["symbolic-ref", "--short", "HEAD"], in: path)
-        // Try the explicit upstream first; fall back to origin/main →
-        // origin/master so untracked branches still get meaningful
-        // numbers in the common case.
-        let upstream =
-            runGit(["rev-parse", "--abbrev-ref", "@{upstream}"], in: path)
-            ?? (refExists("origin/main", in: path) ? "origin/main" : nil)
-            ?? (refExists("origin/master", in: path) ? "origin/master" : nil)
+        let defaultBranch = resolveDefaultBranch(in: path)
         var ahead = 0
         var behind = 0
-        if let upstream {
-            // `rev-list --left-right --count <local>...<upstream>` returns
-            // "<ahead>\t<behind>" in one call.
+        var insertions = 0
+        var deletions = 0
+        if let defaultBranch {
+            // ahead/behind vs default branch — the user-facing
+            // "how far am I from baseline" question, not the
+            // upstream-tracking "have I pushed everything"
+            // question (which a separate poller could surface
+            // later if needed).
             let head = branch ?? "HEAD"
             if let out = runGit(
-                ["rev-list", "--left-right", "--count", "\(head)...\(upstream)"],
+                ["rev-list", "--left-right", "--count", "\(head)...\(defaultBranch)"],
                 in: path
             ) {
                 let parts = out.split(whereSeparator: { $0.isWhitespace })
@@ -112,17 +116,73 @@ final class WorktreeStatsPoller {
                     behind = Int(parts[1]) ?? 0
                 }
             }
+            // Line-count diff vs default branch. `--shortstat`
+            // gives one line: " N files changed, X insertions(+), Y deletions(-)".
+            // Either insertions or deletions may be absent when
+            // the diff is one-sided.
+            if let stat = runGit(
+                ["diff", "--shortstat", "\(defaultBranch)...HEAD"],
+                in: path
+            ) {
+                (insertions, deletions) = parseShortstat(stat)
+            }
         }
         let dirty = (runGit(["status", "--porcelain"], in: path) ?? "")
             .isEmpty == false
+        // Unmerged paths only exist during an in-progress merge /
+        // rebase / cherry-pick where git has flagged conflicts.
+        // Non-empty `ls-files -u` is the cleanest one-shot signal.
+        let conflicts = (runGit(["ls-files", "-u"], in: path) ?? "")
+            .isEmpty == false
         return WorktreeGitStats(
             branch: branch,
-            upstream: upstream,
+            defaultBranch: defaultBranch,
             ahead: ahead,
             behind: behind,
+            insertions: insertions,
+            deletions: deletions,
             hasUncommitted: dirty,
+            hasConflicts: conflicts,
             lastCheckedAt: Date()
         )
+    }
+
+    // Prefer origin's symbolic HEAD (whatever the upstream
+    // considers "default" — typically main or master, sometimes
+    // trunk / develop). Falls back to checking origin/main then
+    // origin/master so cloned-without-HEAD-symref repos still work.
+    private static func resolveDefaultBranch(in path: URL) -> String? {
+        if let head = runGit(
+            ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+            in: path
+        ) {
+            return head
+        }
+        if refExists("origin/main", in: path)   { return "origin/main" }
+        if refExists("origin/master", in: path) { return "origin/master" }
+        return nil
+    }
+
+    // Parse `git diff --shortstat` output:
+    //   " 5 files changed, 412 insertions(+), 28 deletions(-)"
+    //   " 1 file changed, 1 insertion(+)"
+    //   " 1 file changed, 1 deletion(-)"
+    private static func parseShortstat(_ s: String) -> (Int, Int) {
+        var ins = 0
+        var del = 0
+        for piece in s.split(separator: ",") {
+            let trimmed = piece.trimmingCharacters(in: .whitespaces)
+            if let n = leadingInt(trimmed) {
+                if trimmed.contains("insertion") { ins = n }
+                else if trimmed.contains("deletion") { del = n }
+            }
+        }
+        return (ins, del)
+    }
+
+    private static func leadingInt(_ s: String) -> Int? {
+        let digits = s.prefix(while: { $0.isNumber })
+        return Int(digits)
     }
 
     private static func refExists(_ ref: String, in path: URL) -> Bool {

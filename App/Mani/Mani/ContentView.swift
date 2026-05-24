@@ -513,6 +513,10 @@ struct SidebarView: View {
     @State private var expandedProjects: Set<UUID> = []
     @State private var expandedArchivedProjects: Set<UUID> = []
     @State private var colorPickerProjectId: UUID?
+    // Currently-dragged task. Set by TaskRow on .onDrag; read by
+    // WorktreeHeaderRow to colour itself green (valid drop) or
+    // red (mismatched workspace). Cleared by the drop handler.
+    @State private var sidebarDragInfo: SidebarDragInfo?
     @State private var newWorktreeForRepo: Repo?
     @State private var claudeInvocationProjectId: UUID?
 
@@ -557,14 +561,48 @@ struct SidebarView: View {
                     }
                     .padding()
                 } else {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(sortedProjects, id: \.id) { repo in
-                                repoGroup(repo: repo)
-                                    .padding(.vertical, 4)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: 0) {
+                                ForEach(sortedProjects, id: \.id) { repo in
+                                    repoGroup(repo: repo)
+                                        .padding(.vertical, 4)
+                                }
+                            }
+                            .padding(.vertical, 6)
+                        }
+                        // Bring the selected task into view whenever
+                        // selection changes — covers ⌘1-9 jumps, the
+                        // Standing-by overlay's Enter activation, and
+                        // any other path that updates selectedJobId.
+                        //
+                        // Two steps: (1) expand whatever the row is
+                        // hidden inside (collapsed repo or collapsed
+                        // project) so the LazyVStack actually
+                        // renders it, then (2) scroll. A short
+                        // post-layout wait lets SwiftUI settle the
+                        // newly-expanded geometry before the scroll
+                        // runs — scrolling to an unrendered id is a
+                        // silent no-op.
+                        .onChange(of: selectedJobId) { _, newId in
+                            guard let newId,
+                                  let (repoId, projectId) = containingPath(taskId: newId)
+                            else { return }
+                            if collapsedRepos.contains(repoId) {
+                                collapsedRepos.remove(repoId)
+                            }
+                            if !expandedProjects.contains(projectId) {
+                                expandedProjects.insert(projectId)
+                            }
+                            _Concurrency.Task { @MainActor in
+                                try? await _Concurrency.Task.sleep(
+                                    nanoseconds: 60_000_000  // 60 ms
+                                )
+                                withAnimation(.easeOut(duration: 0.22)) {
+                                    proxy.scrollTo(newId, anchor: .center)
+                                }
                             }
                         }
-                        .padding(.vertical, 6)
                     }
                 }
             }
@@ -950,6 +988,28 @@ struct SidebarView: View {
                         }
                         worktreeGroup(repo: repo, project: project)
                     }
+                    // Workspace dirs left over from archived
+                    // manual-worktree projects. Sit at the repo
+                    // level as candidates for starting a new
+                    // project without re-picking the path.
+                    ForEach(repo.availableWorktrees) { wt in
+                        AvailableWorktreeRow(
+                            repo: repo,
+                            worktree: wt,
+                            onClick: {
+                                // Click opens the New Project sheet
+                                // for this repo. The user can fill
+                                // in the path manually; pre-fill
+                                // requires plumbing initial values
+                                // into NewWorktreeSheet and is a
+                                // small follow-up.
+                                newWorktreeForRepo = repo
+                            },
+                            onContextMenu: {
+                                AnyView(availableWorktreeMenu(repo: repo, worktree: wt))
+                            }
+                        )
+                    }
                     // Orphan external convos: cwd doesn't fall inside
                     // any current project's workspace. Surface at
                     // repo level so they're not lost.
@@ -1090,47 +1150,66 @@ struct SidebarView: View {
                 selectedJobId: selectedJobId,
                 anyChildThinking: worktreeAnyThinking(project),
                 anyChildReady: worktreeAnyReady(project),
-                anyChildJustReady: worktreeAnyJustReady(project)
-            ) {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    if worktreeExpanded { expandedProjects.remove(project.id) }
-                    else { expandedProjects.insert(project.id) }
+                anyChildJustReady: worktreeAnyJustReady(project),
+                onToggle: {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        if worktreeExpanded { expandedProjects.remove(project.id) }
+                        else { expandedProjects.insert(project.id) }
+                    }
+                },
+                onRename: {
+                    renameProjectContext = RenameProjectContext(
+                        projectPath: wtPath, currentName: project.name
+                    )
+                },
+                onSelectDiff: {
+                    if let diffJobId { onSelect(diffJobId) }
+                },
+                onNewShell: {
+                    _Concurrency.Task {
+                        await Self.spawnShell(at: wtPath, cwd: project.workspace.path, store: store)
+                    }
+                },
+                onNewClaude: {
+                    _Concurrency.Task {
+                        await Self.spawnClaude(at: wtPath, cwd: project.workspace.path, store: store)
+                    }
+                },
+                onContextMenu: {
+                    AnyView(projectMenu(repo: repo, project: project))
+                },
+                dragInfo: $sidebarDragInfo,
+                onMoveTaskHere: { sourceTaskPath in
+                    _Concurrency.Task {
+                        await store.dispatch(.moveTask(from: sourceTaskPath, to: wtPath))
+                    }
                 }
-            } onRename: {
-                renameProjectContext = RenameProjectContext(
-                    projectPath: wtPath, currentName: project.name
-                )
-            } onSelectDiff: {
-                if let diffJobId { onSelect(diffJobId) }
-            } onNewShell: {
-                _Concurrency.Task {
-                    await Self.spawnShell(at: wtPath, cwd: project.workspace.path, store: store)
-                }
-            } onNewClaude: {
-                _Concurrency.Task {
-                    await Self.spawnClaude(at: wtPath, cwd: project.workspace.path, store: store)
-                }
-            } onContextMenu: {
-                AnyView(projectMenu(repo: repo, project: project))
-            }
+            )
             if worktreeExpanded {
                 ForEach(visibleTasks) { task in
+                    let thisTaskPath = TaskPath(
+                        repo: repo.id, project: project.id, task: task.id
+                    )
                     TaskRow(
                         repo: repo,
                         task: task,
-                        selected: selectedJobId == task.id
-                    ) {
-                        onSelect(task.id)
-                    } onRename: {
-                        let taskPath = TaskPath(
-                            repo: repo.id, project: project.id, task: task.id
-                        )
-                        renameContext = RenameContext(
-                            taskPath: taskPath, currentName: task.name
-                        )
-                    } onContextMenu: {
-                        AnyView(taskMenu(repo: repo, project: project, task: task))
-                    }
+                        taskPath: thisTaskPath,
+                        workspacePath: project.workspace.path,
+                        selected: selectedJobId == task.id,
+                        onTap: { onSelect(task.id) },
+                        onRename: {
+                            renameContext = RenameContext(
+                                taskPath: thisTaskPath, currentName: task.name
+                            )
+                        },
+                        onContextMenu: {
+                            AnyView(taskMenu(repo: repo, project: project, task: task))
+                        },
+                        dragInfo: $sidebarDragInfo
+                    )
+                    // Anchor for ScrollViewReader.scrollTo when this
+                    // task gets selected (e.g. via ⌘⇧M Enter).
+                    .id(task.id)
                 }
                 // External convos whose cwd falls inside THIS project's
                 // workspace: render here so they live with the project
@@ -1158,6 +1237,20 @@ struct SidebarView: View {
         store.state.repos.sorted {
             $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
+    }
+
+    // (repoId, projectId) for the project that owns a given task.
+    // Used by the ScrollViewReader handler to expand the path to
+    // the selected row before scrolling into view.
+    private func containingPath(taskId: UUID) -> (UUID, UUID)? {
+        for repo in store.state.repos {
+            for project in repo.projects {
+                if project.tasks.contains(where: { $0.id == taskId }) {
+                    return (repo.id, project.id)
+                }
+            }
+        }
+        return nil
     }
 
     private func claudeSid(_ task: Task) -> String? {
@@ -1348,6 +1441,26 @@ struct SidebarView: View {
             let path = ExternalConvoPath(repo: repo.id, convo: convo.id)
             _Concurrency.Task {
                 await store.dispatch(.dismissExternalConvo(at: path))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func availableWorktreeMenu(
+        repo: Repo, worktree: AvailableWorktree
+    ) -> some View {
+        Button("New project here…") {
+            newWorktreeForRepo = repo
+        }
+        Button("Reveal in Finder") {
+            NSWorkspace.shared.activateFileViewerSelecting([worktree.path])
+        }
+        Divider()
+        Button("Remove from list", role: .destructive) {
+            _Concurrency.Task {
+                await store.dispatch(.removeAvailableWorktree(
+                    repoId: repo.id, id: worktree.id
+                ))
             }
         }
     }
@@ -1875,83 +1988,31 @@ struct TerminalPane: NSViewRepresentable {
 
         private func bind(pty: TaskIO) {
             self.pty = pty
-            // Pre-feed the on-disk scrollback log so the terminal's
-            // screen reflects history from prior Mani sessions BEFORE
-            // we subscribe to the live stream. Without this, the
-            // renderer only ever sees what the agent has buffered
-            // since the last detach (often empty for idle shells),
-            // and reattach looks blank. Then subscribe with
-            // replayCaptured: false — the disk content already covers
-            // every byte the AgentClient has captured this attach.
             guard let renderer else { return }
-            if let path = taskPath, let history = readScrollback(taskId: path.task) {
-                // Cap the pre-feed: scrollback above the visible
-                // viewport is invisible anyway, and large logs (>10 MB)
-                // hang libghostty's surface_write_buffer — the synchronous
-                // ghostty FFI parks on a Zig futex waiting for the
-                // consumer to drain a queue it can't drain fast enough.
-                // 512 KB ~= a few thousand lines of output, plenty for
-                // any human-visible scrollback. Start at a CR/LF
-                // boundary near the cap so we don't slice mid-escape-
-                // sequence and render junk briefly.
-                let capped = capScrollback(history, maxBytes: 512 * 1024)
-                let chunks = chunked(capped, chunkSize: 64 * 1024)
-                _Concurrency.Task { @MainActor [weak self] in
-                    for chunk in chunks {
-                        // Bail if the Coordinator detached / a different
-                        // task got selected before we finished feeding.
-                        guard let self, self.renderer === renderer else { return }
-                        renderer.feed(chunk)
-                        await _Concurrency.Task.yield()
-                    }
-                    guard let self, self.renderer === renderer else { return }
-                    renderer.attachToPTY(pty, replayCaptured: false)
-                }
-            } else {
-                renderer.attachToPTY(pty)
-            }
+            // Attach with replayCaptured: true so the agent's
+            // in-memory PTY buffer is replayed through the async
+            // data callback (DispatchQueue.main.async → feed). This
+            // is the SAME path live PTY output uses, and it has
+            // never hung.
+            //
+            // We do NOT pre-feed the on-disk scrollback.log: that
+            // path goes through renderer.feed() synchronously,
+            // which calls into libghostty's ghostty_surface_write_buffer.
+            // That FFI parks the caller on a Zig futex waiting for
+            // the renderer's kqueue consumer to drain, but in
+            // practice the consumer thread misses the wakeup and
+            // sits in kevent64 forever — locking the main thread.
+            // Observed twice now (27 MB scrollback hang; then again
+            // even with 512 KB chunked to 64 KB). The replay path
+            // gives us reattach context without the synchronous FFI.
+            //
+            // Trade-off: long-term on-disk history isn't shown on
+            // reattach; only what the agent has buffered since the
+            // last detach. Acceptable until we can either replace
+            // the renderer or understand libghostty's wakeup bug.
+            renderer.attachToPTY(pty, replayCaptured: true)
         }
 
-        // Trim from the head so the tail of the log is intact.
-        // Skips to the first newline past the cut so we don't begin
-        // mid-escape-sequence.
-        private func capScrollback(_ data: Data, maxBytes: Int) -> Data {
-            guard data.count > maxBytes else { return data }
-            let tail = data.suffix(maxBytes)
-            if let lf = tail.firstIndex(of: 0x0A) {
-                return Data(tail[(lf + 1)...])
-            }
-            return Data(tail)
-        }
-
-        private func chunked(_ data: Data, chunkSize: Int) -> [Data] {
-            guard chunkSize > 0, !data.isEmpty else { return data.isEmpty ? [] : [data] }
-            var out: [Data] = []
-            out.reserveCapacity((data.count + chunkSize - 1) / chunkSize)
-            var idx = data.startIndex
-            while idx < data.endIndex {
-                let end = data.index(idx, offsetBy: chunkSize, limitedBy: data.endIndex) ?? data.endIndex
-                out.append(Data(data[idx..<end]))
-                idx = end
-            }
-            return out
-        }
-
-        // Path mirrors EffectRunner's scrollback layout:
-        //   ~/Library/Application Support/Mani/tasks/<task-uuid>/scrollback.log
-        private func readScrollback(taskId: UUID) -> Data? {
-            let root = FileManager.default
-                .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-                .first!
-            let url = root
-                .appendingPathComponent("Mani/tasks")
-                .appendingPathComponent(taskId.uuidString)
-                .appendingPathComponent("scrollback.log")
-            guard let data = try? Data(contentsOf: url), !data.isEmpty else {
-                return nil
-            }
-            return data
-        }
     }
 }
 
@@ -2063,20 +2124,50 @@ private struct WorkspaceInfoBar: View {
                             .font(.system(size: 11, design: .monospaced))
                             .lineLimit(1)
                             .truncationMode(.middle)
+                        if let d = stats.defaultBranch {
+                            Text("vs \(d)")
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                     .foregroundStyle(.secondary)
+                }
+                if stats.insertions > 0 || stats.deletions > 0 {
+                    HStack(spacing: 6) {
+                        if stats.insertions > 0 {
+                            Text("+\(stats.insertions)")
+                                .font(.system(size: 11, design: .monospaced).weight(.medium))
+                                .foregroundStyle(SwiftUI.Color.green.opacity(0.85))
+                        }
+                        if stats.deletions > 0 {
+                            Text("−\(stats.deletions)")
+                                .font(.system(size: 11, design: .monospaced).weight(.medium))
+                                .foregroundStyle(SwiftUI.Color.red.opacity(0.85))
+                        }
+                    }
+                    .help("Lines changed vs \(stats.defaultBranch ?? "default branch")")
                 }
                 if stats.ahead > 0 {
                     Text("↑\(stats.ahead)")
                         .font(.system(size: 11, design: .monospaced).weight(.medium))
                         .foregroundStyle(.green.opacity(0.85))
-                        .help("Commits ahead of \(stats.upstream ?? "upstream")")
+                        .help("Commits ahead of \(stats.defaultBranch ?? "default branch")")
                 }
                 if stats.behind > 0 {
                     Text("↓\(stats.behind)")
                         .font(.system(size: 11, design: .monospaced).weight(.medium))
                         .foregroundStyle(.orange.opacity(0.85))
-                        .help("Commits behind \(stats.upstream ?? "upstream")")
+                        .help("Commits behind \(stats.defaultBranch ?? "default branch")")
+                }
+                if stats.hasConflicts {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.octagon.fill")
+                            .font(.system(size: 10))
+                        Text("conflicts")
+                            .font(.system(size: 11, design: .rounded).weight(.medium))
+                    }
+                    .foregroundStyle(.red.opacity(0.95))
+                    .help("Unresolved conflicts in this workspace")
                 }
                 if stats.hasUncommitted {
                     HStack(spacing: 4) {
