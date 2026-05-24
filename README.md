@@ -1,138 +1,346 @@
 # Mani
 
-A native macOS app for orchestrating many concurrent coding sessions across
-many repos, with crash-resilient state.
+> A native macOS orchestrator for many concurrent coding sessions across
+> many repos — Claude Code conversations, shells, diff views — with
+> crash-resilient state and a keyboard-driven global overlay that turns
+> "too many sessions running at once" from a chaos problem into a
+> mastery problem.
 
-## The problem
+Mani sits above your terminals and your Claude conversations. It knows
+which Claude is in which repo, which one finished its turn and is
+waiting for you, which one is mid-thought, and what to relaunch when
+the laptop reboots.
 
-You're running half a dozen Claude Code sessions and twice that many shells,
-spread across different repos, branches, and worktrees. Each has its own
-cwd, its own terminal window, its own session id. When the laptop crashes,
-sleeps weirdly, or you reboot for an update, restoring the layout — the
-right shells in the right directories, the right `claude --resume <sid>`
-attachments — is tedious and lossy.
+---
 
-Existing tools each fall short:
+## The problem this solves
 
-- **Terminal multiplexers (tmux, Zellij)** — work, but terminal-only.
-- **iTerm2 Window Arrangements** — restore windows, not running processes.
-- **Crystal, Conductor, Claude Squad, Claudia/opcode** — orchestration GUIs
-  for Claude Code, but target worktree-per-task parallelism. Different
-  shape from what we want.
+You're driving five Claude sessions at once. Each is in a different
+repo, on a different branch, doing different work. You go grab coffee.
 
-## What Mani is
+- One finished its turn and is sitting at the prompt waiting for your
+  next instruction — but you don't notice, because it's behind a
+  Spaces tab three windows away.
+- Another is mid-thought; you don't want to interrupt.
+- The other three you've half-forgotten exist.
 
-A Mac app that owns the **repo → project → task** hierarchy, persists every
-state change to disk continuously, and survives crashes by respawning the
-right shells in the right cwds and re-attaching the right Claude sessions
-by id.
+Then your laptop crashes. Now you reconstruct everything from shell
+history, `ls ~/.claude/projects/`, and squinting at git status across
+five worktrees.
 
-## Mental model
+Existing tools each cover a slice:
+
+| Tool                              | What it does          | Why it isn't this        |
+| --------------------------------- | --------------------- | ------------------------ |
+| tmux / Zellij                     | Multiplexed terminals | Terminal-only, no Claude context |
+| iTerm2 Window Arrangements        | Restores layout       | Restores windows, not running processes |
+| Crystal / Conductor / Claude Squad | Claude orchestrators  | Worktree-per-task model; different shape |
+
+Mani is the layer above all of that. Native macOS. Owns the hierarchy
+end-to-end. Survives reboots.
+
+---
+
+## The workflow
+
+### Repos, Projects, Tasks
 
 ```
-Repo (atlas, color #ff5500)
-├── Project "auth rewrite"             — a thing you want to do to this repo
-│   └── Workspace: gitWorktree(feat/auth, /…/atlas-auth)
-│       ├── Task: claude (session abc12345…, idle, 3 unread)
-│       ├── Task: shell  (running)
-│       └── Task: diff   (the workspace diff view)
-├── Project "tail prod logs"
-│   └── Workspace: folder(/var/log/atlas)
-│       └── Task: shell
-├── Finished projects (2)              — archived; workspaces kept, agents stopped
-└── External convos (3)                — Claude sessions Mani didn't spawn;
-                                         discovered on disk, adoptable
+Repo "atlas"                          ← a codebase + a color
+└── Project "auth rewrite"            ← a unit of intent (rename, archive)
+    └── Workspace: gitWorktree(feat/auth, /…/atlas-auth)
+        ├── Task: claude  ← live Claude Code session (session abc12345…)
+        ├── Task: shell   ← running zsh, has its own scrollback
+        └── Task: diff    ← the workspace's git diff view
 ```
 
-- **Repo**: a top-level codebase. Owns a color used everywhere as identity.
-- **Project**: a unit of user intent within a repo (a feature, an
-  investigation, a thing being shipped). Renameable, archivable.
-- **Workspace**: a directory on disk. Either a real `git worktree` or a
-  plain folder. Embedded 1:1 inside its Project. Missing-path detection
-  built in.
-- **Task**: the live process atom — a Claude session, a shell, a diff
-  workspace, or a custom command. Multiple tasks per project are normal.
-- **ExternalConvo**: a Claude session Mani didn't spawn but found on disk
-  via FSEvents on `~/.claude/projects`. Sits as a sibling of Projects
-  under the Repo (or at repo level if its cwd matches no project). Can be
-  adopted, which spawns `claude --resume <sid>` against the matching
-  project.
+At the repo level you also see:
 
-Every level has an `enabled` flag. Disabling cascades down and SIGTERMs
-the underlying processes, so there's a panic switch at every rung.
+- **External convos** — Claude sessions Mani didn't spawn. Discovered
+  via FSEvents on `~/.claude/projects/`. One click to adopt one into a
+  project as a managed task.
+- **Available worktrees** — directories left over from archived
+  manual-worktree projects. Still on disk, still discoverable, ready
+  to be the home of the next project.
+- **Finished projects** — archived. Tasks still inside, still
+  draggable into active projects when you need them again.
+
+You can **drag tasks between projects** when their workspaces match.
+A red ⊘ overlay says no when they don't.
+
+### Standing by — the marquee feature
+
+Press **⌘⇧M from any app, anywhere.** A frameless dark glass panel
+appears with every Claude session Mani knows about, grouped by status:
+
+```
+╭─────────────────────────────────────────────╮
+│                                             │
+│  Standing by.                               │
+│  three ready · one working · five idle      │
+│                                             │
+│  READY  3 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━     │
+│   ●  atlas — auth rewrite             4m    │
+│   ●  dlab — CI cache fix             12m    │
+│   ●  typr — TUI refactor             30s    │
+│                                             │
+│  WORKING  1 ━━━━━━━━━━━━━━━━━━━━━━━━━━━     │
+│   ◉  atlas — fix tests              running │
+│                                             │
+│  IDLE  5 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━     │
+│   ·  …                                      │
+│                                             │
+│   ↑↓ navigate   ↵ open   ⌥↵ next   esc      │
+╰─────────────────────────────────────────────╯
+```
+
+- **READY** orbs breathe in repo color (Stop hook fired, or unread > 0
+  and not currently thinking).
+- **WORKING** orbs send concentric ripples outward — claude is actively
+  streaming bytes.
+- **IDLE** is a dim presence dot.
+
+Arrow keys navigate. **Enter activates Mani and selects the
+oldest-awaiting claude** in that row — the one that's been hanging
+longest. ⌥↵ cycles through that row's other awaiting claudes without
+dismissing the panel. Escape dismisses. Click outside dismisses.
+
+This is the moment that makes the rest of it worth it: from any app,
+in one keystroke, see who needs you, in one more keystroke, be there.
+
+### Per-repo color as the eye anchor
+
+Every repo gets a color. That color is the *only* saturation in the
+entire UI. It:
+
+- Forms a continuous **2pt spine** down the left edge of every sidebar
+  row in the repo's group — header, project, task. The repo is a
+  thread you can follow with your eye.
+- Tints the per-claude orbs in the Standing by overlay.
+- Lights the selected task row (5pt-wide tab + 24%-opacity tinted
+  background + soft halo).
+- Hangs as a top-of-window ambient gradient when any task in that repo
+  is thinking. The whole window quietly breathes the color of whatever's
+  currently working.
+
+The eye learns the colors. At a glance you know which repo's session
+is calling without reading a single character.
+
+### Crash recovery, for real
+
+State is event-sourced: an append-only `events.jsonl` plus periodic
+`state.json` snapshots. On boot:
+
+1. Load the last snapshot.
+2. Replay the events.jsonl tail.
+3. For every `.running` task, probe its agent socket. If the agent is
+   gone, emit a synthetic `.taskExited`.
+4. Restore the user's last selection if it still exists.
+
+The UI shows what's actually true, not a lie left over from before the
+crash.
+
+### Live git status
+
+Each project header shows a compact mini-bar of `+N -M` line diff
+relative to `origin/main` (or `origin/master`), plus `↑N` if ahead.
+The detail-pane masthead expands this: branch name, behind count,
+dirty marker, red ⚠ conflicts marker for mid-merge / mid-rebase states.
+A 5-minute background `git fetch --prune` keeps the behind count
+honest without your hands on it.
+
+### Claude integration via hooks
+
+Mani writes `SessionStart`, `Stop`, and `Notification` hooks into
+`~/.claude/settings.json` (merging, not overwriting). A bundled shim
+binary connects to a Unix socket inside Mani when Claude fires a hook:
+
+- `SessionStart` → routes the new session id to a matching managed
+  task (or surfaces it as an external convo).
+- `Stop` → marks the task as **awaiting input**. The Standing by
+  overlay picks this up the moment claude returns control.
+
+---
+
+## Getting started
+
+### Requirements
+
+- macOS 14 (Sonoma) or newer.
+- Xcode 15+ with the macOS 15 SDK.
+- `git` on PATH.
+- *(optional but recommended)* The `claude` CLI from Anthropic — needed
+  to spawn Claude Code tasks. Mani runs plain shells without it.
+
+### Build & run
+
+```sh
+git clone https://github.com/oyvindberg/mani.git
+cd mani
+open App/Mani/Mani.xcodeproj
+```
+
+Hit ⌘R in Xcode. The app launches.
+
+Command line build, if you prefer:
+
+```sh
+cd App/Mani
+xcodebuild -project Mani.xcodeproj -scheme Mani -configuration Debug build
+open ~/Library/Developer/Xcode/DerivedData/Mani-*/Build/Products/Debug/Mani.app
+```
+
+### First-launch walkthrough
+
+1. Mani opens to an empty state: *"No repos yet · ⇧⌘P to add one."*
+2. Hit **⇧⌘P**. Give a repo a name, pick its root directory, and pick
+   a distinctive color. A starter project (`wip`) is created
+   automatically — rename it to what you're actually doing.
+3. Hit **⇧⌘N** to add another project to the current repo, or **⌘T**
+   to add a task (shell or claude) to the current project.
+4. Hit **⌘⇧M** from anywhere — Mani in background, browser foreground,
+   Slack open, whatever — to summon the Standing by overlay.
+
+Try this: open two terminals across two repos, kick off `claude` in
+each, give them work that'll take a minute. While they run, switch to
+Safari. When they finish, the next time you hit ⌘⇧M, you'll see them
+glowing in the overlay.
+
+### Where state lives
+
+```
+~/Library/Application Support/Mani/
+├── events.jsonl          ← append-only event log (durable)
+├── state.json            ← latest snapshot (compaction)
+├── tasks/<task-uuid>/    ← per-task scrollback log
+├── agents/<uuid>.sock    ← AF_UNIX sockets to live agent processes
+└── safekeep/<repoId>/    ← compressed past Claude transcripts
+```
+
+`rm -rf` the whole directory to factory-reset. Mani boots empty next
+launch; agent helpers exit when their socket vanishes.
+
+### Pure-Swift core (no Xcode)
+
+`ManiCore` is Foundation-only, no AppKit dependency. Useful for hacking
+on the model/reducer in isolation:
+
+```sh
+swift build       # ~6s clean
+swift test        # 74 tests, ~50ms
+```
+
+---
+
+## Keyboard shortcuts
+
+| Where             | Key       | Action                                |
+| ----------------- | --------- | ------------------------------------- |
+| Anywhere          | ⌘⇧M      | Toggle Standing by overlay            |
+| Anywhere          | ⇧⌘P      | New repo…                             |
+| In Mani           | ⇧⌘N      | New project…                          |
+| In Mani           | ⌘T       | New task…                             |
+| In Mani           | ⌘F       | Search scrollback                     |
+| Standing by       | ↑ / ↓     | Navigate                              |
+| Standing by       | 1–9       | Jump to nth entry                     |
+| Standing by       | ↵         | Open + activate Mani                  |
+| Standing by       | ⌥↵       | Open without dismissing (cycle)       |
+| Standing by       | esc       | Dismiss                               |
+| Terminal pane     | fn+↑ / ↓  | Scroll terminal scrollback            |
+
+---
 
 ## Architecture in one paragraph
 
-State is an immutable Swift value tree (`AppState` in `ManiCore`). Reducer
-is pure: `reduce(state, action) -> (events, effects)`. Events go through
-`apply(&state, event)` and to a `events.jsonl` log; effects are queued and
-executed by `EffectRunner` (process spawn, fs writes, git ops, terminate).
-Snapshots (`state.json`) compact the log periodically. On boot, the app
-loads the last snapshot, replays the log tail, then reconciles any
-`.running` task against its agent socket on disk. Anything whose agent is
-gone gets a synthetic `.taskExited` event, so the user sees stale state
-truthfully instead of a lie. See `docs/architecture.md` and
-`docs/persistence.md`.
+`ManiCore` is a pure Foundation library: an immutable `AppState` value
+tree, a `reduce(state, action) -> ([Event], [Effect])` reducer, and an
+`apply(&state, event)` mutator. Events go to `events.jsonl`; effects
+are queued for `EffectRunner` (process spawn, terminate, git ops,
+persist). Per-task processes run inside a `mani-agent` helper bound to
+an AF_UNIX socket — the agent owns the PTY, captures output, replays
+it to the app on reattach. The terminal viewport is libghostty (via
+`libghostty-spm`). Claude integration is one-way notification: Mani
+registers hooks in `~/.claude/settings.json` pointing at a shim that
+posts to a Unix socket; that's how the "awaiting input" state gets
+driven.
+
+Read [docs/architecture.md](docs/architecture.md) for the long version.
+
+---
 
 ## Status
 
-In active development. v0.1 shipped end-to-end (full data model + sidebar +
-terminal + Claude integration + persistence + crash recovery), v0.2 waves 1
-and 2 are done. See `PLAN.md` for the full state of play.
+**Pre-release.** Builds locally from Xcode. No code signing, no
+notarization, no auto-update, no Homebrew tap, no .app distribution yet.
+Anyone willing to clone and build can run it, and the core invariants
+(crash recovery, event-sourced state, hook routing) are solid enough
+for daily driving.
 
-Not yet:
+What's there: full data model, sidebar hierarchy, terminal viewport via
+libghostty, Claude session linking via hooks, FSEvents watcher on
+`~/.claude/projects`, drag-drop tasks between projects, per-repo color
+identity throughout, Standing by global overlay, live git status,
+project archive with workspace preservation, crash recovery.
 
-- Code signing, notarization, Sparkle auto-update. Local dev builds only.
+What's not yet:
+
+- Code signing, notarization, distribution.
+- A `mani` CLI.
 - Multi-window.
-- Search inside the terminal viewport (Cmd-F currently searches scrollback
-  via an overlay, not in the live grid).
-- Compression of the on-disk session safekeeping store beyond the 32 MB
-  ring cap.
+- Search inside the live terminal grid (Cmd-F currently searches the
+  on-disk scrollback log via an overlay).
+- Restoring long on-disk scrollback on reattach. A libghostty rendering
+  quirk made the synchronous pre-feed unsafe; we rely on the agent's
+  in-memory replay buffer for reattach context.
 
-## Build & run
+The product name **Mani** is a code name — documented namespace
+collisions with [alajmo/mani](https://github.com/alajmo/mani) (CLI repo
+manager), the npm `mani` package, and several App Store apps. The
+distribution name will not be plain `mani`. See ADR-001 in
+[docs/decisions.md](docs/decisions.md).
 
-Requirements: macOS 14+, Xcode 15+ with macOS SDK 15.x, Swift 5.10+.
-
-The pure-Swift core library — Foundation only, unit-tested:
-
-```sh
-swift build       # clean ~6s
-swift test        # 67 tests, ~7s
-```
-
-The macOS app target — depends on AppKit, SwiftUI, libghostty-spm:
-
-```sh
-open App/Mani/Mani.xcodeproj
-# or:
-xcodebuild -project App/Mani/Mani.xcodeproj -scheme Mani build
-```
+---
 
 ## Repo layout
 
 ```
-PLAN.md                 master plan, roadmap, what's shipped vs pending
-CLAUDE.md               agent-facing context — read first if you're an agent
-docs/                   architecture, persistence, terminal, decisions log
-Sources/ManiCore/       pure-Swift library: model, reducer, events, effects
-Tests/ManiCoreTests/    XCTest, deterministic, no I/O
-App/Mani/Mani/          the Mac app (AppKit + SwiftUI shell over ManiCore)
-Spikes/                 throwaway code for risky building blocks
+PLAN.md                 master plan + roadmap + scope rules
+CLAUDE.md               agent-facing context for in-repo work
+docs/                   architecture, persistence, terminal, ADRs
+Sources/ManiCore/       Foundation-only library: model, reducer,
+                        events, effects. No AppKit dependency.
+Tests/ManiCoreTests/    XCTest, no I/O, deterministic, fast.
+App/Mani/Mani/          the macOS app (AppKit + SwiftUI shell over
+                        ManiCore). Where the UI, libghostty, and
+                        agent socket plumbing live.
+Spikes/                 throwaway code for risky building blocks.
 ```
 
 ## Further reading
 
-- `PLAN.md` — vision, roadmap, scope rules
-- `CLAUDE.md` — hard rules + coding conventions for this repo
-- `docs/architecture.md` — reducer/effect/persistence loop
-- `docs/decisions.md` — ADRs; read before re-litigating any choice
-- `docs/spikes.md` — risk-ordered validation experiments
-- `docs/terminal.md` — libghostty integration + PTY lifecycle
-- `docs/claude-integration.md` — session linking, hooks, FSEvents watcher
+- [PLAN.md](PLAN.md) — overall vision, roadmap, scope rules.
+- [CLAUDE.md](CLAUDE.md) — hard rules + coding conventions for this
+  repo (read first if you're an agent working in this codebase).
+- [docs/architecture.md](docs/architecture.md) — the reducer / effect /
+  persistence loop.
+- [docs/decisions.md](docs/decisions.md) — ADR log; read before
+  re-litigating any choice.
+- [docs/claude-integration.md](docs/claude-integration.md) — session
+  linking, hooks, FSEvents watcher.
+- [docs/terminal.md](docs/terminal.md) — libghostty integration + PTY
+  lifecycle.
+- [docs/persistence.md](docs/persistence.md) — events.jsonl + snapshot
+  rotation + crash recovery.
 
-## Name
+## Contributing
 
-Code name. Collides with [alajmo/mani](https://github.com/alajmo/mani) (a
-CLI tool for managing multiple git repos), the npm `mani` package, and
-several App Store apps. Distribution name will not be plain `mani`. See
-ADR-001 in `docs/decisions.md`.
+This is a personal project, published for inspection and the occasional
+contribution. If you find a bug or want to suggest something, open an
+issue. PRs welcome but please open an issue first for anything beyond
+a small fix — there are strong opinions in `CLAUDE.md` and `docs/decisions.md`
+worth understanding before re-shaping things.
+
+## License
+
+Not yet chosen. The repository is published for inspection and
+hands-on use. No warranty; no recommended production deployment.
