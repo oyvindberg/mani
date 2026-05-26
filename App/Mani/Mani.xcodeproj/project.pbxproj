@@ -113,6 +113,7 @@
 				8B2A5E8C2FAC0B3100BCFF58 /* Sources */,
 				8B2A5E8D2FAC0B3100BCFF58 /* Frameworks */,
 				8B2A5E8E2FAC0B3100BCFF58 /* Resources */,
+				8B2A5EFF2FAC0B3100BCFF58 /* Fix libghostty bundle layout */,
 			);
 			buildRules = (
 			);
@@ -250,6 +251,28 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		8B2A5EFF2FAC0B3100BCFF58 /* Fix libghostty bundle layout */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Fix libghostty bundle layout";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Reshape libghostty.framework from shallow (iOS-style) to deep (macOS-style)\n# layout. Upstream libghostty-spm 1.x ships the macOS slice with a shallow\n# bundle, which Xcode 26+ rejects with: \"expected Versions/Current/Resources/\n# Info.plist since the platform does not use shallow bundles\".\nset -eu\nFW=\"$BUILT_PRODUCTS_DIR/$FRAMEWORKS_FOLDER_PATH/libghostty.framework\"\n[ -d \"$FW\" ] || { echo \"libghostty.framework not embedded — nothing to fix.\"; exit 0; }\n[ -d \"$FW/Versions\" ] && { echo \"libghostty.framework already deep-layout.\"; exit 0; }\nmkdir -p \"$FW/Versions/A/Resources\"\nfor item in libghostty Headers Modules; do\n  [ -e \"$FW/$item\" ] && mv \"$FW/$item\" \"$FW/Versions/A/\"\ndone\n[ -e \"$FW/Info.plist\" ] && mv \"$FW/Info.plist\" \"$FW/Versions/A/Resources/\"\nrm -rf \"$FW/_CodeSignature\"\n(cd \"$FW/Versions\" && ln -sf A Current)\ncd \"$FW\"\nfor item in libghostty Headers Modules; do\n  [ -e \"Versions/Current/$item\" ] && ln -sf \"Versions/Current/$item\" \"$item\"\ndone\nln -sf Versions/Current/Resources Resources\n# Re-sign so the validator sees a valid signature over the new layout.\nIDENT=\"${EXPANDED_CODE_SIGN_IDENTITY:-${CODE_SIGN_IDENTITY:--}}\"\ncodesign --force --sign \"$IDENT\" --timestamp=none \"$FW\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		8B2A5E8C2FAC0B3100BCFF58 /* Sources */ = {
@@ -418,6 +441,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Mani/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -443,6 +467,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"Mani/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -583,7 +608,7 @@
 			repositoryURL = "https://github.com/Lakr233/libghostty-spm";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 1.0.1777879537;
+				minimumVersion = 1.2.0;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

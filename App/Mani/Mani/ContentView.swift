@@ -1243,7 +1243,7 @@ struct SidebarView: View {
                     }
                 },
                 onContextMenu: {
-                    AnyView(projectMenu(repo: repo, project: project))
+                    projectMenu(repo: repo, project: project)
                 },
                 dragInfo: $sidebarDragInfo,
                 onMoveTaskHere: { sourceTaskPath in
