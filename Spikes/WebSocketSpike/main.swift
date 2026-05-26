@@ -1,174 +1,96 @@
 import Foundation
-import NIOCore
-import NIOPosix
-import NIOHTTP1
-import NIOWebSocket
 import ManiCore
+import ManiServer
 
-// S2 spike — embedded WS server that answers a `hello` frame with a
-// `helloAck` carrying an AppState snapshot. Establishes the swift-nio
-// stack + the protocol envelope shape against a non-Swift consumer
-// (Python websockets client) before lifting any of it into the mac
-// app. No real state — just AppState.empty.
+// S2/S3 spike — drives ManiServer + EventBus with a canned timeline of
+// Events so a connected client sees both the helloAck (with the
+// current snapshot) and a live stream of EventEnvelopes. Validates the
+// transport + EventBus broadcast path end-to-end before the mac app
+// integration (next commit).
 //
 // Run:    swift run WebSocketSpike
 // Test from another shell:
 //
-//   python3 - <<'PY'
-//   import asyncio, json, websockets
-//   async def go():
-//       async with websockets.connect("ws://127.0.0.1:8765") as ws:
-//           await ws.send(json.dumps({"op":"hello","clientId":"py","protocolVersion":1}))
-//           print(json.dumps(json.loads(await ws.recv()), indent=2))
-//   asyncio.run(go())
-//   PY
+//   cat > /tmp/c.swift << 'SWIFT'
+//   import Foundation
+//   let t = URLSession.shared.webSocketTask(
+//     with: URL(string: "ws://127.0.0.1:8765")!)
+//   t.resume()
+//   t.send(.string(#"{"op":"hello"}"#)) { _ in }
+//   func receive() {
+//     t.receive { result in
+//       if case let .success(.string(s)) = result { print(s) }
+//       receive()
+//     }
+//   }
+//   receive()
+//   RunLoop.main.run(until: .init(timeIntervalSinceNow: 8))
+//   SWIFT
+//   swift /tmp/c.swift
 //
-// If the websockets package isn't installed:
-//   python3 -m pip install --user websockets
+// Expected output: one helloAck frame followed by three event frames.
 
-private let host = "127.0.0.1"
-private let port = 8765
+let host = "127.0.0.1"
+let port = 8765
 
-// MARK: - HTTP fallback handler
-// For requests that don't upgrade to WebSocket, return 426 and close.
-// Real production server would serve a redirect-to-docs page or similar.
-private final class HTTPFallbackHandler: ChannelInboundHandler, RemovableChannelHandler {
-    typealias InboundIn = HTTPServerRequestPart
-    typealias OutboundOut = HTTPServerResponsePart
+let bus = EventBus()
 
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let part = self.unwrapInboundIn(data)
-        guard case .end = part else { return }
-        var headers = HTTPHeaders()
-        headers.add(name: "Content-Length", value: "0")
-        let head = HTTPResponseHead(version: .http1_1, status: .upgradeRequired, headers: headers)
-        context.write(self.wrapOutboundOut(.head(head)), promise: nil)
-        context.writeAndFlush(self.wrapOutboundOut(.end(nil))).whenComplete { _ in
-            context.close(promise: nil)
-        }
-    }
-}
+// Snapshot provider: at hello time, return the AppState we'd be in
+// "right now." For the spike that's just .empty plus whatever events
+// have been folded in. Real wiring (next commit) returns Store.state.
+let snapshot: @Sendable () async -> AppState = { .empty }
 
-// MARK: - WebSocket handler
-// One per connection. On any client text frame, emit a helloAck.
-// Spike-only: ignores the client's payload, always replies the same.
-private final class WebSocketHandler: ChannelInboundHandler {
-    typealias InboundIn = WebSocketFrame
-    typealias OutboundOut = WebSocketFrame
-
-    func channelActive(context: ChannelHandlerContext) {
-        FileHandle.standardError.write(Data("[ws] client connected: \(context.remoteAddress?.description ?? "?")\n".utf8))
-    }
-
-    func channelInactive(context: ChannelHandlerContext) {
-        FileHandle.standardError.write(Data("[ws] client disconnected\n".utf8))
-    }
-
-    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
-        let frame = self.unwrapInboundIn(data)
-        switch frame.opcode {
-        case .text:
-            var payload = frame.unmaskedData
-            let text = payload.readString(length: payload.readableBytes) ?? ""
-            FileHandle.standardError.write(Data("[ws] recv: \(text)\n".utf8))
-            sendHelloAck(context: context)
-        case .ping:
-            var pong = frame
-            pong.opcode = .pong
-            context.writeAndFlush(self.wrapOutboundOut(pong), promise: nil)
-        case .connectionClose:
-            // Echo the close frame and shut down.
-            var closeFrame = frame
-            closeFrame.fin = true
-            closeFrame.opcode = .connectionClose
-            context.writeAndFlush(self.wrapOutboundOut(closeFrame)).whenComplete { _ in
-                context.close(promise: nil)
-            }
-        case .binary, .continuation, .pong:
-            break
-        default:
-            // Unknown opcode — close per RFC 6455 §5.5.
-            context.close(promise: nil)
-        }
-    }
-
-    func errorCaught(context: ChannelHandlerContext, error: Error) {
-        FileHandle.standardError.write(Data("[ws] error: \(error)\n".utf8))
-        context.close(promise: nil)
-    }
-
-    private func sendHelloAck(context: ChannelHandlerContext) {
-        struct HelloAck: Encodable {
-            let op: String
-            let sessionId: String
-            let serverVersion: String
-            let protocolVersion: Int
-            let snapshot: AppState
-            let lastEventSeq: Int
-        }
-        let ack = HelloAck(
-            op: "helloAck",
-            sessionId: UUID().uuidString,
-            serverVersion: "0.2.0-spike",
-            protocolVersion: 1,
-            snapshot: .empty,
-            lastEventSeq: 0
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let data: Data
-        do {
-            data = try encoder.encode(ack)
-        } catch {
-            FileHandle.standardError.write(Data("[ws] encode failed: \(error)\n".utf8))
-            context.close(promise: nil)
-            return
-        }
-        let buffer = context.channel.allocator.buffer(bytes: data)
-        let respFrame = WebSocketFrame(fin: true, opcode: .text, data: buffer)
-        context.writeAndFlush(self.wrapOutboundOut(respFrame), promise: nil)
-    }
-}
-
-// MARK: - Bootstrap
-
-let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-defer { try? group.syncShutdownGracefully() }
-
-let upgrader = NIOWebSocketServerUpgrader(
-    shouldUpgrade: { (channel, _) -> EventLoopFuture<HTTPHeaders?> in
-        channel.eventLoop.makeSucceededFuture(HTTPHeaders())
-    },
-    upgradePipelineHandler: { (channel, _) -> EventLoopFuture<Void> in
-        channel.pipeline.addHandler(WebSocketHandler())
-    }
+let server = Server(
+    bus: bus,
+    serverVersion: "0.2.0-spike",
+    snapshotProvider: snapshot
 )
-
-let bootstrap = ServerBootstrap(group: group)
-    .serverChannelOption(ChannelOptions.backlog, value: 256)
-    .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-    .childChannelInitializer { channel in
-        let httpHandler = HTTPFallbackHandler()
-        let config: NIOHTTPServerUpgradeConfiguration = (
-            upgraders: [upgrader],
-            completionHandler: { _ in
-                channel.pipeline.removeHandler(httpHandler, promise: nil)
-            }
-        )
-        return channel.pipeline.configureHTTPServerPipeline(withServerUpgrade: config)
-            .flatMap {
-                channel.pipeline.addHandler(httpHandler)
-            }
-    }
-    .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
 
 let channel: Channel
 do {
-    channel = try bootstrap.bind(host: host, port: port).wait()
+    channel = try server.start(host: host, port: port)
 } catch {
-    FileHandle.standardError.write(Data("[ws] bind failed at \(host):\(port): \(error)\n".utf8))
+    FileHandle.standardError.write(Data("[spike] bind failed: \(error)\n".utf8))
     exit(1)
 }
+FileHandle.standardError.write(Data("[spike] listening on ws://\(host):\(port)\n".utf8))
 
-FileHandle.standardError.write(Data("[ws] listening on ws://\(host):\(port)\n".utf8))
+// Fire a small timeline of fake events to exercise the broadcast.
+// 2 s, 4 s, 6 s after start, drop an event onto the bus and let
+// subscribed clients see them streamed.
+_Concurrency.Task {
+    try? await _Concurrency.Task.sleep(nanoseconds: 2_000_000_000)
+    await bus.publish(.repoCreated(Repo(
+        id: UUID(),
+        name: "spike-repo",
+        color: "#ff0066",
+        enabled: true,
+        rootDir: URL(fileURLWithPath: "/tmp/spike"),
+        projects: [],
+        externalConvos: [],
+        availableWorktrees: [],
+        createdAt: Date(),
+        claudeInvocation: nil,
+        worktreeMode: .manual,
+        managedWorktreesNamespace: nil
+    )))
+
+    try? await _Concurrency.Task.sleep(nanoseconds: 2_000_000_000)
+    await bus.publish(.repoRenamed(id: UUID(), name: "spike-repo-renamed"))
+
+    try? await _Concurrency.Task.sleep(nanoseconds: 2_000_000_000)
+    await bus.publish(.settingsUpdated(Settings(
+        scrollbackCapBytes: 32 * 1024 * 1024,
+        snapshotIntervalSeconds: 30,
+        terminalTheme: "Solarized",
+        terminalFontFamily: "",
+        terminalFontSize: 14,
+        claudeInvocation: "claude"
+    )))
+    FileHandle.standardError.write(Data("[spike] timeline complete\n".utf8))
+}
+
+// Re-export NIO's Channel here would be cleaner; spike just blocks on
+// closeFuture via the same handle Server.start returned.
+import NIOCore
 try channel.closeFuture.wait()
