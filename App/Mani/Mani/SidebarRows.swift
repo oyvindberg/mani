@@ -166,7 +166,7 @@ struct RepoHeaderRow: View {
 
 // MARK: - Project header
 
-struct WorktreeHeaderRow: View {
+struct WorktreeHeaderRow<MenuContent: View>: View {
     let repo: Repo
     let project: Project
     let isExpanded: Bool
@@ -180,7 +180,7 @@ struct WorktreeHeaderRow: View {
     let onSelectDiff: () -> Void
     let onNewShell: () -> Void
     let onNewClaude: () -> Void
-    let onContextMenu: () -> AnyView
+    @ViewBuilder let onContextMenu: () -> MenuContent
     @Binding var dragInfo: SidebarDragInfo?
     let onMoveTaskHere: (TaskPath) -> Void
 

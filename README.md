@@ -167,7 +167,16 @@ binary connects to a Unix socket inside Mani when Claude fires a hook:
 ### Requirements
 
 - macOS 14 (Sonoma) or newer.
-- Xcode 15+ with the macOS 15 SDK.
+- **Full Xcode 15+** (with the macOS 15 SDK) — not just the Command
+  Line Tools. The macOS app target lives in `App/Mani/Mani.xcodeproj`
+  and is not part of `Package.swift`, so `xcodebuild` (and therefore
+  Xcode.app) is required to build the GUI. Install from the App Store
+  or via `brew install --cask xcodes` + `xcodes install --latest`.
+- After installing Xcode, point the active developer dir at it:
+  ```sh
+  sudo xcode-select -s /Applications/Xcode.app
+  xcode-select -p   # should print /Applications/Xcode.app/Contents/Developer
+  ```
 - `git` on PATH.
 - *(optional but recommended)* The `claude` CLI from Anthropic — needed
   to spawn Claude Code tasks. Mani runs plain shells without it.
@@ -189,6 +198,45 @@ cd App/Mani
 xcodebuild -project Mani.xcodeproj -scheme Mani -configuration Debug build
 open ~/Library/Developer/Xcode/DerivedData/Mani-*/Build/Products/Debug/Mani.app
 ```
+
+If `xcodebuild` errors with *"tool 'xcodebuild' requires Xcode, but
+active developer directory '/Library/Developer/CommandLineTools' is a
+command line tools instance"*, run the `xcode-select -s` step above.
+
+#### First-time Xcode setup
+
+A freshly installed Xcode needs a few extra one-time steps. If
+`xcodebuild` complains, run these in order:
+
+```sh
+# 1. Accept the Xcode license (interactive sudo).
+sudo xcodebuild -license accept
+
+# 2. Install first-launch system components (CoreSimulator etc.).
+xcodebuild -runFirstLaunch
+
+# 3. Install the Metal toolchain (~700 MB; needed by SwiftTerm's
+#    Metal shaders, the terminal renderer).
+xcodebuild -downloadComponent MetalToolchain
+```
+
+#### Notes on third-party dependencies
+
+- **libghostty-spm**: pinned in
+  `App/Mani/Mani.xcodeproj/.../Package.resolved`. Upstream has
+  occasionally deleted old release artifacts (e.g. the original
+  `1.0.1777879537` is gone — 404). If SPM resolution fails with
+  *"failed downloading … GhosttyKit.xcframework.zip:
+  badResponseStatusCode(404)"*, bump the pin in `Package.resolved`
+  and `project.pbxproj` to the latest 1.x release listed at
+  https://github.com/Lakr233/libghostty-spm/releases.
+- **Shallow-bundle workaround**: libghostty-spm ships its macOS
+  framework with iOS-style shallow layout, which Xcode 26+ rejects
+  during app validation. The Mani target has a *"Fix libghostty
+  bundle layout"* Run Script build phase that restructures it into
+  the deep `Versions/A/...` layout after embed and re-signs. This is
+  why the Mani target also sets `ENABLE_USER_SCRIPT_SANDBOXING = NO`
+  — the script needs to write inside `Mani.app/Contents/Frameworks/`.
 
 ### First-launch walkthrough
 

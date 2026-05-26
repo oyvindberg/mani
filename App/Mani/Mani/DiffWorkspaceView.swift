@@ -268,14 +268,13 @@ struct DiffWorkspaceView: View {
 
     // MARK: Tree row rendering
 
-    @ViewBuilder
     private func fileNode(
         _ node: PathTreeNode,
         depth: Int,
         section: Section
-    ) -> some View {
+    ) -> AnyView {
         if node.isDirectory {
-            VStack(alignment: .leading, spacing: 2) {
+            return AnyView(VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
                     Image(systemName: "folder")
                         .foregroundStyle(.secondary)
@@ -288,11 +287,11 @@ struct DiffWorkspaceView: View {
                 ForEach(node.children) { child in
                     fileNode(child, depth: depth + 1, section: section)
                 }
-            }
+            })
         } else if let fullPath = node.fullPath {
             let selected = (selectedFile?.path == fullPath
                             && selectedFile?.section == section)
-            HStack(spacing: 4) {
+            return AnyView(HStack(spacing: 4) {
                 if section == .untracked {
                     Toggle("", isOn: Binding(
                         get: { untrackedSelection.contains(fullPath) },
@@ -337,7 +336,9 @@ struct DiffWorkspaceView: View {
                 renderDiff(for: sel)
                 fileListFocused = true
             }
-            .contextMenu { menu(for: section, path: fullPath) }
+            .contextMenu { menu(for: section, path: fullPath) })
+        } else {
+            return AnyView(EmptyView())
         }
     }
 
