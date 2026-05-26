@@ -40,10 +40,19 @@ let bus = EventBus()
 // have been folded in. Real wiring (next commit) returns Store.state.
 let snapshot: @Sendable () async -> AppState = { .empty }
 
+// For the spike, "dispatch" doesn't run through a real reducer.
+// Re-publish the inbound Event as if the reducer had emitted it,
+// just to demonstrate the round-trip from the client's perspective.
+// Real ManiApp wires this to store.dispatch.
+let dispatcher: @Sendable (Action) async -> Void = { action in
+    FileHandle.standardError.write(Data("[spike] dispatch arrived: \(action)\n".utf8))
+}
+
 let server = Server(
     bus: bus,
     serverVersion: "0.2.0-spike",
-    snapshotProvider: snapshot
+    snapshotProvider: snapshot,
+    actionDispatcher: dispatcher
 )
 
 let channel: Channel

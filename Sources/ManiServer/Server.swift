@@ -20,6 +20,7 @@ import NIOWebSocket
 public final class Server: @unchecked Sendable {
     private let bus: EventBus
     private let snapshotProvider: @Sendable () async -> AppState
+    private let actionDispatcher: @Sendable (Action) async -> Void
     private let serverVersion: String
     private let group: MultiThreadedEventLoopGroup
     private var channel: Channel?
@@ -27,17 +28,20 @@ public final class Server: @unchecked Sendable {
     public init(
         bus: EventBus,
         serverVersion: String,
-        snapshotProvider: @escaping @Sendable () async -> AppState
+        snapshotProvider: @escaping @Sendable () async -> AppState,
+        actionDispatcher: @escaping @Sendable (Action) async -> Void
     ) {
         self.bus = bus
         self.serverVersion = serverVersion
         self.snapshotProvider = snapshotProvider
+        self.actionDispatcher = actionDispatcher
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     }
 
     public func start(host: String, port: Int) throws -> Channel {
         let bus = self.bus
         let snapshotProvider = self.snapshotProvider
+        let actionDispatcher = self.actionDispatcher
         let serverVersion = self.serverVersion
 
         let upgrader = NIOWebSocketServerUpgrader(
@@ -48,7 +52,8 @@ public final class Server: @unchecked Sendable {
                 channel.pipeline.addHandler(WebSocketConnectionHandler(
                     bus: bus,
                     serverVersion: serverVersion,
-                    snapshotProvider: snapshotProvider
+                    snapshotProvider: snapshotProvider,
+                    actionDispatcher: actionDispatcher
                 ))
             }
         )
@@ -115,17 +120,20 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
     private let bus: EventBus
     private let serverVersion: String
     private let snapshotProvider: @Sendable () async -> AppState
+    private let actionDispatcher: @Sendable (Action) async -> Void
     private var greeted = false
     private var forwardingTask: _Concurrency.Task<Void, Never>?
 
     init(
         bus: EventBus,
         serverVersion: String,
-        snapshotProvider: @escaping @Sendable () async -> AppState
+        snapshotProvider: @escaping @Sendable () async -> AppState,
+        actionDispatcher: @escaping @Sendable (Action) async -> Void
     ) {
         self.bus = bus
         self.serverVersion = serverVersion
         self.snapshotProvider = snapshotProvider
+        self.actionDispatcher = actionDispatcher
     }
 
     func channelInactive(context: ChannelHandlerContext) {
@@ -137,7 +145,9 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
         let frame = self.unwrapInboundIn(data)
         switch frame.opcode {
         case .text:
-            handleText(context: context)
+            var payload = frame.unmaskedData
+            let text = payload.readString(length: payload.readableBytes) ?? ""
+            handleText(text, context: context)
         case .ping:
             var pong = frame
             pong.opcode = .pong
@@ -161,9 +171,45 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
         context.close(promise: nil)
     }
 
-    // First text frame triggers the handshake + event-forwarding loop.
-    // Subsequent text frames are no-ops for now (action dispatch is S4).
-    private func handleText(context: ChannelHandlerContext) {
+    // Peek at `op`, dispatch to the matching handler. Unknown ops get
+    // an ErrorEnvelope back; malformed frames close the connection.
+    private func handleText(_ text: String, context: ChannelHandlerContext) {
+        guard let data = text.data(using: .utf8) else {
+            FileHandle.standardError.write(Data("[ws] non-UTF8 text frame; closing\n".utf8))
+            context.close(promise: nil)
+            return
+        }
+        struct OpPeek: Decodable { let op: String }
+        let op: String
+        do {
+            op = try JSONDecoder().decode(OpPeek.self, from: data).op
+        } catch {
+            sendError(
+                code: "malformed",
+                message: "frame missing or invalid `op` field",
+                on: context.channel,
+                eventLoop: context.eventLoop
+            )
+            return
+        }
+        switch op {
+        case "hello":
+            handleHello(context: context)
+        case "dispatch":
+            handleDispatch(payload: data, context: context)
+        default:
+            sendError(
+                code: "unknownOp",
+                message: "unknown op: \(op)",
+                on: context.channel,
+                eventLoop: context.eventLoop
+            )
+        }
+    }
+
+    // First `hello` triggers the handshake + event-forwarding loop.
+    // Subsequent `hello` frames are no-ops (one greeting per session).
+    private func handleHello(context: ChannelHandlerContext) {
         guard !greeted else { return }
         greeted = true
         let bus = self.bus
@@ -193,6 +239,44 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
                 self?.send(env, on: channel, eventLoop: eventLoop)
             }
         }
+    }
+
+    // {"op":"dispatch","action":{"kind":...,"payload":...}} — decode
+    // the inner Action via ManiCore's wire Codable, hand it to the
+    // dispatcher. The resulting Event flows back via the EventBus
+    // subscription, so the client sees its own action reflected as an
+    // event with a fresh seq — same path remote events take.
+    private func handleDispatch(payload: Data, context: ChannelHandlerContext) {
+        struct DispatchEnvelope: Decodable {
+            let op: String
+            let action: Action
+        }
+        let env: DispatchEnvelope
+        do {
+            env = try JSONDecoder().decode(DispatchEnvelope.self, from: payload)
+        } catch {
+            sendError(
+                code: "malformedAction",
+                message: "could not decode action: \(error)",
+                on: context.channel,
+                eventLoop: context.eventLoop
+            )
+            return
+        }
+        let dispatcher = self.actionDispatcher
+        _Concurrency.Task {
+            await dispatcher(env.action)
+        }
+    }
+
+    private func sendError(
+        code: String,
+        message: String,
+        on channel: Channel,
+        eventLoop: EventLoop
+    ) {
+        let env = ErrorEnvelope(code: code, message: message)
+        send(env, on: channel, eventLoop: eventLoop)
     }
 
     // Encode + ship a text frame. We hop to the channel's event loop

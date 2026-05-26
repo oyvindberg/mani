@@ -124,6 +124,9 @@ struct ManiApp: App {
             serverVersion: "0.2.0-dev",
             snapshotProvider: { @Sendable in
                 await store.state
+            },
+            actionDispatcher: { @Sendable action in
+                await store.dispatch(action)
             }
         )
         self.server = serverInstance
