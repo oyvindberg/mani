@@ -1,5 +1,6 @@
 import SwiftUI
 import ManiCore
+import ManiServer
 import Foundation
 import Darwin
 
@@ -79,6 +80,13 @@ struct ManiApp: App {
     @StateObject private var archiveCache: SessionArchiveCache = SessionArchiveCache.shared
     @StateObject private var activityTracker = TaskActivityTracker()
 
+    // Embedded mani-server WebSocket transport. Started in init(), runs
+    // for the app's lifetime, picks up events from Store.eventBus.
+    // Bound to 127.0.0.1 for now; the Tailscale bind address moves to
+    // the tailnet IP when [[mani-singleton-lock]] / tailscale work
+    // lands. Held strongly so its NIO event loop survives.
+    private let server: Server
+
     init() {
         // Force the singleton lock to be acquired before any boot work.
         // If another Mani is up, this call path doesn't return.
@@ -105,6 +113,26 @@ struct ManiApp: App {
         let runner = EffectRunner(persistence: persistence, host: host)
         let store = Store(state: initialState, runner: runner)
         _store = StateObject(wrappedValue: store)
+
+        // v0.2 transport. Bound to 127.0.0.1:8765 for now — Tailscale
+        // binding lands when the Tailscale-aware bind logic + auth do.
+        // Failing to bind is non-fatal (port in use, etc.); the local
+        // UI keeps working, only remote clients are unreachable.
+        let bus = store.eventBus
+        let serverInstance = Server(
+            bus: bus,
+            serverVersion: "0.2.0-dev",
+            snapshotProvider: { @Sendable in
+                await store.state
+            }
+        )
+        self.server = serverInstance
+        do {
+            _ = try serverInstance.start(host: "127.0.0.1", port: 8765)
+            NSLog("[mani-server] listening on ws://127.0.0.1:8765")
+        } catch {
+            NSLog("[mani-server] failed to bind 127.0.0.1:8765: \(error)")
+        }
 
         let claudeProjects = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")

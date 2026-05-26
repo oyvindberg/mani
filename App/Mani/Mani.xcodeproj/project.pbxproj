@@ -11,6 +11,7 @@
 		8BC0DE0000000000B11D0002 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 8BC0DE0000000000C0DE0002 /* SwiftTerm */; };
 		8BC0DE0000000000B11D0003 /* GhosttyTerminal in Frameworks */ = {isa = PBXBuildFile; productRef = 8BC0DE0000000000C0DE0003 /* GhosttyTerminal */; };
 		8BC0DE0000000000B11D0004 /* GhosttyTheme in Frameworks */ = {isa = PBXBuildFile; productRef = 8BC0DE0000000000C0DE0004 /* GhosttyTheme */; };
+		8BC0DE0000000000B11D0005 /* ManiServer in Frameworks */ = {isa = PBXBuildFile; productRef = 8BC0DE0000000000C0DE0005 /* ManiServer */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -63,6 +64,7 @@
 				8BC0DE0000000000B11D0002 /* SwiftTerm in Frameworks */,
 				8BC0DE0000000000B11D0003 /* GhosttyTerminal in Frameworks */,
 				8BC0DE0000000000B11D0004 /* GhosttyTheme in Frameworks */,
+				8BC0DE0000000000B11D0005 /* ManiServer in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -128,6 +130,7 @@
 				8BC0DE0000000000C0DE0002 /* SwiftTerm */,
 				8BC0DE0000000000C0DE0003 /* GhosttyTerminal */,
 				8BC0DE0000000000C0DE0004 /* GhosttyTheme */,
+				8BC0DE0000000000C0DE0005 /* ManiServer */,
 			);
 			productName = Mani;
 			productReference = 8B2A5E902FAC0B3100BCFF58 /* Mani.app */;
@@ -633,6 +636,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 8BC0DE0000000000C0DE0010 /* XCRemoteSwiftPackageReference "libghostty-spm" */;
 			productName = GhosttyTheme;
+		};
+		8BC0DE0000000000C0DE0005 /* ManiServer */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8B2A5EBE2FAC0C7B00BCFF58 /* XCLocalSwiftPackageReference "../.." */;
+			productName = ManiServer;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
