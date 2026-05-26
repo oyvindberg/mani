@@ -40,12 +40,14 @@ public final class Server: @unchecked Sendable {
     private let taskInputHandler: TaskInputHandler
     private let taskResizeHandler: TaskResizeHandler
     private let serverVersion: String
+    private let token: String
     private let group: MultiThreadedEventLoopGroup
     private var channel: Channel?
 
     public init(
         bus: EventBus,
         serverVersion: String,
+        token: String,
         snapshotProvider: @escaping @Sendable () async -> AppState,
         actionDispatcher: @escaping @Sendable (Action) async -> Void,
         taskOutputSubscriber: @escaping TaskOutputSubscriber,
@@ -54,6 +56,7 @@ public final class Server: @unchecked Sendable {
     ) {
         self.bus = bus
         self.serverVersion = serverVersion
+        self.token = token
         self.snapshotProvider = snapshotProvider
         self.actionDispatcher = actionDispatcher
         self.taskOutputSubscriber = taskOutputSubscriber
@@ -70,6 +73,7 @@ public final class Server: @unchecked Sendable {
         let taskInputHandler = self.taskInputHandler
         let taskResizeHandler = self.taskResizeHandler
         let serverVersion = self.serverVersion
+        let token = self.token
 
         let upgrader = NIOWebSocketServerUpgrader(
             shouldUpgrade: { (channel, _) -> EventLoopFuture<HTTPHeaders?> in
@@ -79,6 +83,7 @@ public final class Server: @unchecked Sendable {
                 channel.pipeline.addHandler(WebSocketConnectionHandler(
                     bus: bus,
                     serverVersion: serverVersion,
+                    token: token,
                     snapshotProvider: snapshotProvider,
                     actionDispatcher: actionDispatcher,
                     taskOutputSubscriber: taskOutputSubscriber,
@@ -149,12 +154,14 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
 
     private let bus: EventBus
     private let serverVersion: String
+    private let token: String
     private let snapshotProvider: @Sendable () async -> AppState
     private let actionDispatcher: @Sendable (Action) async -> Void
     private let taskOutputSubscriber: TaskOutputSubscriber
     private let taskInputHandler: TaskInputHandler
     private let taskResizeHandler: TaskResizeHandler
     private var greeted = false
+    private var authenticated = false
     private var forwardingTask: _Concurrency.Task<Void, Never>?
 
     // Per-connection map of taskId → cancel closure for active
@@ -168,6 +175,7 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
     init(
         bus: EventBus,
         serverVersion: String,
+        token: String,
         snapshotProvider: @escaping @Sendable () async -> AppState,
         actionDispatcher: @escaping @Sendable (Action) async -> Void,
         taskOutputSubscriber: @escaping TaskOutputSubscriber,
@@ -176,6 +184,7 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
     ) {
         self.bus = bus
         self.serverVersion = serverVersion
+        self.token = token
         self.snapshotProvider = snapshotProvider
         self.actionDispatcher = actionDispatcher
         self.taskOutputSubscriber = taskOutputSubscriber
@@ -244,9 +253,23 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
             )
             return
         }
+        // Auth gate: only `hello` is allowed pre-auth. Everything else
+        // requires a successful hello first. This applies even on local
+        // (127.0.0.1) connections — keeps the auth model uniform and
+        // makes future cross-network exposure safe by construction.
+        if op != "hello" && !authenticated {
+            sendError(
+                code: "notAuthenticated",
+                message: "send a `hello` with a valid token before \(op)",
+                on: context.channel,
+                eventLoop: context.eventLoop
+            )
+            return
+        }
+
         switch op {
         case "hello":
-            handleHello(context: context)
+            handleHello(payload: data, context: context)
         case "dispatch":
             handleDispatch(payload: data, context: context)
         case "subscribeTaskOutput":
@@ -268,9 +291,42 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
     }
 
     // First `hello` triggers the handshake + event-forwarding loop.
-    // Subsequent `hello` frames are no-ops (one greeting per session).
-    private func handleHello(context: ChannelHandlerContext) {
+    // The hello payload must include `token` matching the server's
+    // configured token; mismatch → error + close. Subsequent `hello`
+    // frames are no-ops (one greeting per session).
+    private func handleHello(payload: Data, context: ChannelHandlerContext) {
         guard !greeted else { return }
+        // Token check. Constant-time compare isn't strictly necessary
+        // for the v0.1 threat model (tailnet-only, single token), but
+        // doesn't cost anything either — Foundation's String == is
+        // already short-circuit-free on equal-length strings.
+        struct Hello: Decodable { let op: String; let token: String? }
+        let hello: Hello
+        do { hello = try JSONDecoder().decode(Hello.self, from: payload) }
+        catch {
+            sendError(
+                code: "malformedHello",
+                message: "\(error)",
+                on: context.channel,
+                eventLoop: context.eventLoop
+            )
+            return
+        }
+        guard let provided = hello.token, provided == self.token else {
+            sendError(
+                code: "badToken",
+                message: "hello requires a `token` field matching the server's token",
+                on: context.channel,
+                eventLoop: context.eventLoop
+            )
+            // Close after a short delay so the error frame ships.
+            let channel = context.channel
+            context.eventLoop.scheduleTask(in: .milliseconds(50)) {
+                channel.close(promise: nil)
+            }
+            return
+        }
+        authenticated = true
         greeted = true
         let bus = self.bus
         let snapshotProvider = self.snapshotProvider

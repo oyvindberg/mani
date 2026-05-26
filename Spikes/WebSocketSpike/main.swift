@@ -57,9 +57,15 @@ let taskOutputSubscriber: @Sendable (UUID, @escaping @Sendable (Data) -> Void) a
 let taskInputHandler: @Sendable (UUID, Data) async -> Void = { _, _ in }
 let taskResizeHandler: @Sendable (UUID, UInt16, UInt16) async -> Void = { _, _, _ in }
 
+// Fixed token for the spike so the test-client snippet at the top of
+// the file always knows it. Real ManiApp generates a per-install UUID.
+let spikeToken = "spike-token"
+FileHandle.standardError.write(Data("[spike] auth token: \(spikeToken)\n".utf8))
+
 let server = Server(
     bus: bus,
     serverVersion: "0.2.0-spike",
+    token: spikeToken,
     snapshotProvider: snapshot,
     actionDispatcher: dispatcher,
     taskOutputSubscriber: taskOutputSubscriber,

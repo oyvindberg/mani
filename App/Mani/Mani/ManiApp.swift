@@ -21,6 +21,28 @@ struct ManiApp: App {
     // already. Single-process invariant prevents the cascade.
     private static let singletonLockFD: Int32 = acquireSingletonLockOrExit()
 
+    // Load (or generate + persist) the server bearer token. Stored
+    // plain-text at `<storeRoot>/server-token` so the user can read
+    // it from Finder + paste into a phone client. Future polish:
+    // QR-pair from a settings UI panel and rotate-on-demand. For
+    // v0.1 the token is stable across launches and lives forever.
+    private static func loadOrCreateServerToken(in storeRoot: URL) -> String {
+        let path = storeRoot.appendingPathComponent("server-token").path
+        if let existing = try? String(contentsOfFile: path, encoding: .utf8) {
+            let trimmed = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return trimmed }
+        }
+        let fresh = UUID().uuidString
+        do {
+            try fresh.write(toFile: path, atomically: true, encoding: .utf8)
+            // chmod 0600 — token shouldn't be world-readable.
+            _ = chmod(path, 0o600)
+        } catch {
+            NSLog("[mani-server] failed to persist token to \(path): \(error)")
+        }
+        return fresh
+    }
+
     private static func acquireSingletonLockOrExit() -> Int32 {
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask
@@ -114,14 +136,17 @@ struct ManiApp: App {
         let store = Store(state: initialState, runner: runner)
         _store = StateObject(wrappedValue: store)
 
-        // v0.2 transport. Bound to 127.0.0.1:8765 for now — Tailscale
-        // binding lands when the Tailscale-aware bind logic + auth do.
-        // Failing to bind is non-fatal (port in use, etc.); the local
+        // v0.2 transport. Bound to 0.0.0.0:8765 so clients on the
+        // tailnet / LAN can reach it; bearer-token auth keeps drive-by
+        // connections out. Failing to bind is non-fatal — the local
         // UI keeps working, only remote clients are unreachable.
         let bus = store.eventBus
+        let token = Self.loadOrCreateServerToken(in: storeRoot)
+        NSLog("[mani-server] auth token (pair phone with this): \(token)")
         let serverInstance = Server(
             bus: bus,
             serverVersion: "0.2.0-dev",
+            token: token,
             snapshotProvider: { @Sendable in
                 await store.state
             },
@@ -155,10 +180,10 @@ struct ManiApp: App {
         )
         self.server = serverInstance
         do {
-            _ = try serverInstance.start(host: "127.0.0.1", port: 8765)
-            NSLog("[mani-server] listening on ws://127.0.0.1:8765")
+            _ = try serverInstance.start(host: "0.0.0.0", port: 8765)
+            NSLog("[mani-server] listening on ws://0.0.0.0:8765 (reachable via tailnet/LAN)")
         } catch {
-            NSLog("[mani-server] failed to bind 127.0.0.1:8765: \(error)")
+            NSLog("[mani-server] failed to bind 0.0.0.0:8765: \(error)")
         }
 
         let claudeProjects = FileManager.default.homeDirectoryForCurrentUser
