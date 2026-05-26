@@ -53,12 +53,18 @@ let dispatcher: @Sendable (Action) async -> Void = { action in
 // verify wiring without spawning a PTY.
 let taskOutputSubscriber: @Sendable (UUID, @escaping @Sendable (Data) -> Void) async -> (@Sendable () -> Void)? = { _, _ in nil }
 
+// No real TaskIO in the spike — input/resize are no-ops.
+let taskInputHandler: @Sendable (UUID, Data) async -> Void = { _, _ in }
+let taskResizeHandler: @Sendable (UUID, UInt16, UInt16) async -> Void = { _, _, _ in }
+
 let server = Server(
     bus: bus,
     serverVersion: "0.2.0-spike",
     snapshotProvider: snapshot,
     actionDispatcher: dispatcher,
-    taskOutputSubscriber: taskOutputSubscriber
+    taskOutputSubscriber: taskOutputSubscriber,
+    taskInputHandler: taskInputHandler,
+    taskResizeHandler: taskResizeHandler
 )
 
 let channel: Channel

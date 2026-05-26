@@ -143,6 +143,14 @@ struct ManiApp: App {
                     handler(data)
                 }
                 return { _ = subscription }  // closure retains subscription; deinit on drop
+            },
+            taskInputHandler: { @Sendable taskId, bytes in
+                let runner = await store.runner
+                await runner.pty(taskId: taskId)?.write(bytes)
+            },
+            taskResizeHandler: { @Sendable taskId, cols, rows in
+                let runner = await store.runner
+                await runner.pty(taskId: taskId)?.resize(rows: rows, cols: cols)
             }
         )
         self.server = serverInstance

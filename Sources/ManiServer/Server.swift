@@ -25,11 +25,20 @@ import NIOWebSocket
 public typealias TaskOutputSubscriber =
     @Sendable (UUID, @escaping @Sendable (Data) -> Void) async -> (@Sendable () -> Void)?
 
+// Write bytes to a task's PTY stdin. No-op if the task isn't live.
+public typealias TaskInputHandler = @Sendable (UUID, Data) async -> Void
+
+// Notify a task's PTY of a new terminal size (TIOCSWINSZ via the
+// agent). No-op if the task isn't live.
+public typealias TaskResizeHandler = @Sendable (UUID, UInt16, UInt16) async -> Void
+
 public final class Server: @unchecked Sendable {
     private let bus: EventBus
     private let snapshotProvider: @Sendable () async -> AppState
     private let actionDispatcher: @Sendable (Action) async -> Void
     private let taskOutputSubscriber: TaskOutputSubscriber
+    private let taskInputHandler: TaskInputHandler
+    private let taskResizeHandler: TaskResizeHandler
     private let serverVersion: String
     private let group: MultiThreadedEventLoopGroup
     private var channel: Channel?
@@ -39,13 +48,17 @@ public final class Server: @unchecked Sendable {
         serverVersion: String,
         snapshotProvider: @escaping @Sendable () async -> AppState,
         actionDispatcher: @escaping @Sendable (Action) async -> Void,
-        taskOutputSubscriber: @escaping TaskOutputSubscriber
+        taskOutputSubscriber: @escaping TaskOutputSubscriber,
+        taskInputHandler: @escaping TaskInputHandler,
+        taskResizeHandler: @escaping TaskResizeHandler
     ) {
         self.bus = bus
         self.serverVersion = serverVersion
         self.snapshotProvider = snapshotProvider
         self.actionDispatcher = actionDispatcher
         self.taskOutputSubscriber = taskOutputSubscriber
+        self.taskInputHandler = taskInputHandler
+        self.taskResizeHandler = taskResizeHandler
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     }
 
@@ -54,6 +67,8 @@ public final class Server: @unchecked Sendable {
         let snapshotProvider = self.snapshotProvider
         let actionDispatcher = self.actionDispatcher
         let taskOutputSubscriber = self.taskOutputSubscriber
+        let taskInputHandler = self.taskInputHandler
+        let taskResizeHandler = self.taskResizeHandler
         let serverVersion = self.serverVersion
 
         let upgrader = NIOWebSocketServerUpgrader(
@@ -66,7 +81,9 @@ public final class Server: @unchecked Sendable {
                     serverVersion: serverVersion,
                     snapshotProvider: snapshotProvider,
                     actionDispatcher: actionDispatcher,
-                    taskOutputSubscriber: taskOutputSubscriber
+                    taskOutputSubscriber: taskOutputSubscriber,
+                    taskInputHandler: taskInputHandler,
+                    taskResizeHandler: taskResizeHandler
                 ))
             }
         )
@@ -135,6 +152,8 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
     private let snapshotProvider: @Sendable () async -> AppState
     private let actionDispatcher: @Sendable (Action) async -> Void
     private let taskOutputSubscriber: TaskOutputSubscriber
+    private let taskInputHandler: TaskInputHandler
+    private let taskResizeHandler: TaskResizeHandler
     private var greeted = false
     private var forwardingTask: _Concurrency.Task<Void, Never>?
 
@@ -151,13 +170,17 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
         serverVersion: String,
         snapshotProvider: @escaping @Sendable () async -> AppState,
         actionDispatcher: @escaping @Sendable (Action) async -> Void,
-        taskOutputSubscriber: @escaping TaskOutputSubscriber
+        taskOutputSubscriber: @escaping TaskOutputSubscriber,
+        taskInputHandler: @escaping TaskInputHandler,
+        taskResizeHandler: @escaping TaskResizeHandler
     ) {
         self.bus = bus
         self.serverVersion = serverVersion
         self.snapshotProvider = snapshotProvider
         self.actionDispatcher = actionDispatcher
         self.taskOutputSubscriber = taskOutputSubscriber
+        self.taskInputHandler = taskInputHandler
+        self.taskResizeHandler = taskResizeHandler
     }
 
     func channelInactive(context: ChannelHandlerContext) {
@@ -230,6 +253,10 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
             handleSubscribeTaskOutput(payload: data, context: context)
         case "unsubscribeTaskOutput":
             handleUnsubscribeTaskOutput(payload: data, context: context)
+        case "taskInput":
+            handleTaskInput(payload: data, context: context)
+        case "taskResize":
+            handleTaskResize(payload: data, context: context)
         default:
             sendError(
                 code: "unknownOp",
@@ -386,6 +413,67 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
         let cancel = taskOutputCancels.removeValue(forKey: unsub.taskId)
         stateLock.unlock()
         cancel?()
+    }
+
+    // {"op":"taskInput","taskId":"...","data":"<base64>"} — write
+    // bytes to the task's PTY stdin. Used for keystrokes from a
+    // remote terminal. Silently no-ops if the task isn't live (no
+    // error frame for input — typing into a dead terminal is a
+    // benign race during reconnect).
+    private func handleTaskInput(payload: Data, context: ChannelHandlerContext) {
+        struct Inp: Decodable { let op: String; let taskId: UUID; let data: String }
+        let inp: Inp
+        do { inp = try JSONDecoder().decode(Inp.self, from: payload) }
+        catch {
+            sendError(
+                code: "malformedInput",
+                message: "\(error)",
+                on: context.channel,
+                eventLoop: context.eventLoop
+            )
+            return
+        }
+        guard let bytes = Data(base64Encoded: inp.data) else {
+            sendError(
+                code: "malformedInput",
+                message: "data field is not valid base64",
+                on: context.channel,
+                eventLoop: context.eventLoop
+            )
+            return
+        }
+        let handler = self.taskInputHandler
+        let taskId = inp.taskId
+        _Concurrency.Task {
+            await handler(taskId, bytes)
+        }
+    }
+
+    // {"op":"taskResize","taskId":"...","cols":<n>,"rows":<n>} —
+    // forward a TIOCSWINSZ to the task's PTY. The conventional
+    // "send resize on display" pattern means clients should re-emit
+    // this whenever their view binds to the task (mirrors the
+    // local UI's re-attach SIGWINCH fix in ContentView).
+    private func handleTaskResize(payload: Data, context: ChannelHandlerContext) {
+        struct Res: Decodable { let op: String; let taskId: UUID; let cols: UInt16; let rows: UInt16 }
+        let res: Res
+        do { res = try JSONDecoder().decode(Res.self, from: payload) }
+        catch {
+            sendError(
+                code: "malformedResize",
+                message: "\(error)",
+                on: context.channel,
+                eventLoop: context.eventLoop
+            )
+            return
+        }
+        let handler = self.taskResizeHandler
+        let taskId = res.taskId
+        let cols = res.cols
+        let rows = res.rows
+        _Concurrency.Task {
+            await handler(taskId, cols, rows)
+        }
     }
 
     // Encode + ship a text frame. We hop to the channel's event loop
