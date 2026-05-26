@@ -17,10 +17,19 @@ import NIOWebSocket
 // The Server holds nothing it shouldn't — no Store, no EffectRunner,
 // no persistence handles. That keeps it embeddable in the mac app
 // without sprouting tendrils through the rest of the app architecture.
+// Subscribe to a task's PTY byte stream. Returns a cancel closure
+// (drop it / invoke it to unsubscribe), or nil if the task doesn't
+// exist. The handler closure will be called with raw PTY bytes —
+// including any captured backlog from before subscription if the
+// underlying TaskIO supports replay, and live bytes thereafter.
+public typealias TaskOutputSubscriber =
+    @Sendable (UUID, @escaping @Sendable (Data) -> Void) async -> (@Sendable () -> Void)?
+
 public final class Server: @unchecked Sendable {
     private let bus: EventBus
     private let snapshotProvider: @Sendable () async -> AppState
     private let actionDispatcher: @Sendable (Action) async -> Void
+    private let taskOutputSubscriber: TaskOutputSubscriber
     private let serverVersion: String
     private let group: MultiThreadedEventLoopGroup
     private var channel: Channel?
@@ -29,12 +38,14 @@ public final class Server: @unchecked Sendable {
         bus: EventBus,
         serverVersion: String,
         snapshotProvider: @escaping @Sendable () async -> AppState,
-        actionDispatcher: @escaping @Sendable (Action) async -> Void
+        actionDispatcher: @escaping @Sendable (Action) async -> Void,
+        taskOutputSubscriber: @escaping TaskOutputSubscriber
     ) {
         self.bus = bus
         self.serverVersion = serverVersion
         self.snapshotProvider = snapshotProvider
         self.actionDispatcher = actionDispatcher
+        self.taskOutputSubscriber = taskOutputSubscriber
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
     }
 
@@ -42,6 +53,7 @@ public final class Server: @unchecked Sendable {
         let bus = self.bus
         let snapshotProvider = self.snapshotProvider
         let actionDispatcher = self.actionDispatcher
+        let taskOutputSubscriber = self.taskOutputSubscriber
         let serverVersion = self.serverVersion
 
         let upgrader = NIOWebSocketServerUpgrader(
@@ -53,7 +65,8 @@ public final class Server: @unchecked Sendable {
                     bus: bus,
                     serverVersion: serverVersion,
                     snapshotProvider: snapshotProvider,
-                    actionDispatcher: actionDispatcher
+                    actionDispatcher: actionDispatcher,
+                    taskOutputSubscriber: taskOutputSubscriber
                 ))
             }
         )
@@ -121,24 +134,40 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
     private let serverVersion: String
     private let snapshotProvider: @Sendable () async -> AppState
     private let actionDispatcher: @Sendable (Action) async -> Void
+    private let taskOutputSubscriber: TaskOutputSubscriber
     private var greeted = false
     private var forwardingTask: _Concurrency.Task<Void, Never>?
+
+    // Per-connection map of taskId → cancel closure for active
+    // subscribeTaskOutput subscriptions. Accessed from both the NIO
+    // event loop (channelRead / channelInactive) and detached async
+    // Tasks (the subscriber returns its cancel asynchronously) — the
+    // lock makes mutations safe across executors.
+    private let stateLock = NSLock()
+    private var taskOutputCancels: [UUID: @Sendable () -> Void] = [:]
 
     init(
         bus: EventBus,
         serverVersion: String,
         snapshotProvider: @escaping @Sendable () async -> AppState,
-        actionDispatcher: @escaping @Sendable (Action) async -> Void
+        actionDispatcher: @escaping @Sendable (Action) async -> Void,
+        taskOutputSubscriber: @escaping TaskOutputSubscriber
     ) {
         self.bus = bus
         self.serverVersion = serverVersion
         self.snapshotProvider = snapshotProvider
         self.actionDispatcher = actionDispatcher
+        self.taskOutputSubscriber = taskOutputSubscriber
     }
 
     func channelInactive(context: ChannelHandlerContext) {
         forwardingTask?.cancel()
         forwardingTask = nil
+        stateLock.lock()
+        let cancels = Array(taskOutputCancels.values)
+        taskOutputCancels.removeAll()
+        stateLock.unlock()
+        for cancel in cancels { cancel() }
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -197,6 +226,10 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
             handleHello(context: context)
         case "dispatch":
             handleDispatch(payload: data, context: context)
+        case "subscribeTaskOutput":
+            handleSubscribeTaskOutput(payload: data, context: context)
+        case "unsubscribeTaskOutput":
+            handleUnsubscribeTaskOutput(payload: data, context: context)
         default:
             sendError(
                 code: "unknownOp",
@@ -277,6 +310,82 @@ final class WebSocketConnectionHandler: ChannelInboundHandler {
     ) {
         let env = ErrorEnvelope(code: code, message: message)
         send(env, on: channel, eventLoop: eventLoop)
+    }
+
+    // {"op":"subscribeTaskOutput","taskId":"..."} — install an output
+    // handler on the given task's TaskIO. Bytes flow back as
+    // {"op":"taskOutput",taskId,data:b64}. If the same task is already
+    // subscribed on this connection, the previous handler is canceled
+    // first (avoids duplicate streams to one client).
+    private func handleSubscribeTaskOutput(payload: Data, context: ChannelHandlerContext) {
+        struct Sub: Decodable { let op: String; let taskId: UUID }
+        let sub: Sub
+        do { sub = try JSONDecoder().decode(Sub.self, from: payload) }
+        catch {
+            sendError(
+                code: "malformedSubscribe",
+                message: "\(error)",
+                on: context.channel,
+                eventLoop: context.eventLoop
+            )
+            return
+        }
+        let taskId = sub.taskId
+
+        // Cancel any prior subscription for this task on this connection.
+        stateLock.lock()
+        let prior = taskOutputCancels.removeValue(forKey: taskId)
+        stateLock.unlock()
+        prior?()
+
+        let subscriber = self.taskOutputSubscriber
+        let channel = context.channel
+        let eventLoop = context.eventLoop
+
+        _Concurrency.Task { [weak self] in
+            let cancel = await subscriber(taskId) { [weak self] bytes in
+                guard let self else { return }
+                let env = TaskOutputEnvelope(taskId: taskId, bytes: bytes)
+                self.send(env, on: channel, eventLoop: eventLoop)
+            }
+            guard let self else {
+                cancel?()
+                return
+            }
+            if let cancel {
+                self.stateLock.lock()
+                self.taskOutputCancels[taskId] = cancel
+                self.stateLock.unlock()
+            } else {
+                self.sendError(
+                    code: "noSuchTask",
+                    message: "no live pty for task \(taskId)",
+                    on: channel,
+                    eventLoop: eventLoop
+                )
+            }
+        }
+    }
+
+    // {"op":"unsubscribeTaskOutput","taskId":"..."} — drop the handler
+    // and stop forwarding bytes. No-op if not subscribed.
+    private func handleUnsubscribeTaskOutput(payload: Data, context: ChannelHandlerContext) {
+        struct Unsub: Decodable { let op: String; let taskId: UUID }
+        let unsub: Unsub
+        do { unsub = try JSONDecoder().decode(Unsub.self, from: payload) }
+        catch {
+            sendError(
+                code: "malformedUnsubscribe",
+                message: "\(error)",
+                on: context.channel,
+                eventLoop: context.eventLoop
+            )
+            return
+        }
+        stateLock.lock()
+        let cancel = taskOutputCancels.removeValue(forKey: unsub.taskId)
+        stateLock.unlock()
+        cancel?()
     }
 
     // Encode + ship a text frame. We hop to the channel's event loop

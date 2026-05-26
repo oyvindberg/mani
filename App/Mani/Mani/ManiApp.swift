@@ -127,6 +127,22 @@ struct ManiApp: App {
             },
             actionDispatcher: { @Sendable action in
                 await store.dispatch(action)
+            },
+            // Subscribe a remote client to a task's PTY bytes. Looks
+            // up the live TaskIO by id and installs an output handler
+            // with replayCaptured: true so the client gets the
+            // recent backlog (last ~1 MB, or whatever the agent has
+            // captured plus the 512 KB on-disk scrollback seed from
+            // boot reattach) before the live stream. Returns a cancel
+            // that drops the IOSubscription — the AgentClient /
+            // ManagedPTY removes the handler on deinit.
+            taskOutputSubscriber: { @Sendable taskId, handler in
+                let runner = await store.runner
+                guard let pty = await runner.pty(taskId: taskId) else { return nil }
+                let subscription = pty.addOutputHandler(replayCaptured: true) { data in
+                    handler(data)
+                }
+                return { _ = subscription }  // closure retains subscription; deinit on drop
             }
         )
         self.server = serverInstance

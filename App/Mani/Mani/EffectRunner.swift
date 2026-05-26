@@ -27,6 +27,16 @@ actor EffectRunner {
         ptys[path]
     }
 
+    // Lookup by task id alone — the remote v0.2 protocol identifies
+    // tasks by UUID, not the full repo/project/task path. Linear scan
+    // is fine because the dict typically holds ≤ a few dozen entries.
+    func pty(taskId: UUID) -> TaskIO? {
+        for (path, pty) in ptys where path.task == taskId {
+            return pty
+        }
+        return nil
+    }
+
     // Drive a size change through the attach PTY. The agent forwards
     // the RESIZE frame to the inner PTY via TIOCSWINSZ.
     func resize(path: TaskPath, rows: UInt16, cols: UInt16) async {

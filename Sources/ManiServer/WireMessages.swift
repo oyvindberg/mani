@@ -57,3 +57,21 @@ public struct ErrorEnvelope: Encodable, Sendable {
         self.message = message
     }
 }
+
+// Server → client: a chunk of raw PTY bytes for a task. `data` is
+// base64-encoded so the JSON envelope stays text. The terminal byte
+// stream is opaque to the protocol — it's whatever the PTY emitted
+// (xterm escape sequences, UTF-8 text, sixel images). Clients feed
+// the decoded bytes directly into a terminal emulator (libghostty on
+// mac, Termux's view on Android).
+public struct TaskOutputEnvelope: Encodable, Sendable {
+    public let op: String
+    public let taskId: UUID
+    public let data: String  // base64
+
+    public init(taskId: UUID, bytes: Data) {
+        self.op = "taskOutput"
+        self.taskId = taskId
+        self.data = bytes.base64EncodedString()
+    }
+}

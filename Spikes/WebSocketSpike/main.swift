@@ -48,11 +48,17 @@ let dispatcher: @Sendable (Action) async -> Void = { action in
     FileHandle.standardError.write(Data("[spike] dispatch arrived: \(action)\n".utf8))
 }
 
+// No real TaskIO in the spike. Subscriber returns nil (no such task)
+// so the client gets a noSuchTask error if it tries — sufficient to
+// verify wiring without spawning a PTY.
+let taskOutputSubscriber: @Sendable (UUID, @escaping @Sendable (Data) -> Void) async -> (@Sendable () -> Void)? = { _, _ in nil }
+
 let server = Server(
     bus: bus,
     serverVersion: "0.2.0-spike",
     snapshotProvider: snapshot,
-    actionDispatcher: dispatcher
+    actionDispatcher: dispatcher,
+    taskOutputSubscriber: taskOutputSubscriber
 )
 
 let channel: Channel
