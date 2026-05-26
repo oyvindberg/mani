@@ -30,6 +30,15 @@ protocol TaskIO: AnyObject {
     // this handler. Used when re-attaching a renderer whose surface
     // already contains the older bytes (cached renderer flow).
     func addOutputHandler(replayCaptured: Bool, _ handler: @escaping (Data) -> Void) -> IOSubscription
+    // Prepend `data` to the internal capture buffer so a subsequent
+    // addOutputHandler(replayCaptured: true) sees `data` first, then
+    // any live bytes that accumulated since the impl came up. Used
+    // at boot reconciliation to feed the on-disk scrollback tail
+    // into the same replay path live bytes use — the renderer is
+    // byte-indifferent. Cap-trims if seed + existing live exceed
+    // the impl's internal capture cap; seed wins, oldest live bytes
+    // are dropped. Must be called before any handler subscribes.
+    func seedCapturedOutput(_ data: Data)
 }
 
 // Subscription token returned by addOutputHandler. On deinit, the

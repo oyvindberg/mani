@@ -212,7 +212,7 @@
 			mainGroup = 8B2A5E872FAC0B3000BCFF58;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				8B2A5EBE2FAC0C7B00BCFF58 /* XCLocalSwiftPackageReference "../../../mani" */,
+				8B2A5EBE2FAC0C7B00BCFF58 /* XCLocalSwiftPackageReference "../.." */,
 				8B2A5EBF2FAC0CE200BCFF58 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				8BC0DE0000000000C0DE0010 /* XCRemoteSwiftPackageReference "libghostty-spm" */,
 			);
@@ -588,9 +588,9 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		8B2A5EBE2FAC0C7B00BCFF58 /* XCLocalSwiftPackageReference "../../../mani" */ = {
+		8B2A5EBE2FAC0C7B00BCFF58 /* XCLocalSwiftPackageReference "../.." */ = {
 			isa = XCLocalSwiftPackageReference;
-			relativePath = ../../../mani;
+			relativePath = ../..;
 		};
 /* End XCLocalSwiftPackageReference section */
 
@@ -616,7 +616,7 @@
 /* Begin XCSwiftPackageProductDependency section */
 		8BC0DE0000000000C0DE0001 /* ManiCore */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 8B2A5EBE2FAC0C7B00BCFF58 /* XCLocalSwiftPackageReference "../../../mani" */;
+			package = 8B2A5EBE2FAC0C7B00BCFF58 /* XCLocalSwiftPackageReference "../.." */;
 			productName = ManiCore;
 		};
 		8BC0DE0000000000C0DE0002 /* SwiftTerm */ = {

@@ -1,9 +1,71 @@
 import SwiftUI
 import ManiCore
 import Foundation
+import Darwin
 
 @main
 struct ManiApp: App {
+    // Singleton mutex. flock() on a sentinel file under Application
+    // Support — released by the kernel when the process exits, so
+    // there's no cleanup to forget (crash, kill -9, force-quit all
+    // release it). Evaluated as a static-let so its initializer runs
+    // once at first reference. We force evaluation at the very top of
+    // init() below — before PersistenceStore, before recover(), before
+    // anything else, so a duplicate launch never touches state.
+    //
+    // Why this matters: two concurrent Manis race to attach to every
+    // agent socket; the loser dispatches .restartTask and the new
+    // agent's unlink() orphans the winner's connection. Result: 14
+    // zombie mani-agent processes, doubled in pgrep, observed once
+    // already. Single-process invariant prevents the cascade.
+    private static let singletonLockFD: Int32 = acquireSingletonLockOrExit()
+
+    private static func acquireSingletonLockOrExit() -> Int32 {
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first!
+        let storeRoot = appSupport.appendingPathComponent("Mani")
+        try? FileManager.default.createDirectory(
+            at: storeRoot, withIntermediateDirectories: true
+        )
+        let lockPath = storeRoot.appendingPathComponent("mani.lock").path
+        // O_RDWR (not O_WRONLY) so a contender can read() the prior
+        // pid for its diagnostic message — read() on an O_WRONLY fd
+        // returns EBADF.
+        let fd = open(lockPath, O_RDWR | O_CREAT, 0o644)
+        if fd < 0 {
+            let err = String(cString: strerror(errno))
+            NSLog("[mani] failed to open singleton lockfile at \(lockPath): \(err)")
+            exit(1)
+        }
+        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            if errno == EWOULDBLOCK {
+                // Read the pid the previous Mani wrote, if available,
+                // so the message tells the user which process to find.
+                var buf = [UInt8](repeating: 0, count: 32)
+                lseek(fd, 0, SEEK_SET)
+                let n = read(fd, &buf, 32)
+                let otherPid = (n > 0)
+                    ? String(bytes: buf[..<Int(n)], encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines) ?? "?"
+                    : "?"
+                NSLog("[mani] another Mani instance is already running (pid \(otherPid)); exiting.")
+            } else {
+                let err = String(cString: strerror(errno))
+                NSLog("[mani] flock() failed: \(err); exiting.")
+            }
+            Darwin.close(fd)
+            exit(1)
+        }
+        // Lock acquired. Write our pid so a future contender can name us.
+        ftruncate(fd, 0)
+        let pidLine = "\(getpid())\n"
+        pidLine.withCString { ptr in
+            _ = write(fd, ptr, strlen(ptr))
+        }
+        return fd
+    }
+
     @StateObject private var store: Store
     @StateObject private var watcher: ClaudeWatcher
     @StateObject private var hookListener: HookListenerService
@@ -18,6 +80,9 @@ struct ManiApp: App {
     @StateObject private var activityTracker = TaskActivityTracker()
 
     init() {
+        // Force the singleton lock to be acquired before any boot work.
+        // If another Mani is up, this call path doesn't return.
+        _ = Self.singletonLockFD
         let appSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask

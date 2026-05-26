@@ -348,11 +348,21 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
     case let .restartTask(at):
         guard let task = findTask(state, at) else { return ([], []) }
         if task.spec.command == "(external claude)" { return ([], []) }
+        // For claude tasks, rebuild the spec via ClaudeTaskSpec.restartSpec
+        // so `--resume <sid>` is injected from task.kind. Reusing
+        // task.spec verbatim drops the session continuity (the spec only
+        // stores the zsh-injected typed input, which was captured at
+        // create time and doesn't carry the sid forward to a fresh spawn).
+        let repo = state.repos.first(where: { $0.id == at.repo })
+        let invocation = ClaudeTaskSpec.resolveInvocation(
+            repo: repo, settings: state.settings
+        )
+        let spec = ClaudeTaskSpec.restartSpec(for: task, invocation: invocation)
         let now = Date()
         let event = Event.taskSpawned(at: at, when: now)
         let effects: [Effect] = [
             .persistEvents([event]),
-            .spawn(at: at, spec: task.spec),
+            .spawn(at: at, spec: spec),
         ]
         return ([event], effects)
 

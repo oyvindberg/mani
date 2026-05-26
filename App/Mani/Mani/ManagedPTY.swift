@@ -36,6 +36,24 @@ final class ManagedPTY: @unchecked Sendable, TaskIO {
         addOutputHandler(replayCaptured: true, handler)
     }
 
+    func seedCapturedOutput(_ data: Data) {
+        guard !data.isEmpty else { return }
+        outputHandlersLock.lock()
+        defer { outputHandlersLock.unlock() }
+        // Same shape as AgentClient.seedCapturedOutput — see there
+        // for the cap-trim / 0-indexed-Data rationale.
+        let seed = data.count > captureCap ? Data(data.suffix(captureCap)) : data
+        let room = captureCap - seed.count
+        let live = room >= capturedOutput.count
+            ? capturedOutput
+            : Data(capturedOutput.suffix(room))
+        var combined = Data()
+        combined.reserveCapacity(seed.count + live.count)
+        combined.append(seed)
+        combined.append(live)
+        capturedOutput = combined
+    }
+
     // `replayCaptured` controls whether the new handler is immediately
     // fed the buffered output collected before subscription. Use `true`
     // for first-attach (renderer that hasn't seen anything yet), and

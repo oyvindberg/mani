@@ -47,23 +47,27 @@ actor EffectRunner {
 
     // Bidirectional boot reconciliation. For every task we probe the
     // host's view of aliveness and reconcile the reducer's runtime:
-    //   - .running  + agent alive   → attach pty (no event)
-    //   - .running  + agent gone    → dispatch .taskExited
-    //   - .exited   + agent alive   → dispatch .taskSpawned + attach
-    //                                  (process outlived Mani)
-    //   - .exited   + agent gone    → leave alone
-    //   - .neverStarted + agent alive → same as .exited + alive
-    //                                    (this covers tasks an older
-    //                                    Mani migration miscategorized
-    //                                    as never-started even though
-    //                                    they did have a process)
-    //   - .neverStarted + agent gone → leave alone (external claudes,
-    //                                  brand-new tasks awaiting spawn)
-    //   - .completed                 → leave alone (user intent)
+    //   - .running  + agent alive (attach ok)  → wire pty (no event)
+    //   - .running  + agent gone OR attach fail → dispatch .restartTask
+    //                                              (auto-respawn — no
+    //                                              .exited limbo state)
+    //   - .exited   + agent alive (attach ok)  → dispatch .taskSpawned + wire
+    //                                              (process outlived Mani)
+    //   - .exited   + agent gone OR attach fail → leave alone
+    //                                              (user-stopped task,
+    //                                              don't auto-respawn)
+    //   - .neverStarted + agent alive          → same as .exited + alive
+    //                                              (legacy migration fix)
+    //   - .neverStarted + agent gone           → leave alone (external
+    //                                              claudes, brand-new
+    //                                              tasks awaiting spawn)
+    //   - .completed                           → leave alone (user intent)
     //
-    // The exited/neverStarted → running flip is what makes "I quit
-    // Mani, the agent and its claude session stayed up, I relaunch,
-    // the task is recovered" actually work.
+    // The .running auto-respawn replaces what used to be an .exited
+    // marker + manual user Restart click. Premise: a task whose state
+    // says it should be running but whose process is gone is a crash,
+    // not a user intention — heal automatically. Crash loops are bounded
+    // by .spawn's own catch dispatching .taskExited (no infinite loop).
     func reconcileRuntime(
         state: AppState,
         dispatch: @escaping (Action) async -> Void
@@ -76,17 +80,16 @@ actor EffectRunner {
                     )
                     switch task.runtime {
                     case .running:
-                        if await host.isAlive(taskId: task.id) {
-                            await attachAndWire(path: path, dispatch: dispatch)
-                        } else {
-                            await dispatch(.taskExited(
-                                at: path, when: Date(), code: -1
-                            ))
+                        let attached = await host.isAlive(taskId: task.id)
+                            ? await attachAndWire(path: path, dispatch: dispatch)
+                            : false
+                        if !attached {
+                            await dispatch(.restartTask(at: path))
                         }
                     case .exited, .neverStarted:
-                        if await host.isAlive(taskId: task.id) {
+                        if await host.isAlive(taskId: task.id),
+                           await attachAndWire(path: path, dispatch: dispatch) {
                             await dispatch(.taskSpawned(at: path, when: Date()))
-                            await attachAndWire(path: path, dispatch: dispatch)
                         }
                     case .completed:
                         break
@@ -128,12 +131,15 @@ actor EffectRunner {
     // Open an attach handle to a live agent and wire its onExit /
     // scrollback subscription the same way .spawn does. Used by
     // boot reconciliation when we discover an existing agent and
-    // need the pty to be immediately available to the UI.
+    // need the pty to be immediately available to the UI. Returns
+    // true on a successful attach + wire, false if attach threw
+    // (stale socket file with no listener — caller decides whether
+    // to respawn).
     private func attachAndWire(
         path: TaskPath,
         dispatch: @escaping (Action) async -> Void
-    ) async {
-        if ptys[path] != nil { return }
+    ) async -> Bool {
+        if ptys[path] != nil { return true }
         do {
             let pty = try await host.attach(taskId: path.task)
             ptys[path] = pty
@@ -142,9 +148,11 @@ actor EffectRunner {
                 _Concurrency.Task {
                     let current = await runner.pty(for: path)
                     if let pty, pty === current {
-                        await dispatch(.taskExited(
-                            at: path, when: Date(), code: code
-                        ))
+                        // Auto-respawn on process death. The pty === current
+                        // guard skips this when the user intentionally
+                        // terminated (which sets ptys[path] = nil before
+                        // closing) so user-driven stops aren't re-spawned.
+                        await dispatch(.restartTask(at: path))
                     }
                 }
             }
@@ -152,17 +160,50 @@ actor EffectRunner {
                 .appendingPathComponent(path.task.uuidString)
             let scrollbackPath = scrollbackDir
                 .appendingPathComponent("scrollback.log").path
+            // Pre-seed the pty's capture with the on-disk tail BEFORE
+            // anything subscribes. The agent's preConnectBuffer only
+            // holds bytes that arrived after the last disconnect (which
+            // is empty for a clean detach and only seconds of bytes for
+            // a crash), so without this the renderer sees a blank
+            // screen on every reattach. Replay happens through the same
+            // chunked-async path live bytes use — see
+            // AgentClient.scheduleReplay for why synchronous feed
+            // hangs libghostty on large buffers.
+            if let tail = Self.readScrollbackTail(
+                path: scrollbackPath, maxBytes: 512 * 1024
+            ) {
+                pty.seedCapturedOutput(tail)
+            }
             // Don't rotate on recovery — the existing log belongs to
             // the same long-lived process we're reattaching to.
             let writer = ScrollbackWriter(
                 path: scrollbackPath, capBytes: 32 * 1024 * 1024
             )
-            let sub = pty.addOutputHandler { data in writer.append(data) }
+            // replayCaptured: false — the seed we just installed is
+            // literally the tail of this same scrollback.log; replaying
+            // it through the writer would re-append every byte to disk
+            // on every recovery, doubling the log each boot.
+            let sub = pty.addOutputHandler(replayCaptured: false) { data in
+                writer.append(data)
+            }
             scrollbacks[path] = writer
             scrollbackSubscriptions[path] = sub
+            return true
         } catch {
             NSLog("[mani] attachAndWire failed for \(path.task): \(error)")
+            return false
         }
+    }
+
+    private static func readScrollbackTail(
+        path: String, maxBytes: Int
+    ) -> Data? {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? fh.close() }
+        guard let size = try? fh.seekToEnd(), size > 0 else { return nil }
+        let start = size > UInt64(maxBytes) ? size - UInt64(maxBytes) : 0
+        try? fh.seek(toOffset: start)
+        return try? fh.readToEnd()
     }
 
     func run(_ effect: Effect, dispatch: @escaping (Action) async -> Void) async {
@@ -212,9 +253,10 @@ actor EffectRunner {
                     _Concurrency.Task {
                         let current = await runner.pty(for: path)
                         if let pty, pty === current {
-                            await dispatch(.taskExited(
-                                at: path, when: Date(), code: code
-                            ))
+                            // Auto-respawn — see attachAndWire's onExit for
+                            // why the pty === current guard preserves
+                            // user-terminate semantics.
+                            await dispatch(.restartTask(at: path))
                         }
                     }
                 }

@@ -166,6 +166,26 @@ final class AgentClient: TaskIO, @unchecked Sendable {
         addOutputHandler(replayCaptured: true, handler)
     }
 
+    func seedCapturedOutput(_ data: Data) {
+        guard !data.isEmpty else { return }
+        outputHandlersLock.lock()
+        defer { outputHandlersLock.unlock() }
+        // Seed wins: trim seed itself to the cap, then fit as many
+        // of the existing live bytes as remain. Re-wrap with Data(...)
+        // to guarantee 0-indexed storage — the brk-1 bounds-trap on
+        // subdata(in: 0..<n) bites slices with non-zero startIndex.
+        let seed = data.count > captureCap ? Data(data.suffix(captureCap)) : data
+        let room = captureCap - seed.count
+        let live = room >= capturedOutput.count
+            ? capturedOutput
+            : Data(capturedOutput.suffix(room))
+        var combined = Data()
+        combined.reserveCapacity(seed.count + live.count)
+        combined.append(seed)
+        combined.append(live)
+        capturedOutput = combined
+    }
+
     func addOutputHandler(
         replayCaptured: Bool,
         _ handler: @escaping (Data) -> Void
