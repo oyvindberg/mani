@@ -9,6 +9,8 @@ public enum Action {
     case setRepoClaudeInvocation(id: UUID, invocation: String?)
     case setRepoRootDir(at: ProjectPath)
     case deleteRepo(id: UUID)
+    case setRepoWorktreeMode(id: UUID, mode: WorktreeMode)
+    case setRepoManagedWorktreesNamespace(id: UUID, namespace: String?)
 
     // MARK: Project
     // `workspace` may point at an existing user-chosen folder or at a
@@ -22,6 +24,12 @@ public enum Action {
     case unarchiveProject(at: ProjectPath)
     case markProjectWorkspaceMissing(at: ProjectPath)
     case deleteProject(at: ProjectPath)
+    // Like archiveProject but with an explicit cleanup policy. For
+    // managed worktrees the user typically picks .removeWorktree
+    // (the work survives as a branch in the main repo); for manual
+    // workspaces .archiveOnly is the only meaningful choice and the
+    // reducer treats other values as archive-only.
+    case finishProject(at: ProjectPath, cleanup: FinishCleanup)
 
     // MARK: Task
     // `autoSelect: true` is the user-initiated path — the new task
@@ -52,6 +60,10 @@ public enum Action {
     // remove from the sidebar list once they're truly done with
     // the directory.
     case removeAvailableWorktree(repoId: UUID, id: UUID)
+    // Boot-time discovery (and other "I found this on disk") path:
+    // register a workspace dir as available under a repo. Idempotent:
+    // a duplicate path is silently dropped.
+    case addAvailableWorktree(repoId: UUID, path: URL, kind: WorkspaceKind)
 
     // MARK: External convos
     // Discovered via the FSEvents watcher on ~/.claude/projects. The

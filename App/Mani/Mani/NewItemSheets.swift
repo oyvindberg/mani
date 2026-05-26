@@ -80,101 +80,325 @@ struct NewWorktreeSheet: View {
         var id: String { rawValue }
     }
 
-    @State private var name: String = "wip"
+    @State private var name: String = ""
     @State private var path: String = NSHomeDirectory()
     @State private var kind: Kind = .folder
     @State private var branch: String = ""
-    @State private var baseRef: String = "main"
+    @State private var baseRef: String = "origin/main"
     @State private var addShellTask: Bool = true
+    // Tracks whether the user has manually edited the branch field.
+    // Managed-mode auto-derives the branch from the slug as the user
+    // types, but only until they override it explicitly.
+    @State private var branchEdited: Bool = false
+    @State private var baseRefAutoResolved: Bool = false
+
+    private var repo: Repo? {
+        store.state.repos.first(where: { $0.id == repoId })
+    }
+
+    private var isManaged: Bool {
+        repo?.worktreeMode == .managed
+    }
+
+    private var slug: String {
+        slugifyProjectName(name)
+    }
+
+    private var managedTargetPath: URL? {
+        guard let repo else { return nil }
+        return repo.managedWorktreesDir.appendingPathComponent(slug)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("New project").font(.headline)
-            Picker("Kind", selection: $kind) {
-                ForEach(Kind.allCases) { k in Text(k.rawValue).tag(k) }
+            Text(isManaged ? "New managed project" : "New project")
+                .font(.headline)
+            if isManaged {
+                managedForm
+            } else {
+                manualForm
             }
-            .pickerStyle(.segmented)
-            Form {
-                TextField("Name", text: $name)
-                HStack {
-                    TextField("Path", text: $path)
-                    Button("Choose…") { pickFolder() }
-                }
-                if kind == .git {
-                    TextField("Branch", text: $branch)
-                    TextField("Base ref", text: $baseRef)
-                }
-                Toggle("Add a default shell task", isOn: $addShellTask)
-            }
-            Text("A project is a unit of intent — name it for what you're working on. The workspace path is just where it lives on disk.")
+            Text("A project is a unit of intent — name it for what you're working on.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
                 Spacer()
-                Button("Cancel") { isPresented = false }.keyboardShortcut(.cancelAction)
-                Button("Create") {
-                    let worktreeKind: WorkspaceKind = (kind == .git)
-                        ? .gitWorktree(branch: branch.isEmpty ? "main" : branch,
-                               baseRef: baseRef.isEmpty ? nil : baseRef)
-                        : .folder
-                    let pathURL = URL(fileURLWithPath: path)
-                    let wantShell = addShellTask
-                    let repoId = repoId
-                    let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let finalName = trimmedName.isEmpty ? "wip" : trimmedName
-                    _Concurrency.Task {
-                        await store.dispatch(.createProject(
-                            repoId: repoId,
-                            name: finalName,
-                            workspace: Workspace(
-                                path: pathURL,
-                                kind: worktreeKind,
-                                missing: false
-                            )
-                        ))
-                        guard let repo = store.state.repos.first(where: { $0.id == repoId }),
-                              let project = repo.projects.last else {
-                            isPresented = false
-                            return
-                        }
-                        let wtPath = ProjectPath(
-                            repo: repoId, project: project.id
-                        )
-                        if wantShell {
-                            let spec = ProcessSpec(
-                                command: "/bin/zsh",
-                                args: ["-l"],
-                                env: [:],
-                                cwd: pathURL,
-                                initialInput: nil
-                            )
-                            await store.dispatch(.createTask(
-                                at: wtPath, name: "shell", kind: .shell,
-                                spec: spec, autoSelect: true
-                            ))
-                        }
-                        // .git kind projects are by definition git checkouts.
-                        // For .folder kind, check the filesystem — many
-                        // `.folder` projects ARE git repos the user just
-                        // chose to register as plain folders.
-                        if ManiApp.isGitCheckout(at: pathURL) {
-                            await SidebarView.spawnDiff(
-                                at: wtPath, cwd: pathURL, store: store
-                            )
-                        }
-                        // Pull in any pre-existing claude sessions
-                        // that match the new project's path now,
-                        // instead of waiting for the 5-min tick.
-                        await sweeper.runOnce()
-                        isPresented = false
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(path.isEmpty || (kind == .git && branch.isEmpty))
+                Button("Cancel") { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Create") { onCreate() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isCreateDisabled)
             }
         }
         .padding(20)
-        .frame(width: 440)
+        .frame(width: 460)
+        .task {
+            // Resolve the repo's actual default branch lazily —
+            // depends on git config (origin/main, origin/master,
+            // origin/trunk, etc.). Don't clobber a value the user
+            // has already typed.
+            guard !baseRefAutoResolved else { return }
+            baseRefAutoResolved = true
+            if let resolved = await Self.resolveDefaultBranch(repo: repo) {
+                if baseRef == "origin/main" || baseRef == "main" {
+                    baseRef = resolved
+                }
+            }
+        }
+    }
+
+    // Async git probe for `origin/HEAD`. Off-main via Process so
+    // the sheet doesn't block during typical 10-100ms exec.
+    private static func resolveDefaultBranch(repo: Repo?) async -> String? {
+        guard let repo else { return nil }
+        return await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                task.currentDirectoryURL = repo.rootDir
+                task.arguments = ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]
+                let out = Pipe()
+                task.standardOutput = out
+                task.standardError = Pipe()
+                do {
+                    try task.run()
+                    task.waitUntilExit()
+                    guard task.terminationStatus == 0 else {
+                        cont.resume(returning: nil); return
+                    }
+                    let data = (try? out.fileHandleForReading.readToEnd()) ?? Data()
+                    let s = String(data: data, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    cont.resume(returning: (s?.isEmpty ?? true) ? nil : s)
+                } catch {
+                    cont.resume(returning: nil)
+                }
+            }
+        }
+    }
+
+    // MARK: Managed form
+
+    @ViewBuilder
+    private var managedForm: some View {
+        Form {
+            TextField("Name", text: $name)
+            TextField("Branch", text: Binding(
+                get: {
+                    branchEdited ? branch : (name.isEmpty ? "" : slug)
+                },
+                set: { newValue in
+                    branch = newValue
+                    branchEdited = true
+                }
+            ))
+            TextField("Base ref", text: $baseRef, prompt: Text("origin/main"))
+            Toggle("Add a default shell task", isOn: $addShellTask)
+        }
+        if let target = managedTargetPath {
+            HStack(spacing: 6) {
+                Image(systemName: "folder")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                Text(target.path)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            if FileManager.default.fileExists(atPath: target.path) {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                    Text("A directory already exists at this path — git worktree add will fail.")
+                        .font(.caption)
+                }
+                .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    // MARK: Manual form (legacy path, unchanged)
+
+    @ViewBuilder
+    private var manualForm: some View {
+        Picker("Kind", selection: $kind) {
+            ForEach(Kind.allCases) { k in Text(k.rawValue).tag(k) }
+        }
+        .pickerStyle(.segmented)
+        Form {
+            TextField("Name", text: $name)
+            HStack {
+                TextField("Path", text: $path)
+                Button("Choose…") { pickFolder() }
+            }
+            if kind == .git {
+                TextField("Branch", text: $branch)
+                TextField("Base ref", text: $baseRef)
+            }
+            Toggle("Add a default shell task", isOn: $addShellTask)
+        }
+    }
+
+    private var isCreateDisabled: Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isManaged {
+            return trimmedName.isEmpty
+        }
+        return path.isEmpty || (kind == .git && branch.isEmpty)
+    }
+
+    // MARK: Create dispatch
+
+    private func onCreate() {
+        if isManaged {
+            createManaged()
+        } else {
+            createManual()
+        }
+    }
+
+    private func createManaged() {
+        guard let repo,
+              let target = managedTargetPath
+        else { return }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalName = trimmedName.isEmpty ? "wip" : trimmedName
+        let chosenBranch = branchEdited
+            ? branch.trimmingCharacters(in: .whitespacesAndNewlines)
+            : slug
+        let chosenBase = baseRef.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseOrDefault = chosenBase.isEmpty ? "origin/main" : chosenBase
+        let workspaceKind: WorkspaceKind = .gitWorktree(
+            branch: chosenBranch.isEmpty ? slug : chosenBranch,
+            baseRef: baseOrDefault,
+            managed: true
+        )
+        let workspace = Workspace(path: target, kind: workspaceKind, missing: false)
+        let wantShell = addShellTask
+        let repoId = repo.id
+        let cwd = target
+        // @MainActor: the trailing isPresented = false has to land
+        // on main for SwiftUI to pick up the binding change and
+        // dismiss the sheet. A bare `Task { … }` runs on the global
+        // executor by default; the binding write from there is a
+        // silent no-op.
+        // Close the sheet immediately — the actual creation work
+        // continues in the background Task below. If `git worktree
+        // add` fails, the EffectRunner surfaces a user notification
+        // with the git error; the sheet has already gone away.
+        isPresented = false
+        let storeRef = store
+        let sweeperRef = sweeper
+        _Concurrency.Task { @MainActor in
+            await storeRef.dispatch(.createProject(
+                repoId: repoId, name: finalName, workspace: workspace
+            ))
+            guard let repo = storeRef.state.repos.first(where: { $0.id == repoId }),
+                  let project = repo.projects.last else { return }
+            // The createGitWorktree effect dispatches as a detached
+            // Task — dispatch returns before `git worktree add`
+            // finishes. Spawning shell/diff tasks before the
+            // worktree dir exists makes the agent's chdir fail and
+            // the shell starts in `/`. Poll for the dir's `.git`
+            // marker, which appears as soon as `git worktree add`
+            // has registered the worktree.
+            let ready = await Self.waitForManagedWorktreeReady(
+                at: cwd, timeoutSeconds: 8.0
+            )
+            guard ready else {
+                NSLog("[mani] managed worktree didn't materialise at \(cwd.path) within 8s")
+                return
+            }
+            let wtPath = ProjectPath(repo: repoId, project: project.id)
+            if wantShell {
+                let spec = ProcessSpec(
+                    command: "/bin/zsh", args: ["-l"], env: [:],
+                    cwd: cwd, initialInput: nil
+                )
+                await storeRef.dispatch(.createTask(
+                    at: wtPath, name: "shell", kind: .shell,
+                    spec: spec, autoSelect: true
+                ))
+            }
+            // Managed worktrees are always git checkouts → spawn diff.
+            await SidebarView.spawnDiff(at: wtPath, cwd: cwd, store: storeRef)
+            await sweeperRef.runOnce()
+        }
+    }
+
+    // Block until the freshly-requested worktree at `path` is on
+    // disk, or until the timeout. The probe is the `.git` marker
+    // inside the worktree — `git worktree add` creates that file
+    // synchronously when it registers the new worktree, even
+    // before all checked-out files have been written. That's the
+    // earliest point at which a shell can safely chdir there.
+    private static func waitForManagedWorktreeReady(
+        at path: URL, timeoutSeconds: Double
+    ) async -> Bool {
+        let marker = path.appendingPathComponent(".git")
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if FileManager.default.fileExists(atPath: marker.path) {
+                return true
+            }
+            try? await _Concurrency.Task.sleep(nanoseconds: 50_000_000)
+        }
+        return false
+    }
+
+    private func createManual() {
+        let worktreeKind: WorkspaceKind = (kind == .git)
+            ? .gitWorktree(
+                branch: branch.isEmpty ? "main" : branch,
+                baseRef: baseRef.isEmpty ? nil : baseRef,
+                managed: false
+            )
+            : .folder
+        let pathURL = URL(fileURLWithPath: path)
+        let wantShell = addShellTask
+        let repoId = repoId
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalName = trimmedName.isEmpty ? "wip" : trimmedName
+        _Concurrency.Task {
+            await store.dispatch(.createProject(
+                repoId: repoId,
+                name: finalName,
+                workspace: Workspace(
+                    path: pathURL,
+                    kind: worktreeKind,
+                    missing: false
+                )
+            ))
+            guard let repo = store.state.repos.first(where: { $0.id == repoId }),
+                  let project = repo.projects.last else {
+                isPresented = false
+                return
+            }
+            let wtPath = ProjectPath(
+                repo: repoId, project: project.id
+            )
+            if wantShell {
+                let spec = ProcessSpec(
+                    command: "/bin/zsh",
+                    args: ["-l"],
+                    env: [:],
+                    cwd: pathURL,
+                    initialInput: nil
+                )
+                await store.dispatch(.createTask(
+                    at: wtPath, name: "shell", kind: .shell,
+                    spec: spec, autoSelect: true
+                ))
+            }
+            if ManiApp.isGitCheckout(at: pathURL) {
+                await SidebarView.spawnDiff(
+                    at: wtPath, cwd: pathURL, store: store
+                )
+            }
+            await sweeper.runOnce()
+            isPresented = false
+        }
     }
 
     private func pickFolder() {

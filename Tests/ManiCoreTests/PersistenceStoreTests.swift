@@ -37,7 +37,9 @@ final class PersistenceStoreTests: XCTestCase {
             externalConvos: [],
             availableWorktrees: [],
             createdAt: Date(),
-            claudeInvocation: nil
+            claudeInvocation: nil,
+            worktreeMode: .manual,
+            managedWorktreesNamespace: nil
         ))
         return s
     }

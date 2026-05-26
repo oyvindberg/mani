@@ -513,6 +513,7 @@ struct SidebarView: View {
     @State private var expandedProjects: Set<UUID> = []
     @State private var expandedArchivedProjects: Set<UUID> = []
     @State private var colorPickerProjectId: UUID?
+    @State private var finishProjectContext: FinishProjectContext?
     // Currently-dragged task. Set by TaskRow on .onDrag; read by
     // WorktreeHeaderRow to colour itself green (valid drop) or
     // red (mismatched workspace). Cleared by the drop handler.
@@ -542,6 +543,15 @@ struct SidebarView: View {
         let id = UUID()
         let repoId: UUID
         let currentName: String
+    }
+
+    struct FinishProjectContext: Identifiable {
+        let id = UUID()
+        let repoColor: SwiftUI.Color
+        let repoName: String
+        let projectName: String
+        let projectPath: ProjectPath
+        let workspace: Workspace
     }
 
     var body: some View {
@@ -665,6 +675,20 @@ struct SidebarView: View {
                 )
             )
         }
+        .sheet(item: $finishProjectContext) { ctx in
+            FinishProjectSheet(
+                store: store,
+                repoColor: ctx.repoColor,
+                repoName: ctx.repoName,
+                projectName: ctx.projectName,
+                projectPath: ctx.projectPath,
+                workspace: ctx.workspace,
+                isPresented: Binding(
+                    get: { finishProjectContext != nil },
+                    set: { if !$0 { finishProjectContext = nil } }
+                )
+            )
+        }
         .sheet(item: Binding(
             get: { colorPickerProjectId.flatMap { id in
                 store.state.repos.first(where: { $0.id == id })
@@ -719,6 +743,32 @@ struct SidebarView: View {
             claudeInvocationProjectId = repo.id
         }
         Divider()
+        Menu("Worktree mode") {
+            Button {
+                _Concurrency.Task {
+                    await store.dispatch(.setRepoWorktreeMode(
+                        id: repo.id, mode: .manual
+                    ))
+                }
+            } label: {
+                Label(
+                    "Manual",
+                    systemImage: repo.worktreeMode == .manual ? "checkmark" : ""
+                )
+            }
+            Button {
+                _Concurrency.Task {
+                    await store.dispatch(.setRepoWorktreeMode(
+                        id: repo.id, mode: .managed
+                    ))
+                }
+            } label: {
+                Label(
+                    "Managed (Mani creates / removes worktrees)",
+                    systemImage: repo.worktreeMode == .managed ? "checkmark" : ""
+                )
+            }
+        }
         Button(repo.enabled ? "Disable repo (stop all tasks)" : "Enable repo") {
             _Concurrency.Task {
                 await store.dispatch(.setRepoEnabled(id: repo.id, enabled: !repo.enabled))
@@ -768,6 +818,15 @@ struct SidebarView: View {
         } else {
             Button("Archive project (stop tasks)") {
                 _Concurrency.Task { await store.dispatch(.archiveProject(at: path)) }
+            }
+            Button("Finish project…") {
+                finishProjectContext = FinishProjectContext(
+                    repoColor: SwiftUI.Color(hex: repo.color),
+                    repoName: repo.name,
+                    projectName: project.name,
+                    projectPath: path,
+                    workspace: project.workspace
+                )
             }
         }
         Button("Delete project", role: .destructive) {
@@ -992,7 +1051,15 @@ struct SidebarView: View {
                     // manual-worktree projects. Sit at the repo
                     // level as candidates for starting a new
                     // project without re-picking the path.
-                    ForEach(repo.availableWorktrees) { wt in
+                    //
+                    // In .managed mode, filter out entries that
+                    // don't live under the managed worktrees
+                    // namespace — those came from a previous
+                    // life as manual workspaces and aren't useful
+                    // candidates for the managed flow. They stay
+                    // in state.json (so flipping back to .manual
+                    // resurrects them); only the UI hides them.
+                    ForEach(visibleAvailableWorktrees(for: repo)) { wt in
                         AvailableWorktreeRow(
                             repo: repo,
                             worktree: wt,
@@ -1299,6 +1366,26 @@ struct SidebarView: View {
     // External convos whose cwd falls inside the given project's
     // workspace (or any descendant directory). Used to nest the convo
     // rows under the project they originated from.
+    // AvailableWorktrees the sidebar should render for a repo.
+    // - .manual: all of them (legacy behavior).
+    // - .managed: only those inside `<repo>/<namespace>/`. Entries
+    //   from a prior manual life (e.g. the repo root itself, or a
+    //   sibling dir) are silently hidden — they're meaningless in
+    //   the managed flow but stay in state.json in case the user
+    //   flips the mode back.
+    private func visibleAvailableWorktrees(for repo: Repo) -> [AvailableWorktree] {
+        switch repo.worktreeMode {
+        case .manual:
+            return repo.availableWorktrees
+        case .managed:
+            let nsPrefix = repo.managedWorktreesDir.standardizedFileURL.path
+            return repo.availableWorktrees.filter { wt in
+                let p = wt.path.standardizedFileURL.path
+                return p == nsPrefix || p.hasPrefix(nsPrefix + "/")
+            }
+        }
+    }
+
     private func convosForProject(repo: Repo, project: Project) -> [ExternalConvo] {
         let wsPath = project.workspace.path.resolvingSymlinksInPath().path
         return repo.externalConvos.filter { convo in
@@ -1926,6 +2013,9 @@ struct TerminalPane: NSViewRepresentable {
         private weak var pty: TaskIO?
         private var taskPath: TaskPath?
         private var keyMonitor: Any?
+        // Cached so bind(pty:) can push the renderer's last-known
+        // size to the freshly-bound PTY (re-attach SIGWINCH fix).
+        private var runner: EffectRunner?
 
         deinit {
             if let monitor = keyMonitor { NSEvent.removeMonitor(monitor) }
@@ -1934,6 +2024,7 @@ struct TerminalPane: NSViewRepresentable {
         func attach(renderer: LibGhosttyRenderer, store: Store, taskPath: TaskPath) {
             self.renderer = renderer
             self.taskPath = taskPath
+            self.runner = store.runner
             renderer.inputHandler = { [weak self] data in self?.pty?.write(data) }
             let runner = store.runner
             let capturedPath = taskPath
@@ -2011,6 +2102,28 @@ struct TerminalPane: NSViewRepresentable {
             // last detach. Acceptable until we can either replace
             // the renderer or understand libghostty's wakeup bug.
             renderer.attachToPTY(pty, replayCaptured: true)
+            // Re-attach to a cached renderer often doesn't fire a
+            // libghostty resize callback (the surface's own size
+            // hasn't changed), but the underlying PTY's running
+            // TUI may have lost layout since last attach. To force
+            // a SIGWINCH we jiggle the size — one row off, then
+            // back. Sending the same size as the kernel already
+            // has is a no-op; the change is what triggers
+            // TIOCSWINSZ → SIGWINCH → redraw. The jiggle is
+            // imperceptible because the second resize lands on the
+            // very next runloop tick.
+            if let size = renderer.lastObservedSize,
+               let path = self.taskPath,
+               let runner = self.runner {
+                let realRows = UInt16(size.rows)
+                let realCols = UInt16(size.cols)
+                let jiggleRows = realRows > 1 ? realRows - 1 : realRows + 1
+                _Concurrency.Task {
+                    await runner.resize(path: path, rows: jiggleRows, cols: realCols)
+                    try? await _Concurrency.Task.sleep(nanoseconds: 30_000_000)  // 30ms
+                    await runner.resize(path: path, rows: realRows, cols: realCols)
+                }
+            }
         }
 
     }

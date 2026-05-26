@@ -165,6 +165,7 @@ struct ManiApp: App {
                     // false positives.
                     await Self.ensureDiffJobsForGitWorktrees(store: store)
                     await Self.migrateRenamedFlags(store: store)
+                    await Self.discoverManagedWorktrees(store: store)
                     await Self.bootstrapSafekeepingFromDisk(
                         store: store,
                         cache: archiveCache,
@@ -321,6 +322,79 @@ struct ManiApp: App {
                     await store.dispatch(.renameTask(at: path, name: task.name))
                 }
             }
+        }
+    }
+
+    // Boot-time scan for managed worktrees that exist on disk but
+    // aren't bound to an active project. For each .managed repo we
+    // list `<repo>/<namespace>/*`, skip anything that's already
+    // owned by an active project or already in availableWorktrees,
+    // verify the dir has a `.git` entry (worktrees store .git as a
+    // FILE pointing at the main repo's worktree metadata), look up
+    // the worktree's branch via `git symbolic-ref`, then dispatch
+    // addAvailableWorktree.
+    //
+    // Rationale: when a user adds a worktree out-of-band (CLI,
+    // another tool) or when Mani.app is restarted with leftover
+    // worktrees from a previous session, the sidebar should
+    // surface them so the user can adopt or remove from one place.
+    @MainActor
+    private static func discoverManagedWorktrees(store: Store) async {
+        for repo in store.state.repos {
+            guard repo.worktreeMode == .managed else { continue }
+            let nsDir = repo.managedWorktreesDir
+            guard FileManager.default.fileExists(atPath: nsDir.path) else { continue }
+            let entries: [URL]
+            do {
+                entries = try FileManager.default.contentsOfDirectory(
+                    at: nsDir,
+                    includingPropertiesForKeys: [.isDirectoryKey],
+                    options: [.skipsHiddenFiles]
+                )
+            } catch {
+                NSLog("[mani] discoverManagedWorktrees: list \(nsDir.path) failed: \(error)")
+                continue
+            }
+            for entry in entries {
+                let isDir = (try? entry.resourceValues(
+                    forKeys: [.isDirectoryKey]
+                ).isDirectory) == true
+                guard isDir else { continue }
+                let gitMarker = entry.appendingPathComponent(".git")
+                guard FileManager.default.fileExists(atPath: gitMarker.path) else {
+                    continue
+                }
+                let branch = readGitHeadBranch(at: entry) ?? entry.lastPathComponent
+                let kind: WorkspaceKind = .gitWorktree(
+                    branch: branch, baseRef: nil, managed: true
+                )
+                await store.dispatch(.addAvailableWorktree(
+                    repoId: repo.id, path: entry, kind: kind
+                ))
+            }
+        }
+    }
+
+    // `git -C <path> symbolic-ref --short HEAD`. nil if detached
+    // (rare for managed worktrees) or git fails for any reason.
+    private static func readGitHeadBranch(at path: URL) -> String? {
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        task.currentDirectoryURL = path
+        task.arguments = ["symbolic-ref", "--short", "HEAD"]
+        let out = Pipe()
+        task.standardOutput = out
+        task.standardError = Pipe()
+        do {
+            try task.run()
+            task.waitUntilExit()
+            guard task.terminationStatus == 0 else { return nil }
+            let data = (try? out.fileHandleForReading.readToEnd()) ?? Data()
+            let s = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return (s?.isEmpty ?? true) ? nil : s
+        } catch {
+            return nil
         }
     }
 

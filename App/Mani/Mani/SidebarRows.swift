@@ -99,6 +99,23 @@ struct RepoHeaderRow: View {
                 .tracking(-0.3)
                 .foregroundStyle(repo.enabled ? color : color.opacity(0.55))
                 .strikethrough(!repo.enabled)
+            // Small badge when the repo is in managed-worktree
+            // mode — distinguishes it from the legacy manual-mode
+            // repos so the user knows the New Project flow will be
+            // the simplified one.
+            if repo.worktreeMode == .managed {
+                Text("managed")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .textCase(.uppercase)
+                    .tracking(0.6)
+                    .foregroundStyle(color.opacity(0.85))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(
+                        Capsule().strokeBorder(color.opacity(0.4), lineWidth: 0.5)
+                    )
+                    .help("Managed worktrees: new projects create a worktree under \(repo.effectiveManagedWorktreesNamespace)/")
+            }
             Spacer()
             if taskCount > 0 {
                 Text("\(taskCount)")

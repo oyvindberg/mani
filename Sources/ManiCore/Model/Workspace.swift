@@ -24,9 +24,63 @@ public struct Workspace: Codable, Equatable {
     }
 }
 
-public enum WorkspaceKind: Codable, Equatable {
+// The `managed` flag on `.gitWorktree` records whether Mani owns the
+// worktree's lifecycle. Managed worktrees can be cleaned up by
+// `finishProject` (running `git worktree remove`); unmanaged ones
+// (created outside Mani and registered as-is) stay on disk on archive.
+public enum WorkspaceKind: Equatable {
     case folder
-    // baseRef is the branch the worktree was created off (e.g. "main");
-    // kept for diagnostics only — the live branch comes from git.
-    case gitWorktree(branch: String, baseRef: String?)
+    case gitWorktree(branch: String, baseRef: String?, managed: Bool)
+}
+
+// Custom Codable for backwards compatibility with state.json files
+// written before the `managed` payload existed. The legacy shape was
+//   { "gitWorktree": { "branch": "x", "baseRef": "y" } }
+// and decodes here as managed: false (i.e. pre-existing worktrees are
+// assumed manual).
+extension WorkspaceKind: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case folder
+        case gitWorktree
+    }
+
+    private struct GitWorktreePayload: Codable {
+        var branch: String
+        var baseRef: String?
+        var managed: Bool?  // optional for legacy decode
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        if c.contains(.folder) {
+            self = .folder
+            return
+        }
+        if let payload = try? c.decode(GitWorktreePayload.self, forKey: .gitWorktree) {
+            self = .gitWorktree(
+                branch: payload.branch,
+                baseRef: payload.baseRef,
+                managed: payload.managed ?? false
+            )
+            return
+        }
+        throw DecodingError.dataCorruptedError(
+            forKey: .folder,
+            in: c,
+            debugDescription: "WorkspaceKind: unrecognised shape"
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .folder:
+            try c.encode([String: String](), forKey: .folder)
+        case let .gitWorktree(branch, baseRef, managed):
+            try c.encode(
+                GitWorktreePayload(branch: branch, baseRef: baseRef, managed: managed),
+                forKey: .gitWorktree
+            )
+        }
+    }
 }

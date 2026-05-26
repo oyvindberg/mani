@@ -273,8 +273,103 @@ actor EffectRunner {
         case let .fetchAndResetToDefault(at):
             await Self.runFetchAndResetToDefault(at: at)
 
+        case let .removeGitWorktree(repoRoot, path, force):
+            await Self.runRemoveGitWorktree(repoRoot: repoRoot, path: path, force: force)
+
+        case let .deleteGitBranch(repoRoot, branch, force):
+            await Self.runDeleteGitBranch(repoRoot: repoRoot, branch: branch, force: force)
+
+        case let .ensureGitIgnoreLocal(repoRoot, pattern):
+            await Self.runEnsureGitIgnoreLocal(repoRoot: repoRoot, pattern: pattern)
+
         case .watchClaudeProjects:
             break
+        }
+    }
+
+    // git worktree remove <path>, then prune metadata. Logs and
+    // returns cleanly if the path isn't a worktree or git is upset
+    // about a dirty workspace (the UI gates --force separately).
+    private static func runRemoveGitWorktree(
+        repoRoot: URL, path: URL, force: Bool
+    ) async {
+        var args: [String] = ["worktree", "remove"]
+        if force { args.append("--force") }
+        args.append(path.path)
+        let result = await runGit(args: args, cwd: repoRoot)
+        if result.exit != 0 {
+            NSLog("[mani] git worktree remove failed exit=\(result.exit) stderr=\(result.stderr)")
+            return
+        }
+        _ = await runGit(args: ["worktree", "prune"], cwd: repoRoot)
+    }
+
+    // git branch -d / -D <branch>. -d refuses unmerged branches;
+    // -D forces. Caller (the UI) is responsible for confirming
+    // before passing force=true.
+    private static func runDeleteGitBranch(
+        repoRoot: URL, branch: String, force: Bool
+    ) async {
+        let flag = force ? "-D" : "-d"
+        let result = await runGit(args: ["branch", flag, branch], cwd: repoRoot)
+        if result.exit != 0 {
+            NSLog("[mani] git branch \(flag) \(branch) failed exit=\(result.exit) stderr=\(result.stderr)")
+        }
+    }
+
+    // Append `pattern` (one line) to `<repoRoot>/.git/info/exclude` if
+    // it isn't already excluded. We use `git check-ignore` to test the
+    // current state — that consults the full exclude chain
+    // (.gitignore + .git/info/exclude + core.excludesFile), so we
+    // won't double-add when the user already has `worktrees/` in a
+    // committed .gitignore.
+    private static func runEnsureGitIgnoreLocal(repoRoot: URL, pattern: String) async {
+        // Probe target: strip the leading slash for check-ignore,
+        // which expects a path-like string. e.g. "/worktrees/" → "worktrees/x".
+        let probePath: String = {
+            let stripped = pattern.drop(while: { $0 == "/" })
+            return stripped + "probe"
+        }()
+        let check = await runGit(args: ["check-ignore", "-q", probePath], cwd: repoRoot)
+        if check.exit == 0 {
+            // Already ignored somewhere in the chain — nothing to do.
+            return
+        }
+        let excludeURL = repoRoot
+            .appendingPathComponent(".git")
+            .appendingPathComponent("info")
+            .appendingPathComponent("exclude")
+        do {
+            let existing: String
+            if FileManager.default.fileExists(atPath: excludeURL.path),
+               let data = try? Data(contentsOf: excludeURL),
+               let s = String(data: data, encoding: .utf8) {
+                existing = s
+            } else {
+                existing = ""
+            }
+            let lines = existing.split(separator: "\n", omittingEmptySubsequences: false)
+            // Idempotency belt-and-suspenders: don't append if the
+            // exact pattern is already on its own line in
+            // info/exclude (covers the case where check-ignore says
+            // "no" but the line is there in a non-matching form).
+            if lines.contains(where: { $0.trimmingCharacters(in: .whitespaces) == pattern }) {
+                return
+            }
+            let needsLeadingNewline = !existing.isEmpty && !existing.hasSuffix("\n")
+            let appended = (needsLeadingNewline ? "\n" : "")
+                + "# Added by Mani — managed worktrees namespace\n"
+                + pattern + "\n"
+            // Ensure .git/info/ exists (it should, but be defensive).
+            try FileManager.default.createDirectory(
+                at: excludeURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            if let data = (existing + appended).data(using: .utf8) {
+                try data.write(to: excludeURL, options: .atomic)
+            }
+        } catch {
+            NSLog("[mani] ensureGitIgnoreLocal failed: \(error.localizedDescription)")
         }
     }
 
@@ -317,6 +412,22 @@ actor EffectRunner {
     ) async {
         _ = await runGit(args: ["worktree", "prune"], cwd: repoRoot)
 
+        // `git worktree add` creates the leaf directory but NOT
+        // intermediate parents. For managed worktrees living under
+        // `<repo>/worktrees/<slug>/`, the `worktrees/` parent may
+        // not exist yet — without this mkdir the git invocation
+        // fails with "could not create leading directories".
+        let parent = path.deletingLastPathComponent()
+        do {
+            try FileManager.default.createDirectory(
+                at: parent,
+                withIntermediateDirectories: true
+            )
+        } catch {
+            NSLog("[mani] git worktree add: mkdir parent \(parent.path) failed: \(error.localizedDescription)")
+            return
+        }
+
         var addArgs = ["worktree", "add", path.path]
         if let baseRef {
             addArgs.append(contentsOf: ["-b", branch, baseRef])
@@ -325,7 +436,19 @@ actor EffectRunner {
         }
         let result = await runGit(args: addArgs, cwd: repoRoot)
         if result.exit != 0 {
-            NSLog("[mani] git project add failed exit=\(result.exit) stderr=\(result.stderr)")
+            NSLog("[mani] git worktree add failed exit=\(result.exit) stderr=\(result.stderr)")
+            // Surface the failure to the user — otherwise the only
+            // signal is that the dialog hangs and nothing appears
+            // in the sidebar. Most common causes: baseRef doesn't
+            // exist (origin/main vs origin/master), branch already
+            // exists, or path is non-empty.
+            let firstLine = result.stderr
+                .split(separator: "\n").first
+                .map { String($0) } ?? "git worktree add failed"
+            NotificationService.shared.post(
+                title: "Couldn't create worktree",
+                body: firstLine
+            )
             return
         }
 

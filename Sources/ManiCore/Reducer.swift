@@ -27,7 +27,9 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
             externalConvos: [],
             availableWorktrees: [],
             createdAt: Date(),
-            claudeInvocation: nil
+            claudeInvocation: nil,
+            worktreeMode: .manual,
+            managedWorktreesNamespace: nil
         )
         let event = Event.repoCreated(repo)
         return ([event], [.persistEvents([event])])
@@ -63,6 +65,20 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         let event = Event.repoRootDirChanged(id: at.repo, rootDir: project.workspace.path)
         return ([event], [.persistEvents([event])])
 
+    case let .setRepoWorktreeMode(id, mode):
+        guard let repo = state.repos.first(where: { $0.id == id }) else { return ([], []) }
+        if repo.worktreeMode == mode { return ([], []) }
+        let event = Event.repoWorktreeModeChanged(id: id, mode: mode)
+        return ([event], [.persistEvents([event])])
+
+    case let .setRepoManagedWorktreesNamespace(id, namespace):
+        guard let repo = state.repos.first(where: { $0.id == id }) else { return ([], []) }
+        let normalised = namespace?.trimmingCharacters(in: .whitespaces)
+        let stored: String? = (normalised?.isEmpty == false) ? normalised : nil
+        if repo.managedWorktreesNamespace == stored { return ([], []) }
+        let event = Event.repoManagedWorktreesNamespaceChanged(id: id, namespace: stored)
+        return ([event], [.persistEvents([event])])
+
     case let .deleteRepo(id):
         guard let repo = state.repos.first(where: { $0.id == id }) else {
             return ([], [])
@@ -92,7 +108,19 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         let projectPath = ProjectPath(repo: repoId, project: project.id)
         let event = Event.projectCreated(repoId: repoId, project)
         var effects: [Effect] = [.persistEvents([event])]
-        if case let .gitWorktree(branch, baseRef) = workspace.kind {
+        if case let .gitWorktree(branch, baseRef, managed) = workspace.kind {
+            // For managed worktrees, hide the namespace dir from
+            // the main checkout via .git/info/exclude before we
+            // materialise the worktree. The pattern is `/<ns>/`
+            // (leading slash so it's anchored at the repo root,
+            // trailing slash so it only matches dirs).
+            if managed {
+                let pattern = "/" + repo.effectiveManagedWorktreesNamespace + "/"
+                effects.append(.ensureGitIgnoreLocal(
+                    repoRoot: repo.rootDir,
+                    pattern: pattern
+                ))
+            }
             effects.append(.createGitWorktree(
                 projectPath: projectPath,
                 repoRoot: repo.rootDir,
@@ -155,6 +183,73 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         if project.archivedAt == nil { return ([], []) }
         let event = Event.projectUnarchived(at: at)
         return ([event], [.persistEvents([event])])
+
+    case let .finishProject(at, cleanup):
+        guard let repo = state.repos.first(where: { $0.id == at.repo }),
+              let project = repo.projects.first(where: { $0.id == at.project })
+        else { return ([], []) }
+        if project.archivedAt != nil { return ([], []) }
+        let when = Date()
+        var events: [Event] = [.projectArchived(at: at, when: when)]
+        // Cleanup-aware AvailableWorktree handling: if we're about
+        // to remove the worktree, there's nothing to add as
+        // available. Only surface it when the workspace stays on
+        // disk (archive-only, manual workspaces).
+        let willRemoveWorktree: Bool
+        switch cleanup {
+        case .archiveOnly: willRemoveWorktree = false
+        case .removeWorktree, .removeWorktreeAndBranch:
+            willRemoveWorktree = true
+        }
+        if case .folder = project.workspace.kind,
+           !willRemoveWorktree,
+           repo.availableWorktrees.contains(where: { $0.path == project.workspace.path }) == false
+        {
+            events.append(.availableWorktreeAdded(
+                repoId: at.repo,
+                AvailableWorktree(
+                    id: UUID(),
+                    path: project.workspace.path,
+                    kind: project.workspace.kind,
+                    addedAt: when
+                )
+            ))
+        }
+        if let sel = state.selectedTaskPath, sel.projectPath == at {
+            events.append(.taskSelectionChanged(nil))
+        }
+        var effects: [Effect] = [.persistEvents(events)]
+        // Always terminate live tasks first.
+        effects.append(contentsOf: project.tasks.map { task in
+            .terminate(at: TaskPath(repo: at.repo, project: at.project, task: task.id))
+        })
+        // Cleanup branch — only meaningful for .gitWorktree
+        // workspaces. For .folder we silently downgrade to
+        // archive-only so the action stays useful from a unified UI
+        // entry point.
+        switch (cleanup, project.workspace.kind) {
+        case (.archiveOnly, _),
+             (_, .folder):
+            effects.append(.fetchAndResetToDefault(at: project.workspace.path))
+        case let (.removeWorktree(force), .gitWorktree(_, _, _)):
+            effects.append(.removeGitWorktree(
+                repoRoot: repo.rootDir,
+                path: project.workspace.path,
+                force: force
+            ))
+        case let (.removeWorktreeAndBranch(force), .gitWorktree(branch, _, _)):
+            effects.append(.removeGitWorktree(
+                repoRoot: repo.rootDir,
+                path: project.workspace.path,
+                force: force
+            ))
+            effects.append(.deleteGitBranch(
+                repoRoot: repo.rootDir,
+                branch: branch,
+                force: force
+            ))
+        }
+        return (events, effects)
 
     case let .markProjectWorkspaceMissing(at):
         guard findProject(state, at) != nil else { return ([], []) }
@@ -322,6 +417,28 @@ public func reduce(_ state: AppState, _ action: Action) -> (events: [Event], eff
         let event = Event.availableWorktreeRemoved(repoId: repoId, id: id)
         return ([event], [.persistEvents([event])])
 
+    case let .addAvailableWorktree(repoId, path, kind):
+        guard let repo = state.repos.first(where: { $0.id == repoId }) else { return ([], []) }
+        // Idempotent on path. Also skip if any active (non-archived)
+        // project already owns this path — it isn't "available."
+        let normalised = path.standardizedFileURL
+        if repo.availableWorktrees.contains(where: { $0.path.standardizedFileURL == normalised }) {
+            return ([], [])
+        }
+        if repo.projects.contains(where: {
+            !$0.isArchived && $0.workspace.path.standardizedFileURL == normalised
+        }) {
+            return ([], [])
+        }
+        let wt = AvailableWorktree(
+            id: UUID(),
+            path: path,
+            kind: kind,
+            addedAt: Date()
+        )
+        let event = Event.availableWorktreeAdded(repoId: repoId, wt)
+        return ([event], [.persistEvents([event])])
+
     // MARK: External convos
 
     case let .discoverExternalConvo(repoId, sessionId, cwd):
@@ -430,6 +547,16 @@ public func apply(_ state: inout AppState, _ event: Event) {
     case let .repoRootDirChanged(id, rootDir):
         if let i = state.repos.firstIndex(where: { $0.id == id }) {
             state.repos[i].rootDir = rootDir
+        }
+
+    case let .repoWorktreeModeChanged(id, mode):
+        if let i = state.repos.firstIndex(where: { $0.id == id }) {
+            state.repos[i].worktreeMode = mode
+        }
+
+    case let .repoManagedWorktreesNamespaceChanged(id, namespace):
+        if let i = state.repos.firstIndex(where: { $0.id == id }) {
+            state.repos[i].managedWorktreesNamespace = namespace
         }
 
     case let .repoDeleted(id):

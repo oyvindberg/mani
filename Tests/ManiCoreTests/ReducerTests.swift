@@ -37,6 +37,331 @@ final class ReducerTests: XCTestCase {
         XCTAssertEqual(state.repos[0].id, repo.id)
     }
 
+    func test_createRepo_defaultsToManualWorktreeMode() {
+        let state = AppState.empty
+        let (events, _) = reduce(state, .createRepo(
+            name: "atlas",
+            color: "#fff",
+            rootDir: URL(fileURLWithPath: "/r")
+        ))
+        guard case let .repoCreated(repo) = events[0] else {
+            return XCTFail("expected repoCreated")
+        }
+        XCTAssertEqual(repo.worktreeMode, .manual)
+        XCTAssertNil(repo.managedWorktreesNamespace)
+        XCTAssertEqual(repo.effectiveManagedWorktreesNamespace, "worktrees")
+        XCTAssertEqual(
+            repo.managedWorktreesDir.lastPathComponent, "worktrees"
+        )
+    }
+
+    // MARK: - setRepoWorktreeMode
+
+    func test_setRepoWorktreeMode_emitsEventAndApplies() {
+        let id = UUID()
+        var state = stateWith(repos: [makeRepo(id: id, projects: [])])
+        let (events, _) = reduce(state, .setRepoWorktreeMode(id: id, mode: .managed))
+        XCTAssertEqual(events, [.repoWorktreeModeChanged(id: id, mode: .managed)])
+        for e in events { apply(&state, e) }
+        XCTAssertEqual(state.repos[0].worktreeMode, .managed)
+    }
+
+    func test_setRepoWorktreeMode_sameMode_isNoop() {
+        let id = UUID()
+        let state = stateWith(repos: [makeRepo(id: id, projects: [])])
+        let (events, _) = reduce(state, .setRepoWorktreeMode(id: id, mode: .manual))
+        XCTAssertTrue(events.isEmpty)
+    }
+
+    // MARK: - setRepoManagedWorktreesNamespace
+
+    func test_setRepoManagedWorktreesNamespace_emitsAndNormalises() {
+        let id = UUID()
+        var state = stateWith(repos: [makeRepo(id: id, projects: [])])
+        let (events, _) = reduce(state, .setRepoManagedWorktreesNamespace(
+            id: id, namespace: "  wt  "
+        ))
+        XCTAssertEqual(
+            events,
+            [.repoManagedWorktreesNamespaceChanged(id: id, namespace: "wt")]
+        )
+        for e in events { apply(&state, e) }
+        XCTAssertEqual(state.repos[0].managedWorktreesNamespace, "wt")
+        XCTAssertEqual(state.repos[0].effectiveManagedWorktreesNamespace, "wt")
+    }
+
+    func test_setRepoManagedWorktreesNamespace_emptyClearsToNil() {
+        let id = UUID()
+        var repo = makeRepo(id: id, projects: [])
+        repo.managedWorktreesNamespace = "wt"
+        var state = stateWith(repos: [repo])
+        let (events, _) = reduce(state, .setRepoManagedWorktreesNamespace(
+            id: id, namespace: "   "
+        ))
+        XCTAssertEqual(
+            events,
+            [.repoManagedWorktreesNamespaceChanged(id: id, namespace: nil)]
+        )
+        for e in events { apply(&state, e) }
+        XCTAssertNil(state.repos[0].managedWorktreesNamespace)
+        XCTAssertEqual(state.repos[0].effectiveManagedWorktreesNamespace, "worktrees")
+    }
+
+    // MARK: - WorkspaceKind backwards-compat
+
+    func test_workspaceKind_decodesLegacyGitWorktreeWithoutManaged() throws {
+        let json = """
+        { "gitWorktree": { "branch": "feat/x", "baseRef": "main" } }
+        """.data(using: .utf8)!
+        let decoded = try JSONDecoder().decode(WorkspaceKind.self, from: json)
+        guard case let .gitWorktree(branch, baseRef, managed) = decoded else {
+            return XCTFail("expected gitWorktree case")
+        }
+        XCTAssertEqual(branch, "feat/x")
+        XCTAssertEqual(baseRef, "main")
+        XCTAssertFalse(managed)
+    }
+
+    func test_workspaceKind_roundTripPreservesManaged() throws {
+        let original: WorkspaceKind = .gitWorktree(
+            branch: "feat/x", baseRef: "main", managed: true
+        )
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(WorkspaceKind.self, from: data)
+        XCTAssertEqual(decoded, original)
+    }
+
+    // MARK: - Repo Codable migration
+
+    // MARK: - slugifyProjectName
+
+    func test_slugify_lowercasesAndReplacesNonAlphanumWithHyphens() {
+        XCTAssertEqual(slugifyProjectName("Auth Rewrite"), "auth-rewrite")
+        XCTAssertEqual(slugifyProjectName("foo/bar baz"), "foo-bar-baz")
+        XCTAssertEqual(slugifyProjectName("UPPER_case_123"), "upper-case-123")
+    }
+
+    func test_slugify_collapsesAndTrimsHyphens() {
+        XCTAssertEqual(slugifyProjectName("  --foo  ..  bar -- "), "foo-bar")
+    }
+
+    func test_slugify_fallsBackToWipForEmptyAndSymbols() {
+        XCTAssertEqual(slugifyProjectName(""), "wip")
+        XCTAssertEqual(slugifyProjectName("   "), "wip")
+        XCTAssertEqual(slugifyProjectName("!!!"), "wip")
+    }
+
+    // MARK: - createProject for managed worktree
+
+    func test_createProject_managedWorktree_emitsEnsureGitIgnoreLocalFirst() {
+        let repoId = UUID()
+        var repo = makeRepo(id: repoId, projects: [])
+        repo.worktreeMode = .managed
+        let state = stateWith(repos: [repo])
+        let target = URL(fileURLWithPath: "/wt/main/worktrees/auth-rewrite")
+        let (_, effects) = reduce(state, .createProject(
+            repoId: repoId,
+            name: "auth rewrite",
+            workspace: Workspace(
+                path: target,
+                kind: .gitWorktree(branch: "auth-rewrite", baseRef: "origin/main", managed: true),
+                missing: false
+            )
+        ))
+        // Effects: persistEvents, ensureGitIgnoreLocal, createGitWorktree.
+        // Check that ensureGitIgnoreLocal comes before createGitWorktree.
+        var sawIgnore = false
+        var sawCreate = false
+        for effect in effects {
+            switch effect {
+            case let .ensureGitIgnoreLocal(_, pattern):
+                XCTAssertEqual(pattern, "/worktrees/")
+                XCTAssertFalse(sawCreate, "ensureGitIgnoreLocal must precede createGitWorktree")
+                sawIgnore = true
+            case .createGitWorktree:
+                sawCreate = true
+            default: break
+            }
+        }
+        XCTAssertTrue(sawIgnore, "expected ensureGitIgnoreLocal effect")
+        XCTAssertTrue(sawCreate, "expected createGitWorktree effect")
+    }
+
+    func test_createProject_unmanagedWorktree_doesNotEmitEnsureGitIgnore() {
+        let repoId = UUID()
+        let state = stateWith(repos: [makeRepo(id: repoId, projects: [])])
+        let target = URL(fileURLWithPath: "/wt/elsewhere")
+        let (_, effects) = reduce(state, .createProject(
+            repoId: repoId,
+            name: "old style",
+            workspace: Workspace(
+                path: target,
+                kind: .gitWorktree(branch: "feat", baseRef: "main", managed: false),
+                missing: false
+            )
+        ))
+        let hasIgnore = effects.contains { effect in
+            if case .ensureGitIgnoreLocal = effect { return true }
+            return false
+        }
+        XCTAssertFalse(hasIgnore)
+    }
+
+    // MARK: - finishProject
+
+    func test_finishProject_archiveOnly_runsExistingArchiveBehavior() {
+        let repoId = UUID()
+        let projectId = UUID()
+        var state = stateWith(repos: [
+            makeRepo(id: repoId, projects: [
+                makeProject(id: projectId, tasks: [])
+            ])
+        ])
+        let path = ProjectPath(repo: repoId, project: projectId)
+        let (events, effects) = reduce(state, .finishProject(
+            at: path, cleanup: .archiveOnly
+        ))
+        // projectArchived + availableWorktreeAdded for .folder.
+        guard case .projectArchived = events.first else {
+            return XCTFail("expected projectArchived")
+        }
+        let hasAvail = events.contains { e in
+            if case .availableWorktreeAdded = e { return true }
+            return false
+        }
+        XCTAssertTrue(hasAvail)
+        // fetchAndReset emitted, NOT removeGitWorktree.
+        let hasFetchReset = effects.contains { e in
+            if case .fetchAndResetToDefault = e { return true }
+            return false
+        }
+        let hasRemove = effects.contains { e in
+            if case .removeGitWorktree = e { return true }
+            return false
+        }
+        XCTAssertTrue(hasFetchReset)
+        XCTAssertFalse(hasRemove)
+        for e in events { apply(&state, e) }
+        XCTAssertTrue(state.repos[0].projects[0].isArchived)
+    }
+
+    func test_finishProject_removeWorktree_emitsRemoveAndSkipsFetchReset() {
+        let repoId = UUID()
+        let projectId = UUID()
+        let workspace = Workspace(
+            path: URL(fileURLWithPath: "/wt/main/worktrees/feat"),
+            kind: .gitWorktree(branch: "feat", baseRef: "origin/main", managed: true),
+            missing: false
+        )
+        let project = Project(
+            id: projectId, name: "feat",
+            workspace: workspace, tasks: [],
+            archivedAt: nil, createdAt: Date()
+        )
+        let state = stateWith(repos: [makeRepo(id: repoId, projects: [project])])
+        let path = ProjectPath(repo: repoId, project: projectId)
+        let (_, effects) = reduce(state, .finishProject(
+            at: path, cleanup: .removeWorktree(force: false)
+        ))
+        let hasRemove = effects.contains { e in
+            if case .removeGitWorktree = e { return true }
+            return false
+        }
+        let hasFetch = effects.contains { e in
+            if case .fetchAndResetToDefault = e { return true }
+            return false
+        }
+        XCTAssertTrue(hasRemove)
+        XCTAssertFalse(hasFetch)
+        // No availableWorktreeAdded — worktree is going away, can't be available.
+    }
+
+    func test_finishProject_removeWorktreeAndBranch_emitsBoth() {
+        let repoId = UUID()
+        let projectId = UUID()
+        let workspace = Workspace(
+            path: URL(fileURLWithPath: "/wt/main/worktrees/feat"),
+            kind: .gitWorktree(branch: "feat-x", baseRef: "origin/main", managed: true),
+            missing: false
+        )
+        let project = Project(
+            id: projectId, name: "feat",
+            workspace: workspace, tasks: [],
+            archivedAt: nil, createdAt: Date()
+        )
+        let state = stateWith(repos: [makeRepo(id: repoId, projects: [project])])
+        let path = ProjectPath(repo: repoId, project: projectId)
+        let (_, effects) = reduce(state, .finishProject(
+            at: path, cleanup: .removeWorktreeAndBranch(force: true)
+        ))
+        var sawRemove = false
+        var sawDelete = false
+        for e in effects {
+            if case .removeGitWorktree = e { sawRemove = true }
+            if case let .deleteGitBranch(_, branch, force) = e {
+                XCTAssertEqual(branch, "feat-x")
+                XCTAssertTrue(force)
+                sawDelete = true
+            }
+        }
+        XCTAssertTrue(sawRemove)
+        XCTAssertTrue(sawDelete)
+    }
+
+    func test_finishProject_folderWorkspace_downgradesToArchiveOnly() {
+        // Even when caller asks for removeWorktree, a .folder
+        // workspace falls through to archive-only behavior — there's
+        // no worktree to remove.
+        let repoId = UUID()
+        let projectId = UUID()
+        let state = stateWith(repos: [
+            makeRepo(id: repoId, projects: [makeProject(id: projectId, tasks: [])])
+        ])
+        let path = ProjectPath(repo: repoId, project: projectId)
+        let (_, effects) = reduce(state, .finishProject(
+            at: path, cleanup: .removeWorktree(force: false)
+        ))
+        let hasRemove = effects.contains { e in
+            if case .removeGitWorktree = e { return true }
+            return false
+        }
+        let hasFetch = effects.contains { e in
+            if case .fetchAndResetToDefault = e { return true }
+            return false
+        }
+        XCTAssertFalse(hasRemove)
+        XCTAssertTrue(hasFetch)
+    }
+
+    func test_finishProject_alreadyArchived_isNoop() {
+        let repoId = UUID()
+        let projectId = UUID()
+        var project = makeProject(id: projectId, tasks: [])
+        project.archivedAt = Date()
+        let state = stateWith(repos: [makeRepo(id: repoId, projects: [project])])
+        let path = ProjectPath(repo: repoId, project: projectId)
+        let (events, _) = reduce(state, .finishProject(at: path, cleanup: .archiveOnly))
+        XCTAssertTrue(events.isEmpty)
+    }
+
+    func test_repo_decodesLegacyWithoutWorktreeMode() throws {
+        // A minimal new-shape repo JSON without worktreeMode or
+        // managedWorktreesNamespace. Should decode with defaults.
+        let json = """
+        {
+          "id": "11111111-1111-1111-1111-111111111111",
+          "name": "atlas", "color": "#fff", "enabled": true,
+          "rootDir": "file:///r/",
+          "projects": [], "externalConvos": [],
+          "createdAt": 700000000,
+          "claudeInvocation": null
+        }
+        """.data(using: .utf8)!
+        let repo = try JSONDecoder().decode(Repo.self, from: json)
+        XCTAssertEqual(repo.worktreeMode, .manual)
+        XCTAssertNil(repo.managedWorktreesNamespace)
+    }
+
     // MARK: - renameRepo
 
     func test_renameRepo_known_emitsEventAndApplies() {
@@ -125,7 +450,7 @@ final class ReducerTests: XCTestCase {
 
         let workspace = Workspace(
             path: URL(fileURLWithPath: "/wt/feat"),
-            kind: .gitWorktree(branch: "feat/auth", baseRef: "main"),
+            kind: .gitWorktree(branch: "feat/auth", baseRef: "main", managed: false),
             missing: false
         )
         let (_, effects) = reduce(state, .createProject(
@@ -231,7 +556,7 @@ final class ReducerTests: XCTestCase {
             id: projectId, name: "feat",
             workspace: Workspace(
                 path: URL(fileURLWithPath: "/wt/feat"),
-                kind: .gitWorktree(branch: "feat", baseRef: "main"),
+                kind: .gitWorktree(branch: "feat", baseRef: "main", managed: false),
                 missing: false
             ),
             tasks: [], archivedAt: nil, createdAt: Date()
@@ -850,7 +1175,9 @@ private func makeRepo(id: UUID, projects: [Project]) -> Repo {
         externalConvos: [],
         availableWorktrees: [],
         createdAt: Date(),
-        claudeInvocation: nil
+        claudeInvocation: nil,
+        worktreeMode: .manual,
+        managedWorktreesNamespace: nil
     )
 }
 

@@ -24,6 +24,13 @@ final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewD
         set { bridge.onResize = newValue }
     }
 
+    // Latest viewport size the surface has reported. nil if no
+    // resize callback has fired yet (very brief window between
+    // renderer construction and the surface's first layout).
+    var lastObservedSize: (rows: Int, cols: Int)? {
+        bridge.lastSize
+    }
+
     private let bridge: CallbackBridge
     private let session: InMemoryTerminalSession
     private let terminalView: GhosttyTerminal.TerminalView
@@ -53,6 +60,7 @@ final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewD
                 let rows = Int(viewport.rows)
                 let cols = Int(viewport.columns)
                 DispatchQueue.main.async {
+                    bridge.lastSize = (rows, cols)
                     bridge.onResize?(rows, cols)
                 }
             }
@@ -154,4 +162,8 @@ final class LibGhosttyRenderer: NSObject, TerminalRenderer, TerminalSurfaceViewD
 private final class CallbackBridge: @unchecked Sendable {
     var onInput: ((Data) -> Void)?
     var onResize: ((Int, Int) -> Void)?
+    // Latest size we've seen the surface report. Cached so the
+    // Coordinator can push it to a freshly-bound PTY whose backing
+    // process may still think it's at the (stale) spawn size.
+    var lastSize: (rows: Int, cols: Int)?
 }

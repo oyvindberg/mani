@@ -228,7 +228,9 @@ final class ClaudeSessionStartTests: XCTestCase {
                     externalConvos: [],
                     availableWorktrees: [],
                     createdAt: Date(),
-                    claudeInvocation: nil
+                    claudeInvocation: nil,
+                    worktreeMode: .manual,
+                    managedWorktreesNamespace: nil
                 )
             ],
             settings: Settings(

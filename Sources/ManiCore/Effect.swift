@@ -28,6 +28,20 @@ public enum Effect {
     // `origin/master`, and silently no-ops if neither exists or the
     // dir isn't a git checkout.
     case fetchAndResetToDefault(at: URL)
+    // Run `git worktree remove [--force] <path>` from `repoRoot`,
+    // then `git worktree prune`. Errors out gracefully if the path
+    // isn't a worktree or the repo root isn't a git checkout.
+    case removeGitWorktree(repoRoot: URL, path: URL, force: Bool)
+    // Run `git branch -D <branch>` (or `-d` when not forced) from
+    // `repoRoot`. Used after `removeGitWorktree` to clean up a
+    // branch that has no more references.
+    case deleteGitBranch(repoRoot: URL, branch: String, force: Bool)
+    // Idempotently append `pattern` to `<repoRoot>/.git/info/exclude`
+    // if it isn't already excluded by any of `.git/info/exclude`,
+    // `<repoRoot>/.gitignore`, or `~/.config/git/ignore`. Used to
+    // hide the managed-worktrees namespace dir from the main
+    // checkout's `git status` without touching tracked files.
+    case ensureGitIgnoreLocal(repoRoot: URL, pattern: String)
     case watchClaudeProjects(URL)
     case userNotification(title: String, body: String)
 }

@@ -24,6 +24,18 @@ public struct Repo: Codable, Equatable, Identifiable {
     // Optional override for the claude binary invocation. nil =
     // inherit Settings.claudeInvocation.
     public var claudeInvocation: String?
+    // Worktree lifecycle mode. `.manual` (default) keeps the legacy
+    // behavior — Mani never touches `git worktree`. `.managed` opts
+    // in to the new flow where every project's workspace is a Mani-
+    // created worktree under `<repo>/<namespace>/<slug>/`.
+    public var worktreeMode: WorktreeMode
+    // Name of the namespace dir under the repo root that holds
+    // managed worktrees. nil resolves to the default `"worktrees"`
+    // (see `effectiveManagedWorktreesNamespace`). Users can override
+    // for convention (e.g. "wt" or ".worktrees"); changes don't move
+    // existing worktrees, they just affect new project creation and
+    // boot-time discovery from that point forward.
+    public var managedWorktreesNamespace: String?
 
     public init(
         id: UUID,
@@ -35,7 +47,9 @@ public struct Repo: Codable, Equatable, Identifiable {
         externalConvos: [ExternalConvo],
         availableWorktrees: [AvailableWorktree],
         createdAt: Date,
-        claudeInvocation: String?
+        claudeInvocation: String?,
+        worktreeMode: WorktreeMode,
+        managedWorktreesNamespace: String?
     ) {
         self.id = id
         self.name = name
@@ -47,12 +61,31 @@ public struct Repo: Codable, Equatable, Identifiable {
         self.availableWorktrees = availableWorktrees
         self.createdAt = createdAt
         self.claudeInvocation = claudeInvocation
+        self.worktreeMode = worktreeMode
+        self.managedWorktreesNamespace = managedWorktreesNamespace
+    }
+
+    // Resolved namespace dir name for managed worktrees. Always
+    // returns a value (default "worktrees" when the override is nil)
+    // so callers don't have to re-check.
+    public var effectiveManagedWorktreesNamespace: String {
+        if let n = managedWorktreesNamespace,
+           !n.trimmingCharacters(in: .whitespaces).isEmpty {
+            return n
+        }
+        return "worktrees"
+    }
+
+    // Resolved on-disk dir where managed worktrees live.
+    public var managedWorktreesDir: URL {
+        rootDir.appendingPathComponent(effectiveManagedWorktreesNamespace)
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, color, enabled, rootDir
         case projects, externalConvos, availableWorktrees
         case createdAt, claudeInvocation
+        case worktreeMode, managedWorktreesNamespace
     }
 
     // Legacy shape: Repo had `worktrees: [Worktree]`. Each Worktree
@@ -80,6 +113,15 @@ public struct Repo: Codable, Equatable, Identifiable {
         self.availableWorktrees = (try? c.decodeIfPresent(
             [AvailableWorktree].self, forKey: .availableWorktrees
         )) ?? []
+        // Default existing repos to .manual so legacy state.json
+        // files keep the pre-change behavior. Namespace is left
+        // nil (resolves to "worktrees" lazily) when unset.
+        self.worktreeMode = (try? c.decodeIfPresent(
+            WorktreeMode.self, forKey: .worktreeMode
+        )) ?? .manual
+        self.managedWorktreesNamespace = try? c.decodeIfPresent(
+            String.self, forKey: .managedWorktreesNamespace
+        )
 
         if let projects = try c.decodeIfPresent([Project].self, forKey: .projects) {
             self.projects = projects
@@ -111,7 +153,10 @@ public struct Repo: Codable, Equatable, Identifiable {
                 case .folder:
                     kind = .folder
                 case let .git(branch, baseRef):
-                    kind = .gitWorktree(branch: branch, baseRef: baseRef)
+                    // Legacy gitWorktree entries were always
+                    // user-created (Mani never managed them), so
+                    // migrate as `managed: false`.
+                    kind = .gitWorktree(branch: branch, baseRef: baseRef, managed: false)
                 }
                 projects.append(Project(
                     id: wt.id,

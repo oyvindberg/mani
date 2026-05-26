@@ -9,6 +9,8 @@ public enum Event: Codable, Equatable {
     case repoClaudeInvocationChanged(id: UUID, invocation: String?)
     case repoRootDirChanged(id: UUID, rootDir: URL)
     case repoDeleted(id: UUID)
+    case repoWorktreeModeChanged(id: UUID, mode: WorktreeMode)
+    case repoManagedWorktreesNamespaceChanged(id: UUID, namespace: String?)
 
     // MARK: Project
     case projectCreated(repoId: UUID, Project)
