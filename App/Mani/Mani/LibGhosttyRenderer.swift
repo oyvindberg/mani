@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import GhosttyTerminal
 import GhosttyTheme
+import ManiServer
 
 // libghostty-backed terminal renderer. Replaces SwiftTermRenderer for v0.2 of
 // the renderer choice (ADR-002). Uses GhosttyTerminal's host-managed I/O

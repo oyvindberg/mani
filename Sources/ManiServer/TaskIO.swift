@@ -1,20 +1,22 @@
 import Foundation
-import Darwin
 
-// Abstract surface for a running task's I/O. ManagedPTY (Mani-spawned,
-// in-process forkpty + master FD) and AgentClient (talking to a
-// detached mani-agent via UNIX socket) both conform. Lets the
-// renderer + EffectRunner be agnostic about WHERE the bytes come
-// from.
+// Abstract surface for a running task's I/O. Conformed-to by
+// AgentClient (mani-agent over Unix socket), ManagedPTY (in-process
+// forkpty), and RemoteTaskIO (the v0.2 client-side adapter that
+// translates these calls into mani-server WS frames).
 //
 // The shape mirrors the original ManagedPTY public surface: input
-// goes one way, output is multi-subscriber, resize is an out-of-
-// band call, exit is an onExit closure. Same semantics either way.
-protocol TaskIO: AnyObject {
+// goes one way, output is multi-subscriber, resize is an out-of-band
+// call, exit is an onExit closure. Same semantics in all three impls.
+//
+// Lives in ManiServer (not App/Mani) so the client-side
+// RemoteTaskIO + the v0.2 ServerClient protocol can reference it
+// without depending on the mac app target.
+public protocol TaskIO: AnyObject {
     // PID of the inner process. For ManagedPTY this is the forkpty
     // child; for AgentClient it's read from the EXIT frame or set
-    // by the host when known.
-    var pid: pid_t { get }
+    // by the host when known; for RemoteTaskIO it's 0 (unknown).
+    var pid: Int32 { get }
     // Fires with the exit code when the inner process dies.
     var onExit: ((Int32) -> Void)? { get set }
     // Send bytes to the inner process's stdin (PTY master write).
@@ -38,13 +40,15 @@ protocol TaskIO: AnyObject {
     // byte-indifferent. Cap-trims if seed + existing live exceed
     // the impl's internal capture cap; seed wins, oldest live bytes
     // are dropped. Must be called before any handler subscribes.
+    // RemoteTaskIO no-ops this — server-side reattach already feeds
+    // scrollback into subscribeTaskOutput's reply stream.
     func seedCapturedOutput(_ data: Data)
 }
 
 // Subscription token returned by addOutputHandler. On deinit, the
 // associated handler is unhooked from the underlying source.
-final class IOSubscription {
+public final class IOSubscription {
     private let cancel: () -> Void
-    init(_ cancel: @escaping () -> Void) { self.cancel = cancel }
+    public init(_ cancel: @escaping () -> Void) { self.cancel = cancel }
     deinit { cancel() }
 }

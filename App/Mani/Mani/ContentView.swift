@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import Foundation
+import ManiServer
 import ManiCore
 
 struct ContentView: View {
@@ -971,14 +972,14 @@ struct SidebarView: View {
         if case .claude = task.kind, isRunning(task) {
             Divider()
             Button("Fork conversation") {
-                let runner = store.runner
-                _Concurrency.Task {
+                let storeRef = store
+                _Concurrency.Task { @MainActor in
                     // Type `/fork\r` into the live PTY. claude executes the
                     // slash command and (per claude-code's hook contract)
                     // fires SessionStart for the new session id — the
                     // routing function in ManiCore catches that and creates
                     // a sibling Task via discoverExternalConvo. See ADR-016.
-                    guard let pty = await runner.pty(for: path) else { return }
+                    guard let pty = await storeRef.taskIO(for: path.task) else { return }
                     pty.write(Data("/fork\r".utf8))
                 }
             }
@@ -2024,12 +2025,16 @@ struct TerminalPane: NSViewRepresentable {
     @MainActor
     final class Coordinator {
         private var renderer: LibGhosttyRenderer?
-        private weak var pty: TaskIO?
+        // Strong reference in remote mode — the RemoteTaskIO is created
+        // on demand and only this Coordinator holds it. Local AgentClient
+        // / ManagedPTY survive via EffectRunner.ptys so a weak ref would
+        // also work, but the strong ref is simpler + works for both modes.
+        private var pty: TaskIO?
         private var taskPath: TaskPath?
         private var keyMonitor: Any?
         // Cached so bind(pty:) can push the renderer's last-known
         // size to the freshly-bound PTY (re-attach SIGWINCH fix).
-        private var runner: EffectRunner?
+        private var store: Store?
 
         deinit {
             if let monitor = keyMonitor { NSEvent.removeMonitor(monitor) }
@@ -2038,25 +2043,21 @@ struct TerminalPane: NSViewRepresentable {
         func attach(renderer: LibGhosttyRenderer, store: Store, taskPath: TaskPath) {
             self.renderer = renderer
             self.taskPath = taskPath
-            self.runner = store.runner
+            self.store = store
             renderer.inputHandler = { [weak self] data in self?.pty?.write(data) }
-            let runner = store.runner
-            let capturedPath = taskPath
+            let capturedTaskId = taskPath.task
             renderer.sizeHandler = { rows, cols in
-                _Concurrency.Task {
-                    await runner.resize(
-                        path: capturedPath,
-                        rows: UInt16(rows),
-                        cols: UInt16(cols)
-                    )
+                _Concurrency.Task { @MainActor in
+                    guard let pty = await store.taskIO(for: capturedTaskId) else { return }
+                    pty.resize(rows: UInt16(rows), cols: UInt16(cols))
                 }
             }
             installKeyMonitor()
 
-            _Concurrency.Task {
+            _Concurrency.Task { [weak self] in
                 for _ in 0..<200 {
-                    if let pty = await runner.pty(for: taskPath) {
-                        await MainActor.run { self.bind(pty: pty) }
+                    if let pty = await store.taskIO(for: capturedTaskId) {
+                        await MainActor.run { self?.bind(pty: pty) }
                         return
                     }
                     try? await _Concurrency.Task.sleep(nanoseconds: 25_000_000)
@@ -2126,16 +2127,15 @@ struct TerminalPane: NSViewRepresentable {
             // TIOCSWINSZ → SIGWINCH → redraw. The jiggle is
             // imperceptible because the second resize lands on the
             // very next runloop tick.
-            if let size = renderer.lastObservedSize,
-               let path = self.taskPath,
-               let runner = self.runner {
+            if let size = renderer.lastObservedSize {
                 let realRows = UInt16(size.rows)
                 let realCols = UInt16(size.cols)
                 let jiggleRows = realRows > 1 ? realRows - 1 : realRows + 1
-                _Concurrency.Task {
-                    await runner.resize(path: path, rows: jiggleRows, cols: realCols)
+                let ptyRef = pty
+                _Concurrency.Task { @MainActor in
+                    ptyRef.resize(rows: jiggleRows, cols: realCols)
                     try? await _Concurrency.Task.sleep(nanoseconds: 30_000_000)  // 30ms
-                    await runner.resize(path: path, rows: realRows, cols: realCols)
+                    ptyRef.resize(rows: realRows, cols: realCols)
                 }
             }
         }

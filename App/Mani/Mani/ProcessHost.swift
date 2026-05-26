@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import ManiCore
+import ManiServer
 
 // Abstraction over WHERE a long-lived task's process lives. Today
 // only LocalAgentHost: each task gets its own detached `mani-agent`

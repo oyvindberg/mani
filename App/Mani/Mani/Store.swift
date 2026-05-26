@@ -4,29 +4,86 @@ import ManiServer
 
 // docs/architecture.md § "The store".
 //
-// Order is load-bearing: persist → apply → publish → dispatch remaining
-// effects. If we crash between persist and apply, on restart the
-// durable event replays through `apply` and we end up where we were.
-// The publish step broadcasts each committed Event to the EventBus,
-// which any connected mani-server WebSocket client subscribes to.
+// Two modes:
+//
+//   .local — owns the reducer/persistence/effects path. The
+//     canonical-state runtime. ManiApp boots into this when no
+//     MANI_SERVER_URL is set. Order is load-bearing: persist → apply →
+//     publish → dispatch remaining effects. If we crash between
+//     persist and apply, on restart the durable event replays through
+//     `apply` and we end up where we were. The publish step
+//     broadcasts each committed Event to the EventBus, which any
+//     connected mani-server WebSocket client subscribes to.
+//
+//   .remote — no local runner, no reducer. State updates flow in
+//     from a RemoteWSClient (helloAck snapshot + event frames).
+//     dispatch and taskIO forward over WS. Activated when ManiApp.init
+//     sees MANI_SERVER_URL — meant for "this is the client mac talking
+//     to mani-server on the box that owns the agents."
 
 @MainActor
 final class Store: ObservableObject {
-    @Published private(set) var state: AppState
-    let runner: EffectRunner
-    // Owned here so Store is the single fan-out point for committed
-    // events. The mani-server Server subscribes to this bus; the local
-    // UI continues to read @Published state directly (no protocol
-    // round-trip for the in-proc case).
-    let eventBus: EventBus
+    enum Mode {
+        case local(runner: EffectRunner, eventBus: EventBus)
+        case remote(client: RemoteWSClient)
+    }
 
-    init(state: AppState, runner: EffectRunner) {
+    @Published private(set) var state: AppState
+    let mode: Mode
+
+    // Convenience accessors for local-mode-only call sites. Both nil
+    // in remote mode — callers that need them (boot reconciliation,
+    // snapshot compaction, terminateAll, embedded WS server) should
+    // gate on these and skip when nil.
+    var runner: EffectRunner? {
+        if case .local(let r, _) = mode { return r } else { return nil }
+    }
+    var eventBus: EventBus? {
+        if case .local(_, let b) = mode { return b } else { return nil }
+    }
+
+    init(state: AppState, mode: Mode) {
         self.state = state
-        self.runner = runner
-        self.eventBus = EventBus()
+        self.mode = mode
+
+        if case .remote(let client) = mode {
+            // Wire the WS client's state and event streams into our
+            // @Published state + (no event bus locally — remote mode
+            // doesn't republish; consumers go to the wire directly if
+            // they need events).
+            client.onStateUpdate = { [weak self] snapshot in
+                _Concurrency.Task { @MainActor in self?.state = snapshot }
+            }
+        }
+    }
+
+    // PTY handle for a task. Local: looks up via EffectRunner. Remote:
+    // returns a RemoteTaskIO that translates TaskIO calls into WS
+    // frames. Either way the caller (renderer) doesn't have to know.
+    func taskIO(for taskId: UUID) async -> TaskIO? {
+        switch mode {
+        case .local(let runner, _):
+            return await runner.pty(taskId: taskId)
+        case .remote(let client):
+            return client.taskIO(for: taskId)
+        }
     }
 
     func dispatch(_ action: Action) async {
+        switch mode {
+        case .remote(let client):
+            await client.dispatch(action)
+            return
+        case .local(let runner, let eventBus):
+            await dispatchLocal(action, runner: runner, eventBus: eventBus)
+        }
+    }
+
+    private func dispatchLocal(
+        _ action: Action,
+        runner: EffectRunner,
+        eventBus: EventBus
+    ) async {
         let (events, effects) = reduce(state, action)
 
         // Step 1: durability boundary. Persist events before mutating in-memory state.
@@ -61,9 +118,9 @@ final class Store: ObservableObject {
                  .removeGitWorktree, .deleteGitBranch,
                  .ensureGitIgnoreLocal,
                  .watchClaudeProjects, .userNotification:
-                let runner = self.runner
+                let runnerCapture = runner
                 _Concurrency.Task { [weak self] in
-                    await runner.run(effect) { action in
+                    await runnerCapture.run(effect) { action in
                         guard let self else { return }
                         await self.dispatch(action)
                     }

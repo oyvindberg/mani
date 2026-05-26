@@ -102,12 +102,14 @@ struct ManiApp: App {
     @StateObject private var archiveCache: SessionArchiveCache = SessionArchiveCache.shared
     @StateObject private var activityTracker = TaskActivityTracker()
 
-    // Embedded mani-server WebSocket transport. Started in init(), runs
-    // for the app's lifetime, picks up events from Store.eventBus.
-    // Bound to 127.0.0.1 for now; the Tailscale bind address moves to
-    // the tailnet IP when [[mani-singleton-lock]] / tailscale work
-    // lands. Held strongly so its NIO event loop survives.
-    private let server: Server
+    // Embedded mani-server WebSocket transport. Nil in remote mode
+    // (this app instance is a client, not serving anything). When
+    // present, runs for the app's lifetime, picks up events from
+    // Store.eventBus. Held strongly so its NIO event loop survives.
+    private let server: Server?
+    // Remote-mode WS connection to a mani-server elsewhere. Nil in
+    // local mode. Connected during init.
+    private let remoteClient: RemoteWSClient?
 
     init() {
         // Force the singleton lock to be acquired before any boot work.
@@ -119,73 +121,90 @@ struct ManiApp: App {
         ).first!
         let storeRoot = appSupport.appendingPathComponent("Mani")
         let persistence = try! PersistenceStore(rootDir: storeRoot)
-        // Recovery is event-sourced — state.json + replay of any tail
-        // events. Per-task aliveness is recomputed against the agent
-        // sockets at boot via EffectRunner.reconcileRuntime, so no
-        // synthetic state mutation is needed here.
-        let initialState = (try? persistence.recover().state) ?? .empty
-        // ProcessHost — local tmux for now. SshTmuxHost will share
-        // this protocol later. Hard-failing here would be hostile;
-        // when tmux is missing we'd surface a "please brew install
-        // tmux" empty state and stay alive for the user to install.
-        // For the walking skeleton, fall back to a no-op host if
-        // tmux is missing so the app still boots.
+
+        // Mode selection. MANI_SERVER_URL flips into client-only mode:
+        // talk to a mani-server elsewhere over WS, don't run the local
+        // runtime (reducer / persistence / agents / embedded server).
+        // Both modes share the singleton lock and instantiate the
+        // ClaudeWatcher etc., but in remote mode those services'
+        // start() calls are skipped in body's .task.
+        let env = ProcessInfo.processInfo.environment
+        let serverURL = env["MANI_SERVER_URL"].flatMap { URL(string: $0) }
+        let serverToken = env["MANI_SERVER_TOKEN"] ?? ""
+
+        // Always instantiate runner — Store.mode.remote ignores it, and
+        // keeping it lets the willTerminate handler stay uniform. For
+        // local agent host: if tmux is missing, fall back to the
+        // unavailable host so the app still boots.
         let host: ProcessHost = LocalAgentHost.detect()
             ?? UnavailableProcessHost()
         let runner = EffectRunner(persistence: persistence, host: host)
-        let store = Store(state: initialState, runner: runner)
+
+        let initialState: AppState
+        let store: Store
+        if let url = serverURL {
+            let client = RemoteWSClient(url: url, token: serverToken)
+            self.remoteClient = client
+            initialState = .empty
+            store = Store(
+                state: initialState,
+                mode: .remote(client: client)
+            )
+            self.server = nil
+            NSLog("[mani-app] REMOTE mode → \(url.absoluteString)")
+        } else {
+            self.remoteClient = nil
+            // Recovery is event-sourced — state.json + replay of any
+            // tail events. Per-task aliveness is recomputed against
+            // the agent sockets at boot via reconcileRuntime.
+            initialState = (try? persistence.recover().state) ?? .empty
+            let eventBus = EventBus()
+            store = Store(
+                state: initialState,
+                mode: .local(runner: runner, eventBus: eventBus)
+            )
+
+            // Embedded mani-server, local mode only. Binds 0.0.0.0
+            // so other macs / phones on the tailnet can reach.
+            let token = Self.loadOrCreateServerToken(in: storeRoot)
+            NSLog("[mani-server] auth token (pair phone with this): \(token)")
+            let serverInstance = Server(
+                bus: eventBus,
+                serverVersion: "0.2.0-dev",
+                token: token,
+                snapshotProvider: { @Sendable in
+                    await store.state
+                },
+                actionDispatcher: { @Sendable action in
+                    await store.dispatch(action)
+                },
+                taskOutputSubscriber: { @Sendable taskId, handler in
+                    guard let pty = await runner.pty(taskId: taskId) else { return nil }
+                    let subscription = pty.addOutputHandler(replayCaptured: true) { data in
+                        handler(data)
+                    }
+                    return { _ = subscription }
+                },
+                taskInputHandler: { @Sendable taskId, bytes in
+                    await runner.pty(taskId: taskId)?.write(bytes)
+                },
+                taskResizeHandler: { @Sendable taskId, cols, rows in
+                    await runner.pty(taskId: taskId)?.resize(rows: rows, cols: cols)
+                }
+            )
+            self.server = serverInstance
+            do {
+                _ = try serverInstance.start(host: "0.0.0.0", port: 8765)
+                NSLog("[mani-server] listening on ws://0.0.0.0:8765 (reachable via tailnet/LAN)")
+            } catch {
+                NSLog("[mani-server] failed to bind 0.0.0.0:8765: \(error)")
+            }
+            NSLog("[mani-app] LOCAL mode (canonical state)")
+        }
         _store = StateObject(wrappedValue: store)
 
-        // v0.2 transport. Bound to 0.0.0.0:8765 so clients on the
-        // tailnet / LAN can reach it; bearer-token auth keeps drive-by
-        // connections out. Failing to bind is non-fatal — the local
-        // UI keeps working, only remote clients are unreachable.
-        let bus = store.eventBus
-        let token = Self.loadOrCreateServerToken(in: storeRoot)
-        NSLog("[mani-server] auth token (pair phone with this): \(token)")
-        let serverInstance = Server(
-            bus: bus,
-            serverVersion: "0.2.0-dev",
-            token: token,
-            snapshotProvider: { @Sendable in
-                await store.state
-            },
-            actionDispatcher: { @Sendable action in
-                await store.dispatch(action)
-            },
-            // Subscribe a remote client to a task's PTY bytes. Looks
-            // up the live TaskIO by id and installs an output handler
-            // with replayCaptured: true so the client gets the
-            // recent backlog (last ~1 MB, or whatever the agent has
-            // captured plus the 512 KB on-disk scrollback seed from
-            // boot reattach) before the live stream. Returns a cancel
-            // that drops the IOSubscription — the AgentClient /
-            // ManagedPTY removes the handler on deinit.
-            taskOutputSubscriber: { @Sendable taskId, handler in
-                let runner = await store.runner
-                guard let pty = await runner.pty(taskId: taskId) else { return nil }
-                let subscription = pty.addOutputHandler(replayCaptured: true) { data in
-                    handler(data)
-                }
-                return { _ = subscription }  // closure retains subscription; deinit on drop
-            },
-            taskInputHandler: { @Sendable taskId, bytes in
-                let runner = await store.runner
-                await runner.pty(taskId: taskId)?.write(bytes)
-            },
-            taskResizeHandler: { @Sendable taskId, cols, rows in
-                let runner = await store.runner
-                await runner.pty(taskId: taskId)?.resize(rows: rows, cols: cols)
-            }
-        )
-        self.server = serverInstance
-        do {
-            _ = try serverInstance.start(host: "0.0.0.0", port: 8765)
-            NSLog("[mani-server] listening on ws://0.0.0.0:8765 (reachable via tailnet/LAN)")
-        } catch {
-            NSLog("[mani-server] failed to bind 0.0.0.0:8765: \(error)")
-        }
-
+        // Services below are instantiated in both modes; their start()
+        // calls in body's .task are gated on local mode.
         let claudeProjects = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects")
             .path
@@ -205,18 +224,29 @@ struct ManiApp: App {
             cache: SessionArchiveCache.shared
         ))
 
-        // Cmd-Q / quit menu: SIGTERM every live PTY before the app exits.
-        // macOS gives ~1s before force-quit, so we don't block waiting for
-        // reaps — _Concurrency.Task.detached fires-and-forgets the terminate() calls and
-        // the kernel delivers SIGTERM regardless of whether Mani is still
-        // alive when the syscall completes.
+        // Cmd-Q / quit menu: SIGTERM every live PTY before the app
+        // exits. Only meaningful in local mode (remote has nothing
+        // local to terminate). The runner.terminateAll() is a no-op
+        // in remote mode anyway, but skip explicitly to be clear.
+        let modeIsLocal: Bool = (serverURL == nil)
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
             object: nil,
             queue: nil
         ) { _ in
-            _Concurrency.Task { await runner.terminateAll() }
+            if modeIsLocal {
+                _Concurrency.Task { await runner.terminateAll() }
+            }
+            // Cleanly disconnect the WS client so the server-side
+            // session closes promptly.
+            // (remoteClient.close is fire-and-forget — fine on quit.)
         }
+
+        // Kick off the WS connection now that all stored properties
+        // are set. Store's init already wired onStateUpdate to update
+        // its @Published state. Connect is fire-and-forget; the
+        // helloAck flows through that closure.
+        self.remoteClient?.connect()
     }
 
     var body: some Scene {
@@ -287,10 +317,14 @@ struct ManiApp: App {
                     // No auto-respawn — a process that died across a Mani
                     // restart should not silently come back; the user
                     // should see the .exited state and decide.
-                    await store.runner.reconcileRuntime(
-                        state: store.state,
-                        dispatch: { action in await store.dispatch(action) }
-                    )
+                    // Local-only — remote mode the server has already
+                    // reconciled its own runtime.
+                    if let runner = store.runner {
+                        await runner.reconcileRuntime(
+                            state: store.state,
+                            dispatch: { action in await store.dispatch(action) }
+                        )
+                    }
                     // If the persisted selection points to a task that's
                     // no longer in state (e.g. dedupe removed it last
                     // session, or the user manually edited state.json),
@@ -596,9 +630,9 @@ struct ManiApp: App {
             while !_Concurrency.Task.isCancelled {
                 let interval = store?.state.settings.snapshotIntervalSeconds ?? 30
                 try? await _Concurrency.Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
-                guard let store else { return }
+                guard let store, let runner = store.runner else { continue }
                 let snapshot = store.state
-                await store.runner.compact(snapshot)
+                await runner.compact(snapshot)
             }
         }
     }

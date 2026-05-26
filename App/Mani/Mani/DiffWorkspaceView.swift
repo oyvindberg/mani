@@ -523,11 +523,11 @@ struct DiffWorkspaceView: View {
         guard !hasInitialisedShell else { return }
         // Wait briefly for the spawn to settle (zsh's initial prompt arrives
         // ~800 ms after fork; matches ClaudeTaskSpec's delay).
-        let runner = store.runner
+        let storeRef = store
         let path = taskPath
-        _Concurrency.Task.detached {
+        _Concurrency.Task.detached { @MainActor in
             try? await _Concurrency.Task.sleep(nanoseconds: 1_000_000_000)
-            guard let pty = await runner.pty(for: path) else { return }
+            guard let pty = await storeRef.taskIO(for: path.task) else { return }
             // Suppress keystroke echo + clear screen so the only thing the
             // user ever sees in this pane is delta output (and any error
             // output from git / delta).
@@ -563,10 +563,10 @@ struct DiffWorkspaceView: View {
     // arrives. The whole dance keeps subsequent file clicks fast: no
     // shell respawn, no rendering hiccup beyond the brief screen restore.
     private func sendCommand(_ command: String) {
-        let runner = store.runner
+        let storeRef = store
         let path = taskPath
-        _Concurrency.Task.detached {
-            guard let pty = await runner.pty(for: path) else { return }
+        _Concurrency.Task.detached { @MainActor in
+            guard let pty = await storeRef.taskIO(for: path.task) else { return }
             pty.write(Data("\u{15}q\u{15}".utf8))
             try? await _Concurrency.Task.sleep(nanoseconds: 40_000_000)
             pty.write(Data(command.utf8))

@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import ManiCore
+import ManiServer
 
 // Mani-side client for a detached mani-agent helper process.
 // Owns a UNIX socket FD and speaks the AgentProtocol frame format.

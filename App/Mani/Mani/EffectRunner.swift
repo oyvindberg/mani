@@ -1,5 +1,6 @@
 import Foundation
 import ManiCore
+import ManiServer
 
 // The only place I/O happens. Owns the live TaskIO instances keyed by
 // TaskPath, drives PersistenceStore, and dispatches actions back to the

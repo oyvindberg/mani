@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import ManiServer
 
 // Process-spawning + tty-controlling wrapper around a forkpty/execve pair.
 // Validated by Spikes/PTYSpike (500-cycle spawn/reap, SIGTERM→SIGKILL,
