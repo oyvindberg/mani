@@ -412,6 +412,390 @@ struct NewWorktreeSheet: View {
     }
 }
 
+// MARK: - New project from existing PR
+
+// Right-click on a repo → "New project from PR…" surfaces this.
+// Shells `gh pr list` in the repo's rootDir, lets the user pick an
+// open PR, then materialises it as a managed-style git worktree
+// checked out at the PR's headRefName. Fork PRs are surfaced but
+// disabled (v1 limitation — fork branches aren't on `origin`).
+struct NewProjectFromPRSheet: View {
+    let store: Store
+    let repoId: UUID
+    @Binding var isPresented: Bool
+    @EnvironmentObject var sweeper: SafekeepingSweeper
+
+    struct PullRequest: Identifiable, Hashable {
+        let number: Int
+        let title: String
+        let headRefName: String
+        let authorLogin: String
+        let updatedAt: Date?
+        let isCrossRepository: Bool
+        var id: Int { number }
+    }
+
+    enum LoadState {
+        case loading
+        case loaded([PullRequest])
+        case error(String)
+    }
+
+    @State private var loadState: LoadState = .loading
+    @State private var selectedNumber: Int?
+    @State private var projectName: String = ""
+    @State private var nameEdited: Bool = false
+    @State private var creating: Bool = false
+
+    private var repo: Repo? {
+        store.state.repos.first(where: { $0.id == repoId })
+    }
+
+    private var selectedPR: PullRequest? {
+        guard let selectedNumber, case let .loaded(prs) = loadState else { return nil }
+        return prs.first(where: { $0.number == selectedNumber })
+    }
+
+    private var derivedName: String {
+        guard let pr = selectedPR else { return "" }
+        return "pr-\(pr.number)-\(slugifyProjectName(pr.title))"
+    }
+
+    private var effectiveName: String {
+        nameEdited ? projectName : derivedName
+    }
+
+    private var managedTargetPath: URL? {
+        guard let repo else { return nil }
+        let slug = slugifyProjectName(effectiveName)
+        guard !slug.isEmpty else { return nil }
+        return repo.managedWorktreesDir.appendingPathComponent(slug)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("New project from PR").font(.headline)
+            switch loadState {
+            case .loading:
+                loadingView
+            case .error(let message):
+                errorView(message: message)
+            case .loaded(let prs):
+                loadedView(prs: prs)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
+                Button(creating ? "Creating…" : "Create") { onCreate() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isCreateDisabled)
+            }
+        }
+        .padding(20)
+        .frame(width: 620, height: 480)
+        .task { await loadPRs() }
+    }
+
+    @ViewBuilder
+    private var loadingView: some View {
+        HStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            Text("Loading open PRs via `gh`…")
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private func errorView(message: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("Couldn't load PRs").font(.subheadline.weight(.semibold))
+            }
+            Text(message)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("Mani uses the `gh` CLI. Install it with `brew install gh` and run `gh auth login`.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private func loadedView(prs: [PullRequest]) -> some View {
+        if prs.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "tray")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.secondary)
+                Text("No open PRs found.")
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            prList(prs: prs)
+            Divider()
+            Form {
+                TextField("Project name", text: Binding(
+                    get: { nameEdited ? projectName : derivedName },
+                    set: { newValue in projectName = newValue; nameEdited = true }
+                ))
+            }
+            if let target = managedTargetPath {
+                HStack(spacing: 6) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                    Text(target.path)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if FileManager.default.fileExists(atPath: target.path) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                        Text("A directory already exists at this path — git worktree add will fail.")
+                            .font(.caption)
+                    }
+                    .foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func prList(prs: [PullRequest]) -> some View {
+        List(prs, selection: $selectedNumber) { pr in
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text("#\(pr.number)")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text(pr.title).lineLimit(1)
+                    if pr.isCrossRepository {
+                        Text("(fork — not supported yet)")
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                    }
+                }
+                HStack(spacing: 8) {
+                    Text(pr.headRefName)
+                        .font(.system(.caption2, design: .monospaced))
+                    Text("by \(pr.authorLogin)").font(.caption2)
+                    if let updated = pr.updatedAt {
+                        Text(updated, style: .relative).font(.caption2)
+                    }
+                }
+                .foregroundStyle(.secondary)
+            }
+            .tag(pr.number)
+            .contentShape(Rectangle())
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    private var isCreateDisabled: Bool {
+        if creating { return true }
+        guard let pr = selectedPR, !pr.isCrossRepository else { return true }
+        let trimmed = effectiveName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty
+    }
+
+    private func onCreate() {
+        guard let repo, let pr = selectedPR, !pr.isCrossRepository,
+              let target = managedTargetPath else { return }
+        let finalName = effectiveName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let branch = pr.headRefName
+        let managed = repo.worktreeMode == .managed
+        let workspace = Workspace(
+            path: target,
+            kind: .gitWorktree(branch: branch, baseRef: nil, managed: managed),
+            missing: false
+        )
+        let repoRoot = repo.rootDir
+        let repoId = repo.id
+        creating = true
+        let storeRef = store
+        let sweeperRef = sweeper
+        _Concurrency.Task { @MainActor in
+            // Fetch the PR branch into refs/remotes/origin/<branch>
+            // so that `git worktree add <path> <branch>` can DWIM a
+            // local tracking branch. Failure here is non-fatal —
+            // the user may have a stale checkout but the branch
+            // may already be local; let `git worktree add` decide.
+            _ = await Self.runGitFetch(repoRoot: repoRoot, branch: branch)
+            await storeRef.dispatch(.createProject(
+                repoId: repoId, name: finalName, workspace: workspace
+            ))
+            isPresented = false
+            guard let updatedRepo = storeRef.state.repos.first(where: { $0.id == repoId }),
+                  let project = updatedRepo.projects.last else { return }
+            let ready = await Self.waitForWorktreeReady(
+                at: target, timeoutSeconds: 8.0
+            )
+            guard ready else {
+                NSLog("[mani] PR worktree didn't materialise at \(target.path) within 8s")
+                return
+            }
+            let projectPath = ProjectPath(repo: repoId, project: project.id)
+            let shellSpec = ProcessSpec(
+                command: "/bin/zsh", args: ["-l"], env: [:],
+                cwd: target, initialInput: nil
+            )
+            await storeRef.dispatch(.createTask(
+                at: projectPath, name: "shell", kind: .shell,
+                spec: shellSpec, autoSelect: true
+            ))
+            await SidebarView.spawnDiff(at: projectPath, cwd: target, store: storeRef)
+            await sweeperRef.runOnce()
+        }
+    }
+
+    private static func waitForWorktreeReady(
+        at path: URL, timeoutSeconds: Double
+    ) async -> Bool {
+        let marker = path.appendingPathComponent(".git")
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if FileManager.default.fileExists(atPath: marker.path) {
+                return true
+            }
+            try? await _Concurrency.Task.sleep(nanoseconds: 50_000_000)
+        }
+        return false
+    }
+
+    // MARK: gh + git probes
+
+    private func loadPRs() async {
+        guard let repo else {
+            loadState = .error("Repo not found.")
+            return
+        }
+        guard let ghPath = Self.locateGh() else {
+            loadState = .error(
+                "Couldn't find the `gh` executable. Checked /opt/homebrew/bin, /usr/local/bin, /opt/local/bin."
+            )
+            return
+        }
+        let result = await Self.runProcess(
+            executable: ghPath,
+            args: [
+                "pr", "list",
+                "--state", "open",
+                "--limit", "100",
+                "--json", "number,title,headRefName,author,updatedAt,isCrossRepository"
+            ],
+            cwd: repo.rootDir
+        )
+        guard result.exit == 0 else {
+            loadState = .error(result.stderr.isEmpty
+                ? "gh exited with status \(result.exit)."
+                : result.stderr)
+            return
+        }
+        do {
+            let prs = try Self.parsePRs(jsonText: result.stdout)
+            loadState = .loaded(prs)
+        } catch {
+            loadState = .error("Failed to parse `gh` output: \(error.localizedDescription)")
+        }
+    }
+
+    private static func parsePRs(jsonText: String) throws -> [PullRequest] {
+        struct AuthorRaw: Decodable { let login: String? }
+        struct PRRaw: Decodable {
+            let number: Int
+            let title: String
+            let headRefName: String
+            let author: AuthorRaw?
+            let updatedAt: String?
+            let isCrossRepository: Bool?
+        }
+        let data = jsonText.data(using: .utf8) ?? Data()
+        let decoder = JSONDecoder()
+        let raw = try decoder.decode([PRRaw].self, from: data)
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let isoNoFrac = ISO8601DateFormatter()
+        isoNoFrac.formatOptions = [.withInternetDateTime]
+        return raw.map { r in
+            let updated: Date? = r.updatedAt.flatMap { s in
+                iso.date(from: s) ?? isoNoFrac.date(from: s)
+            }
+            return PullRequest(
+                number: r.number,
+                title: r.title,
+                headRefName: r.headRefName,
+                authorLogin: r.author?.login ?? "?",
+                updatedAt: updated,
+                isCrossRepository: r.isCrossRepository ?? false
+            )
+        }
+    }
+
+    private static func locateGh() -> String? {
+        let candidates = [
+            "/opt/homebrew/bin/gh",
+            "/usr/local/bin/gh",
+            "/opt/local/bin/gh"
+        ]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    private static func runGitFetch(repoRoot: URL, branch: String) async -> Int32 {
+        let refspec = "+\(branch):refs/remotes/origin/\(branch)"
+        let result = await runProcess(
+            executable: "/usr/bin/git",
+            args: ["fetch", "origin", refspec],
+            cwd: repoRoot
+        )
+        if result.exit != 0 {
+            NSLog("[mani] git fetch origin \(refspec) failed exit=\(result.exit) stderr=\(result.stderr)")
+        }
+        return result.exit
+    }
+
+    private static func runProcess(
+        executable: String, args: [String], cwd: URL
+    ) async -> (exit: Int32, stdout: String, stderr: String) {
+        await withCheckedContinuation { (cont: CheckedContinuation<(exit: Int32, stdout: String, stderr: String), Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let task = Process()
+                task.executableURL = URL(fileURLWithPath: executable)
+                task.currentDirectoryURL = cwd
+                task.arguments = args
+                let outPipe = Pipe()
+                let errPipe = Pipe()
+                task.standardOutput = outPipe
+                task.standardError = errPipe
+                do {
+                    try task.run()
+                    task.waitUntilExit()
+                    let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
+                    let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
+                    cont.resume(returning: (
+                        task.terminationStatus,
+                        String(data: outData, encoding: .utf8) ?? "",
+                        String(data: errData, encoding: .utf8) ?? ""
+                    ))
+                } catch {
+                    cont.resume(returning: (-1, "", "\(error)"))
+                }
+            }
+        }
+    }
+}
+
 struct RenameJobSheet: View {
     let store: Store
     let taskPath: TaskPath

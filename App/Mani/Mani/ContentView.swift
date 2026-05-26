@@ -519,6 +519,7 @@ struct SidebarView: View {
     // red (mismatched workspace). Cleared by the drop handler.
     @State private var sidebarDragInfo: SidebarDragInfo?
     @State private var newWorktreeForRepo: Repo?
+    @State private var newProjectFromPRForRepo: Repo?
     @State private var claudeInvocationProjectId: UUID?
 
     struct ResumeContext: Identifiable {
@@ -714,6 +715,16 @@ struct SidebarView: View {
                 )
             )
         }
+        .sheet(item: $newProjectFromPRForRepo) { repo in
+            NewProjectFromPRSheet(
+                store: store,
+                repoId: repo.id,
+                isPresented: Binding(
+                    get: { newProjectFromPRForRepo != nil },
+                    set: { if !$0 { newProjectFromPRForRepo = nil } }
+                )
+            )
+        }
         .sheet(item: Binding(
             get: { claudeInvocationProjectId.flatMap { id in
                 store.state.repos.first(where: { $0.id == id })
@@ -735,6 +746,9 @@ struct SidebarView: View {
     private func repoMenu(repo: Repo) -> some View {
         Button("Add project…") {
             newWorktreeForRepo = repo
+        }
+        Button("New project from PR…") {
+            newProjectFromPRForRepo = repo
         }
         Button("Change color…") {
             colorPickerProjectId = repo.id
